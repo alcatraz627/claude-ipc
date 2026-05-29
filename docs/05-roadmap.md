@@ -32,13 +32,14 @@
 
 - **Goal:** confirm the host assumptions before building on them; stand up the
   Python project.
-- **Deliverables:** `pyproject.toml` + `uv` env; confirmation notes for —
+- **Deliverables:** `package.json` + Bun env (`tsconfig.json`, smoke test);
+  confirmation notes for —
   (a) UserPromptSubmit/SessionStart hooks receive `session_id`+`cwd` and inject
   via `additionalContext`; (b) SessionStart fires on `resume` with stable id;
   (c) transcript JSONL is appended live (a `tail -f` check); (d) `--channels`
   availability in the installed version; (e) each stdio MCP spawns one instance
   per session.
-- **Testing criteria:** env builds + `python -c "import claude_ipc"` works;
+- **Testing criteria:** `bun install` + `tsc --noEmit` clean + `bun test` green;
   spike findings written to `docs/00-host-facts.md`.
 - **Done when:** the four facts are recorded as confirmed/❌, and any that fail
   trigger a documented design adjustment.

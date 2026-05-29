@@ -1,11 +1,7 @@
-# Python
-__pycache__/
-*.py[cod]
-*.egg-info/
-.venv/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
+# Bun / Node
+node_modules/
+dist/
+*.tsbuildinfo
 
 # IPC runtime data — never commit live state
 run/

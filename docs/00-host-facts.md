@@ -15,10 +15,14 @@
 
 ## Toolchain
 
-- **Python:** system is 3.9.6 (lacks `StrEnum` and other 3.11 features the models
-  use). `uv` is installed → the project pins `requires-python >=3.11` and uv
-  provisions a conforming interpreter. Do not run against system python directly.
-- **uv:** present at `~/.local/bin/uv`.
+- **Runtime:** Bun 1.3.14 at `/opt/homebrew/bin/bun` (verified). Provides
+  built-in SQLite (`bun:sqlite`), test runner (`bun:test`), Unix-socket
+  primitives (`Bun.listen`/`Bun.connect`), and `bun build --compile` for
+  standalone binaries.
+- **Language decision:** Bun + TypeScript chosen over Python — compile-to-binary
+  removes the per-prompt hook startup cost and runtime/version drift (the system
+  python was 3.9, lacking required features), alongside the most mature MCP SDK
+  and zero-dep SQLite. See `04-technical-implementation.md` §1.
 
 ## Net design impact
 
