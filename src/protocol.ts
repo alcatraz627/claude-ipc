@@ -19,6 +19,7 @@ export type Op =
   | "accept"
   | "decline"
   | "cancel"
+  | "await"
   | "list"
   | "history"
   | "status";

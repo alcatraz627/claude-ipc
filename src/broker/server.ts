@@ -14,6 +14,7 @@ import { config } from "../config.ts";
 import { encodeFrame, FrameDecoder, type Request } from "../protocol.ts";
 import { Registry } from "./registry.ts";
 import { Router } from "./router.ts";
+import { tickSweeper } from "./sweeper.ts";
 import { SqliteBackend } from "../storage/sqliteBackend.ts";
 
 export interface BrokerHandle {
@@ -59,6 +60,8 @@ export function main(): void {
   const registry = new Registry(backend, nowS, config.liveness);
   const router = new Router(backend, registry, nowS, () => `msg-${crypto.randomUUID().slice(0, 8)}`);
   const inflight = backend.replayInflight();
+  const mkId = (): string => `msg-${crypto.randomUUID().slice(0, 8)}`;
+  setInterval(() => tickSweeper(backend, nowS, mkId), config.sweepIntervalS * 1000);
   startBroker({ router, socketPath: config.socketPath });
   console.log(
     `[claude-ipc] broker up on ${config.socketPath} ` +

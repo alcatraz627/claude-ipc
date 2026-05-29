@@ -87,4 +87,27 @@ export class Client {
   list(): Promise<any> {
     return this.call("list", {});
   }
+  reply(args: { from: string; corrId: string; body?: string; terminal?: boolean; status?: "ok" | "error" }): Promise<any> {
+    return this.call("reply", { ...args });
+  }
+  accept(alias: string, msgId: string): Promise<any> {
+    return this.call("accept", { alias, msgId });
+  }
+  decline(from: string, msgId: string, reason?: string): Promise<any> {
+    return this.call("decline", { from, msgId, reason });
+  }
+  cancel(corrId: string): Promise<any> {
+    return this.call("cancel", { corrId });
+  }
+
+  /** Block until a correlated response lands in `alias`'s inbox, or the timeout passes. */
+  async awaitReply(alias: string, corrId: string, timeoutMs = 2000, pollMs = 15): Promise<any> {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const r = await this.call("await", { alias, corrId });
+      if (r.response) return r.response;
+      if (Date.now() >= deadline) return null;
+      await new Promise((res) => setTimeout(res, pollMs));
+    }
+  }
 }

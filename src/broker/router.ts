@@ -7,7 +7,7 @@
  * is synchronous — so it is trivially testable with an injected clock + id source.
  */
 
-import { makeMessage, type Kind } from "../models.ts";
+import { makeMessage, type ErrorCode, type Kind, type Status } from "../models.ts";
 import type { Request, Response } from "../protocol.ts";
 import type { StorageBackend } from "../storage/base.ts";
 import type { Registry } from "./registry.ts";
@@ -23,6 +23,7 @@ export class Router {
     private registry: Registry,
     private now: () => number,
     private newId: () => string,
+    private defaultTtlS = 3600,
   ) {}
 
   handle(req: Request): Response {
@@ -38,6 +39,16 @@ export class Router {
           return this.send(req);
         case "check":
           return this.check(req);
+        case "reply":
+          return this.reply(req);
+        case "accept":
+          return this.accept(req);
+        case "decline":
+          return this.decline(req);
+        case "cancel":
+          return this.cancel(req);
+        case "await":
+          return this.awaitReply(req);
         case "list":
           return ok({ peers: this.registry.list() });
         default:
@@ -105,6 +116,12 @@ export class Router {
     const targets = a.to === "*" ? this.registry.liveAliases(a.from) : [a.to];
     for (const t of targets) this.backend.enqueue(msg.id, t);
 
+    // A directed query/request is something the sender waits on — track it so it
+    // can be correlated to a reply or timed out by the sweeper.
+    if (a.to !== "*" && (a.kind === "query" || a.kind === "request")) {
+      this.backend.openAwaiting(msg.id, this.now() + (a.ttlS ?? this.defaultTtlS));
+    }
+
     return ok({ msgId: msg.id, recipients: targets });
   }
 
@@ -112,5 +129,94 @@ export class Router {
     const a = req.args as { alias?: string; consume?: boolean };
     if (!a.alias) return fail("bad_args", "check needs alias");
     return ok({ messages: this.backend.pending(a.alias, { consume: a.consume ?? false }) });
+  }
+
+  /** Answer a query/request. A reply after the origin closed (timeout/cancel) is dropped. */
+  private reply(req: Request): Response {
+    const a = req.args as {
+      from?: string;
+      corrId?: string;
+      body?: string;
+      terminal?: boolean;
+      status?: Status;
+      errorCode?: ErrorCode;
+    };
+    if (!a.from || !a.corrId) return fail("bad_args", "reply needs from + corrId");
+    const origin = this.backend.originOf(a.corrId);
+    if (!origin) return fail("no_origin", `no message for corrId ${a.corrId}`);
+    if (!this.backend.isAwaitingOpen(a.corrId)) {
+      return ok({ dropped: true, reason: "awaiting_closed" }); // late or duplicate
+    }
+    const terminal = a.terminal ?? true;
+    const resp = makeMessage({
+      id: this.newId(),
+      kind: "response",
+      fromAlias: a.from,
+      toAlias: origin.fromAlias,
+      ts: this.now(),
+      corrId: a.corrId,
+      status: a.status ?? "ok",
+      errorCode: a.errorCode ?? null,
+      terminal,
+      body: a.body ?? "",
+      conversationId: origin.conversationId,
+    });
+    this.backend.append(resp);
+    this.backend.enqueue(resp.id, origin.fromAlias);
+    if (terminal) this.backend.closeAwaiting(a.corrId, "responded");
+    return ok({ msgId: resp.id, terminal });
+  }
+
+  /** Consent to act on a request. Marks the delivery accepted; the work + reply follow. */
+  private accept(req: Request): Response {
+    const a = req.args as { alias?: string; msgId?: string };
+    if (!a.alias || !a.msgId) return fail("bad_args", "accept needs alias + msgId");
+    this.backend.setConsent(a.msgId, a.alias, true);
+    return ok({ accepted: true });
+  }
+
+  /** Refuse a request; the sender gets a terminal response{error,declined}. */
+  private decline(req: Request): Response {
+    const a = req.args as { from?: string; msgId?: string; reason?: string };
+    if (!a.from || !a.msgId) return fail("bad_args", "decline needs from + msgId");
+    this.backend.setConsent(a.msgId, a.from, false);
+    const origin = this.backend.originOf(a.msgId);
+    if (origin && this.backend.isAwaitingOpen(a.msgId)) {
+      const resp = makeMessage({
+        id: this.newId(),
+        kind: "response",
+        fromAlias: a.from,
+        toAlias: origin.fromAlias,
+        ts: this.now(),
+        corrId: a.msgId,
+        status: "error",
+        errorCode: "declined",
+        terminal: true,
+        body: a.reason ?? "",
+        conversationId: origin.conversationId,
+      });
+      this.backend.append(resp);
+      this.backend.enqueue(resp.id, origin.fromAlias);
+      this.backend.closeAwaiting(a.msgId, "responded");
+    }
+    return ok({ declined: true });
+  }
+
+  /** The sender abandons an outstanding request; a later reply will be dropped. */
+  private cancel(req: Request): Response {
+    const a = req.args as { corrId?: string };
+    if (!a.corrId) return fail("bad_args", "cancel needs corrId");
+    this.backend.closeAwaiting(a.corrId, "cancelled");
+    return ok({ cancelled: true });
+  }
+
+  /** Non-blocking peek: has a correlated response landed in this alias's inbox yet? */
+  private awaitReply(req: Request): Response {
+    const a = req.args as { alias?: string; corrId?: string };
+    if (!a.alias || !a.corrId) return fail("bad_args", "await needs alias + corrId");
+    const found = this.backend
+      .pending(a.alias)
+      .find((m) => m.kind === "response" && m.corrId === a.corrId);
+    return ok(found ? { response: found } : { pending: true });
   }
 }
