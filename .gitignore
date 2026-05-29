@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# IPC runtime data — never commit live state
+run/
+*.sock
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.db
+logs/
+*.log
+
+# Scratch / checkpoints (gcc convention)
+_*.claude.md
+
+# macOS
+.DS_Store
