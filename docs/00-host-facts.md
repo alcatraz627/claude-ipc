@@ -9,7 +9,7 @@
 |---|------------|--------|-------------------|
 | 1 | UPS/SessionStart hooks receive `session_id`,`cwd`,`transcript_path` on stdin and inject context via `additionalContext` | ✅ *(docs)* | Hooks reference. Empirical test in Phase 5 when hooks are built. |
 | 2 | SessionStart fires on `resume` with a stable `session_id` | ✅ *(docs)* | Enables offline-queue replay on resume (FR8/SC3). |
-| 3 | Transcript JSONL is appended **live** during a session | ✅ empirical | This session's transcript `ed7207c0….jsonl` actively grew (553 lines, live mtime) while open. Cross-session `tail -f` confirm deferred to Phase 5. Validates one agent reading another's output (FR13). |
+| 3 | Transcript JSONL is appended **live** during a session | ✅ empirical (same-session) | This session's transcript `ed7207c0….jsonl` actively grew (553 lines, live mtime) while open. **CROSS-session** read (one `claude` reading another live session's file) + path stability across `/compact` move to **Phase 1** to confirm (cheap) before FR13 depends on it. Mitigation: a `context_ptr` stores `session_id` and resolves the path at read time, since transcript paths can change on compaction (review #16). |
 | 4 | `--channels` push into a running session is available | ❌ not in v2.1.156 | `claude --help` shows no channel flag. **Impact:** the top delivery-ladder rung is unavailable now — build on the UPS-hook rung (always works); treat channels as a feature-detected future upgrade. May be gated behind an env/newer version — revisit on upgrade. |
 | 5 | Each stdio MCP server spawns **one instance per session** | ✅ *(docs)* | MCP reference. **Impact:** the stdio MCP is a thin per-session client; shared state lives in the broker (architecture D5). |
 

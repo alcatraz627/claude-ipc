@@ -185,19 +185,48 @@ The system must function on the always-available rungs (turn-boundary injection,
 resume replay, on-demand pull) and treat proactive push as an enhancement, not a
 prerequisite.
 
+**Honest scope of "proactive" without push (review #5/#6).** `--channels` is NOT
+present in the installed host (00-host-facts). On the always-available rungs, a
+message reaches a *running* recipient at its **next turn boundary** — i.e. the
+next time that session takes a turn — not during genuine idle while no turn is
+happening. This still satisfies NFR1 (no *check-command* is needed; any turn
+surfaces pending messages), and fits the target use case where parallel sessions
+are each actively worked. But true "push into an idle session while the human is
+away" requires `--channels` and is therefore a future capability, not a current
+guarantee. SC1/G2 are scoped accordingly: "unprompted" means *without a
+check-command*, surfaced at the recipient's next turn.
+
 ## 11. Trust & consent model
 
 All participants are the same user, so the system does **not** authenticate
-peers (N3). It does enforce **consent**: a delivered `request` is inert context
-until explicitly accepted. "Trusted" removes authentication, not consent — an
-injected instruction never auto-executes. A seam is reserved for a future
-per-target allowlist (e.g. only certain peers may target a broad-permission
-session) without committing to an auth system now.
+peers (N3).
+
+**Consent is convention + framing + host guards — not a capability gate (review
+#11).** Be honest about what can and cannot be enforced: a delivered `request`'s
+body is *already live text in the recipient's context* — there is no way to
+"un-inject" it. `ipc_accept` only flips broker bookkeeping (`Delivery → accepted`);
+it unlocks no capability. So "inert until accepted" protects the IPC *machinery*
+(the broker won't mark a request handled, the sender won't see a result), and the
+recipient agent is *instructed* by the proposal framing not to act without
+accepting — but the real, load-bearing backstop is that **any action the recipient
+takes still passes through the host's own PreToolUse guardrails** (NFR6/B4),
+exactly as if the recipient had decided it alone. Treat an incoming `request` as
+untrusted text, same as any other prompt content.
+
+**Allowlist is a guardrail, not a security boundary (review #12).** A reserved
+seam — a per-target allowlist consulted before routing/surfacing a `request`
+(e.g. only certain peers may target a broad-permission session) — guards against
+*accidental or confused* targeting. Under the no-auth, all-trusted model it is
+**not** a defense against a malicious peer (any process reaching the socket could
+self-register as an allowed alias). Documented as such; a real sender-identity
+check is deferred with N3.
 
 ## 12. Success criteria
 
 - **SC1** — Two sessions in two terminals complete a `query`→`response` round
-  trip with the recipient surfacing the question unprompted (UC1).
+  trip with the recipient surfacing the question **without a check-command**, at
+  its next turn (UC1). (True idle-push needs `--channels`; see §10. Verified
+  manually on the real host — not by `bun test` alone.)
 - **SC2** — A `request` is delivered, surfaced as a proposal, accepted, acted
   on, and its result returned; declining and timeout both yield a clean
   `response{error}`.

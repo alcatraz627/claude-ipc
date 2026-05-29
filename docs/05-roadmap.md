@@ -24,14 +24,18 @@
   moment they exist and must stay green through every later phase.
 - **Dogfooding.** From **Phase 4** onward, build claude-ipc using claude-ipc:
   the build session registers an alias and exchanges real handoffs with sibling
-  sessions (notably a test session reporting failures back).
+  sessions (notably a test session reporting failures back). Note: messages are
+  durably persisted (append-before-ack) from Phase 1, so a Phase-4 broker crash
+  does **not** lose acknowledged messages — only the graceful degraded-mode and
+  auto-reconcile polish lands in Phase 6 (review #10). Keep early dogfood handoffs
+  tolerant of a manual broker restart until Phase 6.
 
 ---
 
 ## Phase 0 — Host-fact spike + scaffold (prep)
 
 - **Goal:** confirm the host assumptions before building on them; stand up the
-  Python project.
+  Bun/TS project.
 - **Deliverables:** `package.json` + Bun env (`tsconfig.json`, smoke test);
   confirmation notes for —
   (a) UserPromptSubmit/SessionStart hooks receive `session_id`+`cwd` and inject
@@ -48,29 +52,37 @@
 
 ### Phase 1 — Models, protocol, storage
 - **Goal:** the durable + queueing core, no network yet.
-- **Deliverables:** `models.py`, `protocol.py` (frame round-trip), `storage/base.py`,
-  `storage/sqlite_backend.py` (append/get/update_state/enqueue/pending/origin_of/
-  awaiting_past_ttl/registry snapshot/history/replay_inflight).
+- **Deliverables:** `models.ts` (Message/Delivery/Awaiting + unions),
+  `protocol.ts` (frame round-trip), `storage/base.ts` (StorageBackend interface),
+  `storage/sqliteBackend.ts` (`bun:sqlite`; immutable `messages` + `deliveries` +
+  `awaiting`), AND `storage/memoryBackend.ts` — a trivial in-memory backend as the
+  SECOND implementation that validates the interface early (review #13). Also: a
+  cheap empirical cross-session transcript-read check (review #16) folded in here.
 - **Testing:** unit — message (de)serialization; protocol length-prefix round
-  trips incl. truncation/oversize; backend CRUD + idempotent append; replay
-  rebuilds queues + awaiting from a seeded DB.
-- **Done when:** backend passes its unit suite against a temp-file DB.
+  trips incl. truncation/oversize; backend append (idempotent) + per-recipient
+  delivery & consent; awaiting open/close + **reply-after-timeout drop**; replay
+  rebuilds un-consumed deliveries + open awaiting from a seeded DB. **Run the
+  shared unit suite against BOTH backends** (parity from day one).
+- **Done when:** both backends pass the shared unit suite.
 
 ### Phase 2 — Broker server + registry + thin client
 - **Goal:** two processes exchange a message end-to-end (on-demand check).
-- **Deliverables:** `broker/server.py`, `router.py`, `registry.py`, `client.py`;
-  ops `register/heartbeat/leave/send/check/list`.
+- **Deliverables:** `broker/server.ts`, `broker/router.ts`, `broker/registry.ts`,
+  `client.ts`; ops `register/heartbeat/leave/send/check/list`; registry snapshot
+  on register/leave + periodic (aliases survive restart, review #21); alias
+  rebind transfers the queue + reports collision (review #3).
 - **Testing:** integration — start broker on temp socket; client A registers,
   client B registers; A `send` query to B; B `check` receives it; `list` shows
-  both; unknown-alias send → `no_peer`.
+  both; unknown-alias send → `no_peer`; alias rebind re-routes the old queue.
 - **Done when:** the integration round-trip passes; `SC-partial` (delivery via
   on-demand check) demonstrated.
 
 ### Phase 3 — Correlation, consent, sweeper, errors
 - **Goal:** request/reply with consent and clean error semantics.
 - **Deliverables:** `reply/accept/decline/cancel` ops; `ipc_await` (await op);
-  `sweeper.py` (TTL → `response{error,timeout}`); `no_peer`/`declined` synthesis;
-  correlation by `corr_id`; conversation threading fields.
+  `broker/sweeper.ts` (TTL → close awaiting + `response{error,timeout}`; a reply
+  after close is dropped, review #9); `no_peer`/`declined` synthesis; correlation
+  by `corr_id`; conversation threading fields.
 - **Testing:** integration — query→response correlated; request→accept→terminal
   result; request→decline→`error,declined`; await returns reply or `timeout`;
   sweeper with injected clock expires awaiting → `timeout`.
@@ -87,7 +99,7 @@
 
 ### Phase 4 — MCP server + CLI (dogfooding begins)
 - **Goal:** agent and human can use the system; start dogfooding.
-- **Deliverables:** `mcp_server.py` (all `ipc_*` tools), `cli.py`
+- **Deliverables:** `mcpServer.ts` (all `ipc_*` tools), `cli.ts`
   (send/inbox/peers/log/accept/decline/tail-stub/daemon). Register the build
   session; perform a first real handoff.
 - **Testing:** integration — each tool maps to the right op + result shape; CLI
@@ -98,8 +110,9 @@
 
 ### Phase 5 — Hooks + install + proactive receipt
 - **Goal:** receive without being reminded (turn-boundary + resume rungs).
-- **Deliverables:** `hooks/*.py` + bash shims; alias resolution; additive
-  `settings.json` registration installer; idempotent hook delivery marks.
+- **Deliverables:** `src/hooks/*.ts` (compiled to binaries) + bash shims; alias
+  resolution; additive `settings.json` registration installer; idempotent hook
+  delivery marks.
 - **Testing:** integration — invoke hook entrypoints with synthetic stdin;
   assert injected `additionalContext` contains pending; assert idempotency (no
   double-inject); SessionStart drains an offline backlog in order.
@@ -120,13 +133,16 @@
 - Review scope vs FR12, NFR1–NFR6, SC1/SC3/SC5. Update roadmap + CC todos.
 - **Phase T2 — enumerate tests:** list every test for surfaces + resilience
   (hooks, CLI, MCP tools, degraded mode, replay). Write them. **Whole suite green.**
+- **Manual host-in-the-loop acceptance:** run the documented SC1 (proactive
+  receipt on the real host) + SC6 (real guardrail stops a real action) scripts —
+  NOT covered by `bun test`. Record pass/fail in the gate notes.
 - **Commit & push.**
 
 ## Triad 3 — Enhancements & integration
 
 ### Phase 7 — Channel adapter (optional push)
 - **Goal:** top ladder rung where the host supports it.
-- **Deliverables:** `channel_adapter.py` with feature detection; dispatcher uses
+- **Deliverables:** `channelAdapter.ts` with feature detection; dispatcher uses
   push when available, falls back silently.
 - **Testing:** integration with a **fake channel** — push delivers to a running
   peer; absence falls back to hook rung; no regression when off.
@@ -134,7 +150,7 @@
 
 ### Phase 8 — honker backend (swappable substrate)
 - **Goal:** validate storage swappability without betting on alpha software.
-- **Deliverables:** `storage/honker_backend.py` implementing `StorageBackend`;
+- **Deliverables:** `storage/honkerBackend.ts` implementing `StorageBackend`;
   `config.backend="honker"` selection.
 - **Testing:** **backend-parity** — run the core integration suite against the
   honker backend; document any honker-specific caveats/failures.
@@ -157,6 +173,9 @@
 - **Phase T3 — enumerate tests:** complete the matrix (all SC1–SC7 as
   integration regressions + integration coverage). Write any gaps. **Full suite
   green.**
+- **Manual host-in-the-loop acceptance:** re-run SC1/SC6 scripts + record SC7
+  (a real developer handoff completed without manual copy-paste) — SC7 is manual
+  by definition.
 - **Commit & push.** Tag **v0.1 — dogfood-complete**.
 
 ---
@@ -170,7 +189,14 @@
 - **Resilience** — broker kill/restart, degraded-mode persistence, replay
   no-loss.
 - **Regression** — SC1–SC7 scenarios, green from creation onward.
-- **Backend-parity** — the core suite re-run against each `StorageBackend`.
+- **Backend-parity** — the core suite re-run against each `StorageBackend`
+  (from Phase 1, via the in-memory + sqlite pair).
+- **Manual host-in-the-loop** — SC1 (the *real* host fires the UPS hook →
+  proactive receipt), SC6 (a *real* PreToolUse guardrail stops a *real* action),
+  and SC7 (a real developer handoff) **cannot** be proven by `bun test`:
+  synthetic-stdin tests prove the hook *formats* injection, not that the host
+  *fires* it (review #17). Each has a documented manual acceptance script run at
+  its gate; the roadmap marks these three SCs explicitly as not-`bun test`-provable.
 
 ## Definition of done (per phase)
 

@@ -72,33 +72,58 @@ type. Discriminated where useful.
 export type Kind = "inform" | "query" | "request" | "response" | "control";
 export type Status = "ok" | "error";
 export type ErrorCode = "timeout" | "no_peer" | "declined" | "internal";
-export type State =
-  | "queued" | "delivered" | "surfaced" | "consumed"
-  | "accepted" | "responded" | "expired";
+// Per-recipient delivery lifecycle — lives on Delivery, NOT on Message. A
+// broadcast has one Delivery per recipient, each with its own state.
+export type DeliveryState =
+  | "queued" | "delivered" | "surfaced" | "consumed"  // read lifecycle
+  | "accepted" | "declined";                          // request consent (per recipient)
 export type ControlOp =
   | "register" | "heartbeat" | "leave" | "cancel" | "claim" | "release";
 export type DeliveredVia = "channel" | "hook" | "resume" | "pull" | null;
 
 export interface ContextPtr { sessionId: string; transcriptPath: string; cwd: string; }
 
+// A Message is an IMMUTABLE fact: once appended it never changes. Mutable
+// per-recipient lifecycle lives in Delivery; the sender's open/closed view of a
+// query/request lives in Awaiting. This split is what lets one broadcast message
+// carry N independent delivery states (review findings #7/#8/#14).
 export interface Message {
   id: string;                 // "msg-" + short id
   kind: Kind;
   fromAlias: string;
-  toAlias: string;            // alias or "*"
+  toAlias: string;            // a concrete alias, or "*" for broadcast
   body: string;
   conversationId: string | null;
-  corrId: string | null;      // set on response/cancel
-  status: Status | null;
-  errorCode: ErrorCode | null;
-  terminal: boolean;
+  corrId: string | null;      // origin id, on response/cancel
+  status: Status | null;      // response only — intrinsic, immutable
+  errorCode: ErrorCode | null;// response only
+  terminal: boolean;          // response only — false = ack/progress
   op: ControlOp | null;
   contextPtr: ContextPtr | null;
   ttlS: number | null;
-  priority: number;
-  ts: number;                 // epoch seconds
-  state: State;
-  deliveredVia: DeliveredVia;
+  ts: number;                 // epoch seconds, set at append
+}
+
+// Per-(message, recipient) delivery + consent. A broadcast yields one row per
+// recipient, each with its own rung and state — what a single column on Message
+// could not represent.
+export interface Delivery {
+  msgId: string;
+  toAlias: string;            // the concrete recipient
+  via: DeliveredVia;          // channel | hook | resume | pull | null
+  state: DeliveryState;
+  ts: number;
+}
+
+// The sender's view of an outstanding query/request: open until a terminal
+// response correlates to it, or it is timed out. A timeout CLOSES it, so a late
+// reply is dropped rather than producing a contradictory second response
+// (review finding #9).
+export interface Awaiting {
+  originId: string;           // the query/request id (== corrId of its responses)
+  expiresAt: number;
+  closed: boolean;
+  closedReason: "responded" | "timeout" | "cancelled" | null;
 }
 
 export interface RegistryEntry {
@@ -111,45 +136,63 @@ export interface RegistryEntry {
 
 ```ts
 export interface StorageBackend {
-  // durability
+  // messages are immutable facts
   append(m: Message): void;                       // idempotent on id
   get(id: string): Message | null;
-  updateState(id: string, state: State, fields?: Partial<Message>): void;
-  // queueing
-  enqueue(alias: string, id: string): void;
-  pending(alias: string, opts?: { consume?: boolean }): Message[];
-  markDelivered(id: string, via: DeliveredVia): void;
-  markConsumed(id: string): void;
-  // correlation / timeouts
+  // per-recipient delivery + consent (Delivery rows)
+  enqueue(msgId: string, alias: string): void;            // insert Delivery(queued)
+  pending(alias: string, opts?: { consume?: boolean }): Message[]; // queued|delivered|surfaced
+  markDelivered(msgId: string, alias: string, via: DeliveredVia): void;
+  markConsumed(msgId: string, alias: string): void;
+  setConsent(msgId: string, alias: string, accepted: boolean): void; // request accept/decline
+  deliveriesFor(msgId: string): Delivery[];               // all recipients (broadcast fan-out)
+  // sender's outstanding query/request (Awaiting rows)
+  openAwaiting(originId: string, expiresAt: number): void;
+  closeAwaiting(originId: string, reason: Awaiting["closedReason"]): void;
+  isAwaitingOpen(originId: string): boolean;              // false ⇒ drop a late reply (#9)
+  awaitingPastTtl(now: number): Awaiting[];               // open AND expired
   originOf(corrId: string): Message | null;
-  awaitingPastTtl(now: number): Message[];
   // registry snapshot (warm restart)
   saveRegistry(entries: RegistryEntry[]): void;
   loadRegistry(): RegistryEntry[];
   // audit
   history(q: { peer?: string; since?: number; conversationId?: string }): Message[];
-  // lifecycle
-  replayInflight(): { queues: Record<string, string[]>; awaiting: Message[] };
+  // lifecycle — rebuild from un-consumed deliveries + open awaiting
+  replayInflight(): { deliveries: Delivery[]; awaiting: Awaiting[] };
 }
 ```
 
 ### 4.1 SQLite backend (default, `bun:sqlite`)
 ```sql
+-- immutable message facts (never UPDATEd)
 CREATE TABLE IF NOT EXISTS messages (
   id TEXT PRIMARY KEY, kind TEXT, from_alias TEXT, to_alias TEXT, body TEXT,
   conversation_id TEXT, corr_id TEXT, status TEXT, error_code TEXT,
-  terminal INTEGER, op TEXT, context_ptr TEXT, ttl_s INTEGER, priority INTEGER,
-  ts REAL, state TEXT, delivered_via TEXT);
-CREATE INDEX IF NOT EXISTS ix_msg_inbox ON messages(to_alias, state);
-CREATE INDEX IF NOT EXISTS ix_msg_corr  ON messages(corr_id);
-CREATE INDEX IF NOT EXISTS ix_msg_ts    ON messages(ts);
+  terminal INTEGER, op TEXT, context_ptr TEXT, ttl_s INTEGER, ts REAL);
+CREATE INDEX IF NOT EXISTS ix_msg_corr ON messages(corr_id);
+CREATE INDEX IF NOT EXISTS ix_msg_ts   ON messages(ts);
+
+-- per-recipient delivery + consent (one row per recipient; broadcast => N rows)
+CREATE TABLE IF NOT EXISTS deliveries (
+  msg_id TEXT, to_alias TEXT, via TEXT, state TEXT, ts REAL,
+  PRIMARY KEY (msg_id, to_alias));
+CREATE INDEX IF NOT EXISTS ix_del_inbox ON deliveries(to_alias, state);
+
+-- sender's outstanding query/request: open until a terminal response or timeout
+CREATE TABLE IF NOT EXISTS awaiting (
+  origin_id TEXT PRIMARY KEY, expires_at REAL, closed INTEGER, closed_reason TEXT);
+CREATE INDEX IF NOT EXISTS ix_await_open ON awaiting(closed, expires_at);
+
+-- registry warm-restart snapshot
 CREATE TABLE IF NOT EXISTS registry_snapshot (
   alias TEXT PRIMARY KEY, session_id TEXT, cwd TEXT, caps TEXT,
   pid INTEGER, last_seen REAL, status TEXT);
 ```
 `bun:sqlite` runs in WAL mode (`PRAGMA journal_mode=WAL`) for concurrent reads.
-Append-only semantics: rows inserted once; `updateState` mutates only
-`state`/`delivered_via`/response-linkage. The table is the full message history.
+`messages` is strictly append-only (the full history, never mutated). All mutable
+state lives in `deliveries` (per-recipient read/consent lifecycle) and `awaiting`
+(the sender's open/closed request view). Separating them is what makes broadcast
+fan-out, per-recipient idempotency, and reply-after-timeout well-defined.
 
 ### 4.2 honker backend (optional, alpha)
 Implements the same interface using honker's `queue()` (per-recipient queue),
@@ -188,6 +231,13 @@ broker op via `client.ts`. Schemas (args → result):
 
 Tool descriptions instruct: **send names an explicit target** (never inferred);
 an incoming `request` is a **proposal** requiring `ipc_accept` before acting.
+
+**`ipc_check` consume vs. consent (review #14).** `consume` marks the recipient's
+*Delivery* `consumed` (read) — a read-tracking concern only. It does NOT drop a
+`request`'s consent obligation: `ipc_accept`/`ipc_decline` operate by `msgId` and
+flip the Delivery to `accepted|declined` regardless of consume state. So reading a
+request (even with `consume=true`) never makes it unaccept-able, and a request is
+never silently lost between "read" and "decided."
 
 ## 7. Hook contracts (`src/hooks/*`, shims in `hooks/`)
 
@@ -228,12 +278,23 @@ foreground run. Help text follows the gcc CLI-help convention.
 ## 9. Broker runtime (`broker/server.ts`)
 
 - `main()` opens the socket (`Bun.listen({ unix })`), instantiates the configured
-  `StorageBackend`, `replayInflight()` to rebuild queues + awaiting set, and loads
-  the registry snapshot (peers start `offline` until a heartbeat arrives).
+  `StorageBackend`, `replayInflight()` to rebuild un-consumed deliveries + open
+  awaiting, and loads the registry snapshot (peers start `offline` until a
+  heartbeat arrives — but their aliases remain *known*, see snapshot cadence).
 - The socket handler frames requests and dispatches via `router`.
-- A `setInterval` task runs `sweeper.tick(now)` (default 5 s): expire awaiting
-  query/request past `ttlS` → synthesize `response{error,timeout}` → route to
-  origin; age registry entries (live→idle→offline).
+- A `setInterval` task runs `sweeper.tick(now)` (default 5 s): for each
+  `awaitingPastTtl(now)`, `closeAwaiting(reason:"timeout")` and synthesize
+  `response{error,timeout}` → route to origin; age registry entries
+  (live→idle→offline). A reply whose `isAwaitingOpen(corrId)` is already false is
+  dropped (the origin closed by timeout) — no duplicate/contradictory response.
+- **Registry snapshot cadence (review #21):** the snapshot is written on every
+  `register`/`leave` plus a periodic flush, so a known alias survives a broker
+  restart — offline-queueing (FR8/SC3) holds *across* restarts, not just within
+  one broker lifetime.
+- **`pending` returns ALL undelivered (review #19):** the UPS-hook `check` and
+  delivery use the same `pending` set (any `deliveries` row not yet `consumed`),
+  so a running peer mis-marked `offline` after a broker restart still receives
+  queued messages at its next turn — it does not need to "resume".
 - `dispatch.deliver(msg)` picks the highest available ladder rung; channel push
   only if `channelAdapter.available()`.
 
@@ -250,10 +311,23 @@ surface for a dead persistent daemon.
 ## 11. Degraded-mode client (`client.ts`)
 
 Tries the socket; on connect failure it (a) for sends, opens the SQLite DB
-directly and appends with `degraded:true` (the message persists and the broker
-reconciles on return); (b) for checks, reads pending directly from the DB. It
-surfaces `daemonDown:true` so CLI/monitor can report it. Push + timeout-synthesis
-are unavailable until the broker returns.
+directly, `append`s the immutable message and `enqueue`s a `deliveries` row
+(`state=queued`); (b) for checks, reads `pending` directly and `markConsumed`s
+what it surfaces. It surfaces `daemonDown:true` so CLI/monitor can report it.
+
+**Reconcile pass (review #4).** Because all state lives in the shared tables, the
+broker needs no special degraded log: on return it simply processes `deliveries`
+rows still in `state=queued` (dispatch + `markDelivered`) and `awaiting` rows
+still `open`. A delivery a degraded reader already `consumed` is skipped, so there
+is **no double-surface**; a `queued` row the degraded sender wrote is picked up,
+so there is **no loss**. The single mutable-state location is the coordination
+mechanism — there are not "two writers with separate views."
+
+**Limits while down (review #2):** the degraded client has no in-memory registry,
+so it cannot classify a send to an *unknown* alias as `no_peer` — it persists the
+message; on broker return the router resolves it (routes if the alias is known, or
+`closeAwaiting(no_peer)` if not). Proactive push and active timeout-synthesis are
+also unavailable until the broker returns. Nothing acknowledged is lost.
 
 ## 12. Configuration (`config.toml`, imported by `config.ts`)
 

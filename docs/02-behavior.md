@@ -14,7 +14,11 @@
   incoming messages on its own. [G2, G3, NFR1, N4]
 - **B2 — Delivered content is inert until acted on deliberately.** An incoming
   `inform`/`query`/`response` is information. An incoming `request` is a
-  *proposal* — nothing happens until an explicit accept. [G5, FR6]
+  *proposal* — the IPC machinery does nothing until an explicit accept. Caveat
+  (review #11): the request's text is already in the recipient's context and
+  cannot be un-injected; "inert" is enforced by the proposal framing + the host's
+  own guardrails on any resulting action (B4), not by a capability lock — treat
+  it as untrusted prompt content. [G5, FR6, NFR6]
 - **B3 — Nothing is silently lost or silently failed.** Every acknowledged send
   has a queryable lifecycle; undeliverable messages produce a visible error;
   a downed broker is visible. [G6, G8, NFR3, NFR5]
@@ -70,7 +74,11 @@ spawn a correlated `response` chain.
   threshold is reported `idle`, and beyond a longer threshold `offline`. [FR9]
 - `peers` / `ipc_list` returns each live peer's alias, cwd, last-seen, and
   status. Re-registering the same alias from a new session rebinds it (last
-  writer wins) and the prior binding is reported as replaced. [FR9]
+  writer wins); the alias's pending queue is **alias-keyed, not session-keyed**,
+  so it transfers to the new session, and the displaced session is reported as
+  replaced. Aliases default from the cwd basename, so sibling worktrees with the
+  same dir name would collide — set `CLAUDE_IPC_ALIAS` to disambiguate; the broker
+  reports a collision on register. [FR9] (review #3)
 - On clean exit a peer emits `control:leave`; on unclean exit, liveness staleness
   is the fallback signal. [FR1]
 
@@ -94,10 +102,12 @@ spawn a correlated `response` chain.
 The recipient surfaces pending messages at the earliest opportunity for its
 state, per the spec's delivery ladder [§10, FR3]:
 
-- **Running with a push channel:** messages surface proactively while the session
-  is otherwise idle.
-- **Running without a push channel:** messages surface at the next turn boundary
-  (the next time the recipient takes a turn).
+- **Running with a push channel** (requires `--channels`, NOT in the installed
+  host today — see 00): messages *would* surface proactively while the session is
+  idle. A future upgrade, not a current guarantee.
+- **Running without a push channel** (the current default): messages surface at
+  the next turn boundary — the next time the recipient takes a turn. Unprompted
+  (no check-command needed) but not real-time during genuine idle. (review #5/#6)
 - **Offline:** messages are held and surface on next start/resume (§8).
 - **On demand:** the recipient (or human) can pull pending messages at any time.
 
@@ -160,7 +170,8 @@ it is consumed. [FR3, FR4, NFR2]
 | Situation | Observable result |
 |-----------|-------------------|
 | Send to unknown alias | immediate `response{error,no_peer}` + live-peer list |
-| Query/request unanswered past TTL | `response{error,timeout}` to sender |
+| Query/request unanswered past TTL | `response{error,timeout}` to sender; the awaiting origin is **closed** |
+| Reply arrives after timeout was synthesized | dropped — origin already closed; recipient told "too late" (no duplicate/contradictory response) (review #9) |
 | Recipient declines a request | `response{error,declined}` to sender |
 | Recipient's action fails a guardrail / errors | `response{error,internal}` with detail |
 | Broker unavailable | degraded mode (§10); a status surface shows it is down |
@@ -170,8 +181,10 @@ it is consumed. [FR3, FR4, NFR2]
 - **Sends** still persist to the durable log directly; they are routed when the
   broker returns.
 - **Receipts** still occur at turn boundaries by reading the durable log.
-- **Lost while down:** proactive push and active error-synthesis (timeouts are
-  evaluated on broker return).
+- **Lost while down:** proactive push and active error-synthesis — including
+  `no_peer` *classification* (the degraded client has no registry, so a send to an
+  unknown alias persists and is resolved — routed or `no_peer` — on broker return,
+  not immediately). Timeouts are also evaluated on broker return. (review #2)
 - The downed broker is reported by the status command and the monitor; it does
   not present as "no messages." On broker return, queued work resumes and no
   acknowledged message is lost.
@@ -183,7 +196,10 @@ it is consumed. [FR3, FR4, NFR2]
   - `inbox [<alias>]` — pending messages for an alias
   - `peers` — live peers + status
   - `log [--peer <a>] [--since <t>]` — message history
-  - `accept <msg-id>` / `decline <msg-id>` — approve/refuse a pending action
+  - `accept <msg-id>` / `decline <msg-id>` — approve/refuse a pending action. A
+    human `accept` marks broker state ACCEPTED and surfaces an "approved, proceed"
+    note back to the target *agent*, which still performs the work — the CLI does
+    not execute the action itself (review #15)
   - `tail` — live message-flow monitor
   - `daemon status|start|stop` — broker control
 - The monitor shows message flow and peer liveness at a glance, so the human can

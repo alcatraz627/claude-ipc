@@ -48,16 +48,19 @@ Independent of the gcc subconscious daemon (separate crash domain).
 
 ### 2.2 Storage backend (swappable interface) — key decision
 A single interface (`StorageBackend`) abstracts durability + queueing so the
-substrate is replaceable without touching tool/hook contracts [NFR7]. Two
-implementations targeted:
-- **JSONL/SQLite hand-rolled** — append-only log + a queue table + a registry
-  table. Full control, zero exotic deps. Default for Phase 1.
+substrate is replaceable without touching tool/hook contracts [NFR7].
+Implementations:
+- **in-memory** — a trivial backend used by tests AND as the *second*
+  implementation that validates the abstraction EARLY (Phase 1–2), so the
+  interface is proven by two impls long before honker — not discovered at Phase 8
+  (review #13).
+- **SQLite hand-rolled** (`bun:sqlite`) — the default: immutable `messages` +
+  `deliveries` + `awaiting` tables. Full control, zero exotic deps.
 - **honker** (SQLite extension: durable pub/sub + streams w/ offsets +
-  at-least-once queue + scheduler) — maps the queue to honker `queue()`, the log
-  to a honker `stream()`, timeouts to the honker scheduler, broadcast to
-  `notify()`. Prototyped behind the same interface; **alpha**, so opt-in.
-The broker holds a backend instance; choosing honker vs hand-rolled is config,
-not a rewrite.
+  at-least-once queue + scheduler) — maps deliveries to `queue()`, the log to a
+  `stream()`, timeouts to the scheduler, broadcast to `notify()`. **Alpha**, so
+  opt-in and deferred to Phase 8.
+The broker holds one backend instance; the choice is config, not a rewrite.
 
 ### 2.3 MCP server (per-session thin client)
 Each session spawns its own stdio MCP server (the host spawns one instance per
@@ -121,11 +124,14 @@ broker correlates → sender's message RESPONDED.
 
 ## 4. Data model (logical)
 
-- **Message:** `id, conversation_id, corr_id, from_alias, to_alias|*, kind,
-  status, error_code, terminal, body, context_ptr{session_id,path,cwd}, ttl,
-  priority, ts, state, delivered_via`.
+- **Message (immutable):** `id, conversation_id, corr_id, from_alias, to_alias|*,
+  kind, status, error_code, terminal, op, body, context_ptr{session_id,path,cwd},
+  ttl, ts`. Never mutated after append.
+- **Delivery (per recipient):** `msg_id, to_alias, via, state, ts` — a broadcast
+  yields one row per recipient; this table *is* the queue (rows in `state=queued`).
+- **Awaiting (sender's open request):** `origin_id, expires_at, closed,
+  closed_reason`.
 - **Registry entry:** `alias, session_id, cwd, caps[], pid, last_seen, status`.
-- **Queue:** per-recipient ordered set of undelivered/unconsumed message ids.
 The log is the source of truth for history; the registry is in-memory with a
 periodic snapshot for restart warm-up; the queue is derivable from the log but
 materialized for fast lookup.
@@ -148,15 +154,18 @@ backend swap, not a Phase-1 concern [N2].
 | on-demand | `ipc_check` tool / CLI `inbox` | always |
 
 The dispatcher picks the highest available rung per recipient; lower rungs are
-always-on fallbacks. Idempotency is enforced by `delivered_via` + per-message
-delivery marks so a message is injected at most once by the proactive path.
+always-on fallbacks. Idempotency is enforced **per recipient** by the `deliveries`
+row's `state`: a message already marked `delivered` for an alias is not re-injected
+by the proactive path.
 
 ## 7. Liveness & registry
 
-Liveness reuses the host/gcc heartbeat signal where available; otherwise the
-`heartbeat`/`Stop` hooks feed it. The broker ages entries: fresh → `live`,
-stale → `idle`, very stale → `offline`. `ipc_list` reads the in-memory registry,
-not file timestamps, so it is authoritative and cheap.
+Liveness is fed by IPC's own `register`/`heartbeat`/`Stop` hooks — the broker does
+NOT depend on any external/gcc heartbeat signal (review #18 dropped that claim).
+The broker ages entries: fresh → `live`, stale → `idle`, very stale → `offline`.
+`ipc_list` reads the in-memory registry (snapshotted to disk on change +
+periodically), not file timestamps, so it is authoritative and cheap — and known
+aliases survive a broker restart.
 
 ## 8. Integration seams
 
