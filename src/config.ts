@@ -9,6 +9,7 @@ export const config = {
   home,
   socketPath: process.env.CLAUDE_IPC_SOCKET ?? join(home, "run", "ipc.sock"),
   dbPath: process.env.CLAUDE_IPC_DB ?? join(home, "data", "ipc.sqlite"),
+  pidPath: join(home, "run", "broker.pid"),
   defaultTtlS: 3600,
   sweepIntervalS: 5,
   liveness: { idleS: 300, offlineS: 1800 },

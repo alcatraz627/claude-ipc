@@ -7,8 +7,10 @@
  * args + an optional socket path); the file's tail wires it to the real process.
  */
 
+import { readFileSync } from "node:fs";
 import { Client } from "./client.ts";
 import { config } from "./config.ts";
+import { monitorSnapshot } from "./monitor.ts";
 
 type FlagValue = string | boolean;
 
@@ -131,12 +133,46 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
             return 1;
           }
         }
-        out(`daemon ${sub}: launchd-managed in Phase 6 — run \`bun run broker\` to start manually`);
-        return 0;
+        if (sub === "start") {
+          try {
+            await client.list();
+            out("broker already up");
+            return 0;
+          } catch {
+            // down → start it
+          }
+          const proc = Bun.spawn(["bun", "run", `${import.meta.dir}/broker/server.ts`], {
+            stdio: ["ignore", "ignore", "ignore"],
+          });
+          proc.unref();
+          out(`broker starting (pid ${proc.pid})`);
+          return 0;
+        }
+        if (sub === "stop") {
+          try {
+            const pid = Number(readFileSync(config.pidPath, "utf8").trim());
+            process.kill(pid, "SIGTERM");
+            out(`stopped broker (pid ${pid})`);
+            return 0;
+          } catch {
+            out("broker not running (no pidfile)");
+            return 1;
+          }
+        }
+        console.error(`daemon: unknown subcommand "${sub}" (status|start|stop)`);
+        return 2;
       }
-      case "tail":
-        out("tail: live monitor lands in Phase 6. Use `claude-ipc peers` + `claude-ipc log` for now.");
-        return 0;
+      case "tail": {
+        if (flags.once === true || flags.once === "true") {
+          out(await monitorSnapshot(client));
+          return 0;
+        }
+        for (;;) {
+          process.stdout.write("\x1b[2J\x1b[H");
+          out(await monitorSnapshot(client));
+          await new Promise((r) => setTimeout(r, 1000));
+        }
+      }
       default:
         out(USAGE);
         return cmd === "help" ? 0 : 2;

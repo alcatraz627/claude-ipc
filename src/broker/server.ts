@@ -8,7 +8,7 @@
  * is the testable core that takes a router and a socket path.
  */
 
-import { mkdirSync, unlinkSync } from "node:fs";
+import { mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { config } from "../config.ts";
 import { encodeFrame, FrameDecoder, type Request } from "../protocol.ts";
@@ -63,6 +63,17 @@ export function main(): void {
   const mkId = (): string => `msg-${crypto.randomUUID().slice(0, 8)}`;
   setInterval(() => tickSweeper(backend, nowS, mkId), config.sweepIntervalS * 1000);
   startBroker({ router, socketPath: config.socketPath });
+  writeFileSync(config.pidPath, String(process.pid));
+  const cleanup = (): void => {
+    try {
+      unlinkSync(config.pidPath);
+    } catch {
+      // already gone
+    }
+    process.exit(0);
+  };
+  process.on("SIGTERM", cleanup);
+  process.on("SIGINT", cleanup);
   console.log(
     `[claude-ipc] broker up on ${config.socketPath} ` +
       `(replayed ${inflight.deliveries.length} deliveries, ${inflight.awaiting.length} awaiting)`,

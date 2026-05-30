@@ -6,7 +6,9 @@
  * single source of truth.
  */
 
+import { makeMessage } from "./models.ts";
 import { encodeFrame, FrameDecoder, PROTOCOL_VERSION, type Op, type Request, type Response } from "./protocol.ts";
+import { SqliteBackend } from "./storage/sqliteBackend.ts";
 
 /** Send one request and resolve with the broker's one response. */
 export function request(socketPath: string, req: Request): Promise<Response> {
@@ -60,13 +62,63 @@ export interface SendArgs {
 }
 
 export class Client {
-  constructor(private socketPath: string) {}
+  /**
+   * @param fallback if set, broker-unreachable sends/checks persist and read
+   *   straight from the SQLite DB instead of throwing (degraded mode).
+   */
+  constructor(
+    private socketPath: string,
+    private fallback?: { dbPath: string },
+  ) {}
 
   // Results are intentionally loosely typed at this boundary; callers assert shape.
   private async call(op: Op, args: Record<string, unknown>, sessionId?: string): Promise<any> {
-    const res = await request(this.socketPath, { v: PROTOCOL_VERSION, op, args, sessionId });
+    let res: Response;
+    try {
+      res = await request(this.socketPath, { v: PROTOCOL_VERSION, op, args, sessionId });
+    } catch (e) {
+      if (this.fallback) return this.degraded(op, args);
+      throw e;
+    }
     if (!res.ok) throw new Error(`${res.error.code}: ${res.error.message}`);
     return res.result;
+  }
+
+  /**
+   * Broker unreachable: keep working with reduced function. Sends persist (the
+   * broker routes/reconciles them on return); checks read the durable log. Lost
+   * while down: proactive push, no_peer classification, and timeout synthesis.
+   */
+  private degraded(op: Op, args: Record<string, any>): unknown {
+    const db = new SqliteBackend(this.fallback!.dbPath);
+    try {
+      if (op === "send") {
+        const id = `msg-${crypto.randomUUID().slice(0, 8)}`;
+        db.append(
+          makeMessage({
+            id,
+            kind: args.kind,
+            fromAlias: args.from,
+            toAlias: args.to,
+            ts: Math.floor(Date.now() / 1000),
+            body: args.body ?? "",
+            conversationId: args.conversationId ?? null,
+            ttlS: args.ttlS ?? null,
+          }),
+        );
+        if (args.to !== "*") db.enqueue(id, args.to);
+        return { msgId: id, recipients: args.to === "*" ? [] : [args.to], daemonDown: true };
+      }
+      if (op === "check") {
+        return { messages: db.pending(args.alias, { consume: args.consume ?? false }), daemonDown: true };
+      }
+      if (op === "deliver") {
+        return { messages: db.claimForDelivery(args.alias, args.via ?? "hook"), daemonDown: true };
+      }
+      throw new Error(`broker down; "${op}" is unavailable in degraded mode`);
+    } finally {
+      db.close();
+    }
   }
 
   register(alias: string, info: RegisterInfo): Promise<any> {

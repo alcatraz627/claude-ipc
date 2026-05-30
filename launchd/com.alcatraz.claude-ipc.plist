@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  claude-ipc broker — a KeepAlive LaunchAgent (a persistent daemon, NOT a
+  scheduled cron, so no companion calendar event is required; observe it via
+  `claude-ipc daemon status` + `claude-ipc tail`).
+
+  Install:   cp launchd/com.alcatraz.claude-ipc.plist ~/Library/LaunchAgents/
+             launchctl load ~/Library/LaunchAgents/com.alcatraz.claude-ipc.plist
+  Uninstall: launchctl unload ~/Library/LaunchAgents/com.alcatraz.claude-ipc.plist
+  Adjust the two absolute paths below if bun or the repo move.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.alcatraz.claude-ipc</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/bun</string>
+    <string>run</string>
+    <string>/Users/alcatraz627/Code/Claude/claude-ipc/src/broker/server.ts</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/Users/alcatraz627/.claude-ipc/logs/broker.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/alcatraz627/.claude-ipc/logs/broker.err.log</string>
+</dict>
+</plist>
