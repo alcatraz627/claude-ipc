@@ -15,7 +15,10 @@
     "build:cli": "bun build src/cli.ts --compile --outfile dist/claude-ipc",
     "build:hooks": "bun build src/hooks/userPromptSubmit.ts --compile --outfile dist/ipc-ups"
   },
-  "dependencies": {},
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^4.4.3"
+  },
   "devDependencies": {
     "typescript": "^5.6",
     "@types/bun": "latest"

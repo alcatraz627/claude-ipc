@@ -49,6 +49,8 @@ export class Router {
           return this.cancel(req);
         case "await":
           return this.awaitReply(req);
+        case "history":
+          return this.history(req);
         case "list":
           return ok({ peers: this.registry.list() });
         default:
@@ -208,6 +210,12 @@ export class Router {
     if (!a.corrId) return fail("bad_args", "cancel needs corrId");
     this.backend.closeAwaiting(a.corrId, "cancelled");
     return ok({ cancelled: true });
+  }
+
+  /** Audit query: who/what/when, filterable by peer, time, and conversation. */
+  private history(req: Request): Response {
+    const a = req.args as { peer?: string; since?: number; conversationId?: string };
+    return ok({ messages: this.backend.history(a) });
   }
 
   /** Non-blocking peek: has a correlated response landed in this alias's inbox yet? */
