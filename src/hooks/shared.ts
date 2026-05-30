@@ -26,9 +26,13 @@ export async function readHookInput(): Promise<HookInput> {
   }
 }
 
-/** This session's alias: an explicit env override, else the cwd's basename. */
+/**
+ * This session's alias. Defaults to the session's own id so every session is
+ * addressable with zero config; CLAUDE_IPC_ALIAS sets a friendly name (e.g. a
+ * human label like "backend", or a gcc session id like "mistakes-infra").
+ */
 export function aliasFor(input: HookInput): string {
-  return process.env.CLAUDE_IPC_ALIAS ?? input.cwd?.split("/").filter(Boolean).pop() ?? "session";
+  return process.env.CLAUDE_IPC_ALIAS ?? input.session_id ?? "session";
 }
 
 export function emitContext(hookEventName: string, additionalContext: string): void {

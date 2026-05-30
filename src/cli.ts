@@ -40,6 +40,7 @@ const USAGE = `claude-ipc — cross-session messaging
 
   register <alias>           (claim a mailbox from the shell)
   send   --from <a> --to <b> --kind <inform|query|request> [--ttl N] <body...>
+  reply  <corr-id> --from <alias> [--status error] <body...>
   inbox  <alias> [--consume]
   peers
   log    [--peer <a>] [--since <epoch>]
@@ -78,6 +79,23 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
             kind,
             body: positional.join(" "),
             ttlS: flags.ttl ? Number(flags.ttl) : undefined,
+          }),
+        );
+        return 0;
+      }
+      case "reply": {
+        const corrId = positional[0] ?? String(flags.corr ?? "");
+        const from = String(flags.from ?? "");
+        if (!corrId || !from) {
+          console.error("reply <corr-id> --from <alias> [--status error] <body...>");
+          return 2;
+        }
+        out(
+          await client.reply({
+            from,
+            corrId,
+            body: positional.slice(1).join(" "),
+            status: flags.status === "error" ? "error" : "ok",
           }),
         );
         return 0;

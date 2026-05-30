@@ -104,8 +104,8 @@ export function buildMcpServer(tools: IpcTools): McpServer {
 
 export function resolveIdentity(): SelfIdentity {
   const cwd = process.cwd();
-  const alias = process.env.CLAUDE_IPC_ALIAS ?? cwd.split("/").filter(Boolean).pop() ?? "session";
   const sessionId = process.env.CLAUDE_IPC_SESSION ?? crypto.randomUUID();
+  const alias = process.env.CLAUDE_IPC_ALIAS ?? sessionId; // addressable by id; friendly name optional
   return { alias, sessionId, cwd };
 }
 
