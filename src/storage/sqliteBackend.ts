@@ -199,6 +199,19 @@ export class SqliteBackend implements StorageBackend {
     this.db.query(`UPDATE deliveries SET state='consumed' WHERE msg_id=? AND to_alias=?`).run(msgId, alias);
   }
 
+  claimForDelivery(alias: string, via: Delivery["via"]): Message[] {
+    const rows = this.db
+      .query(
+        `SELECT m.* FROM deliveries d JOIN messages m ON m.id = d.msg_id
+         WHERE d.to_alias = ? AND d.state = 'queued' ORDER BY m.ts`,
+      )
+      .all(alias) as MsgRow[];
+    this.db
+      .query(`UPDATE deliveries SET state='delivered', via=? WHERE to_alias=? AND state='queued'`)
+      .run(via, alias);
+    return rows.map(toMessage);
+  }
+
   setConsent(msgId: string, alias: string, accepted: boolean): void {
     this.db
       .query(`UPDATE deliveries SET state=? WHERE msg_id=? AND to_alias=?`)

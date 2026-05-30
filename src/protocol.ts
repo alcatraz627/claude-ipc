@@ -15,6 +15,7 @@ export type Op =
   | "leave"
   | "send"
   | "check"
+  | "deliver"
   | "reply"
   | "accept"
   | "decline"

@@ -84,6 +84,9 @@ export class Client {
   check(alias: string, consume = false): Promise<any> {
     return this.call("check", { alias, consume });
   }
+  deliver(alias: string, via: "hook" | "resume" | "channel"): Promise<any> {
+    return this.call("deliver", { alias, via });
+  }
   list(): Promise<any> {
     return this.call("list", {});
   }

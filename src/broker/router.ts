@@ -7,7 +7,7 @@
  * is synchronous — so it is trivially testable with an injected clock + id source.
  */
 
-import { makeMessage, type ErrorCode, type Kind, type Status } from "../models.ts";
+import { makeMessage, type DeliveredVia, type ErrorCode, type Kind, type Status } from "../models.ts";
 import type { Request, Response } from "../protocol.ts";
 import type { StorageBackend } from "../storage/base.ts";
 import type { Registry } from "./registry.ts";
@@ -39,6 +39,8 @@ export class Router {
           return this.send(req);
         case "check":
           return this.check(req);
+        case "deliver":
+          return this.deliver(req);
         case "reply":
           return this.reply(req);
         case "accept":
@@ -131,6 +133,13 @@ export class Router {
     const a = req.args as { alias?: string; consume?: boolean };
     if (!a.alias) return fail("bad_args", "check needs alias");
     return ok({ messages: this.backend.pending(a.alias, { consume: a.consume ?? false }) });
+  }
+
+  /** Hand a hook the alias's freshly-queued messages exactly once (idempotent inject). */
+  private deliver(req: Request): Response {
+    const a = req.args as { alias?: string; via?: DeliveredVia };
+    if (!a.alias) return fail("bad_args", "deliver needs alias");
+    return ok({ messages: this.backend.claimForDelivery(a.alias, a.via ?? "hook") });
   }
 
   /** Answer a query/request. A reply after the origin closed (timeout/cancel) is dropped. */

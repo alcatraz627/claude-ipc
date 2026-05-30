@@ -19,6 +19,8 @@ export interface StorageBackend {
   pending(alias: string, opts?: { consume?: boolean }): Message[];
   markDelivered(msgId: string, alias: string, via: Delivery["via"]): void;
   markConsumed(msgId: string, alias: string): void;
+  /** Atomically take this alias's freshly-queued messages, marking them delivered. */
+  claimForDelivery(alias: string, via: Delivery["via"]): Message[];
   setConsent(msgId: string, alias: string, accepted: boolean): void;
   deliveriesFor(msgId: string): Delivery[];
 
