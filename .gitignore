@@ -2,6 +2,7 @@
 node_modules/
 dist/
 *.tsbuildinfo
+*.bun-build
 
 # IPC runtime data — never commit live state
 run/
