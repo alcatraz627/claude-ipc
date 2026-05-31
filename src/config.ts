@@ -21,6 +21,7 @@ export const config = {
   dbPath: process.env.CLAUDE_IPC_DB ?? join(home, "data", "ipc.sqlite"),
   pidPath: join(home, "run", "broker.pid"),
   defaultTtlS: 3600,
+  requestTimeoutMs: 5000, // a single broker round-trip; exceeded → caller stops waiting
   sweepIntervalS: 5,
   liveness: { idleS: 300, offlineS: 1800 },
   badge: (process.env.CLAUDE_IPC_BADGE ?? "1") !== "0", // broker→peer-TTY tab badge

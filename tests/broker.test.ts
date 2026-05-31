@@ -3,7 +3,8 @@ import { MemoryBackend } from "../src/storage/memoryBackend.ts";
 import { Registry } from "../src/broker/registry.ts";
 import { Router } from "../src/broker/router.ts";
 import { startBroker, type BrokerHandle } from "../src/broker/server.ts";
-import { Client } from "../src/client.ts";
+import { Client, request } from "../src/client.ts";
+import { FrameDecoder } from "../src/protocol.ts";
 
 const tmpSock = (): string => `/tmp/cipc-${process.pid}-${Math.random().toString(36).slice(2, 10)}.sock`;
 
@@ -90,5 +91,48 @@ describe("broker end-to-end", () => {
     expect(sent.msgId).toBeDefined();
     const inbox = await client.check("bob");
     expect(inbox.messages[0].body).toBe(big);
+  });
+
+  // A2: a broker that accepts the connection but never replies must not hang the
+  // caller forever — the request deadline turns it into a reject.
+  test("request() rejects on its deadline when the broker never replies", async () => {
+    const sock = tmpSock();
+    const silent = Bun.listen({ unix: sock, socket: { open() {}, data() {} } }); // never writes back
+    const t0 = Date.now();
+    await expect(request(sock, { v: 1, op: "list", args: {} }, 200)).rejects.toThrow(/within 200ms/);
+    expect(Date.now() - t0).toBeLessThan(1500);
+    silent.stop(true);
+  });
+
+  // A3: a malformed frame desyncs the stream but must not crash the broker — it
+  // gets one error frame and the broker keeps serving other connections.
+  test("a malformed frame yields bad_frame and the broker survives", async () => {
+    const body = new TextEncoder().encode("{not json"); // valid length prefix, garbage body
+    const frame = new Uint8Array(4 + body.byteLength);
+    new DataView(frame.buffer).setUint32(0, body.byteLength, false);
+    frame.set(body, 4);
+    const reply = await new Promise<{ ok: boolean; error?: { code: string } }>((resolve) => {
+      const dec = new FrameDecoder();
+      Bun.connect({
+        unix: broker.socketPath,
+        socket: {
+          open(s) {
+            s.write(frame);
+          },
+          data(s, d) {
+            const f = dec.push(new Uint8Array(d))[0] as { ok: boolean; error?: { code: string } };
+            if (f) {
+              resolve(f);
+              s.end();
+            }
+          },
+        },
+      });
+    });
+    expect(reply.ok).toBe(false);
+    expect(reply.error?.code).toBe("bad_frame");
+    // broker still serves a normal request afterwards
+    await client.register("alice", { sessionId: "sA", cwd: "/a" });
+    expect((await client.list()).peers.map((p: { alias: string }) => p.alias)).toContain("alice");
   });
 });

@@ -74,8 +74,19 @@ export function startBroker(opts: { router: Router; socketPath: string }): Broke
         socket.data = { dec: new FrameDecoder(), outbox: [] };
       },
       data(socket, data) {
-        for (const frame of socket.data.dec.push(new Uint8Array(data))) {
-          socket.data.outbox.push(encodeFrame(opts.router.handle(frame as Request)));
+        try {
+          for (const frame of socket.data.dec.push(new Uint8Array(data))) {
+            socket.data.outbox.push(encodeFrame(opts.router.handle(frame as Request)));
+          }
+        } catch {
+          // A malformed or oversized frame throws out of the decoder and desyncs
+          // this length-prefixed stream — it can't be resynced. Reply with one
+          // error frame (best-effort) and drop the connection. The throw must
+          // never escape this callback: that would crash the whole broker.
+          socket.data.outbox.push(encodeFrame({ ok: false, error: { code: "bad_frame", message: "unparseable frame" } }));
+          pump(socket);
+          socket.end();
+          return;
         }
         pump(socket);
       },

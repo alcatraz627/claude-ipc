@@ -6,21 +6,35 @@
  * single source of truth.
  */
 
+import { config } from "./config.ts";
 import { makeMessage } from "./models.ts";
 import { encodeFrame, FrameDecoder, PROTOCOL_VERSION, type Op, type Request, type Response } from "./protocol.ts";
 import { SqliteBackend } from "./storage/sqliteBackend.ts";
 
-/** Send one request and resolve with the broker's one response. */
-export function request(socketPath: string, req: Request): Promise<Response> {
+/**
+ * Send one request and resolve with the broker's one response.
+ *
+ * Bounded by a deadline: if the broker accepts the connection but never replies
+ * (a hung handler, a half-sent frame), the call rejects instead of hanging
+ * forever — which lets the caller fall back to degraded mode rather than wedge.
+ */
+export function request(socketPath: string, req: Request, timeoutMs = config.requestTimeoutMs): Promise<Response> {
   return new Promise((resolve, reject) => {
     const dec = new FrameDecoder();
     let settled = false;
+    let sock: { end(): void } | null = null;
+    let timer: ReturnType<typeof setTimeout>;
     const settle = (fn: () => void): void => {
       if (!settled) {
         settled = true;
+        clearTimeout(timer);
         fn();
       }
     };
+    timer = setTimeout(() => {
+      settle(() => reject(new Error(`broker did not reply within ${timeoutMs}ms`)));
+      sock?.end();
+    }, timeoutMs);
     // A socket write only accepts up to the send-buffer watermark (~8 KB); a
     // large request (a fat message body, a long contextPtr) overflows it and is
     // written in pieces. Keep the unsent tail and resume on `drain`, or the
@@ -39,6 +53,7 @@ export function request(socketPath: string, req: Request): Promise<Response> {
       unix: socketPath,
       socket: {
         open(socket) {
+          sock = socket;
           pump(socket);
         },
         drain(socket) {
