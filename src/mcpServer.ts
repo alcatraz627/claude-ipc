@@ -125,7 +125,9 @@ export function resolveIdentity(): SelfIdentity {
 
 export async function main(): Promise<void> {
   const me = resolveIdentity();
-  const tools = createTools(new Client(config.socketPath), me);
+  // Fallback lets ipc_send/ipc_check/ipc_deliver keep working off the durable log
+  // when the broker is down, instead of throwing at the agent.
+  const tools = createTools(new Client(config.socketPath, { dbPath: config.dbPath }), me);
   await tools.ipc_register({}); // make this session addressable immediately
   await buildMcpServer(tools).connect(new StdioServerTransport());
 }

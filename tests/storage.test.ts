@@ -58,6 +58,17 @@ function backendSuite(name: string, make: () => StorageBackend): void {
       expect(db.pending("bob").map((x) => x.id)).toEqual(["d1"]);
     });
 
+    test("claimForDelivery is atomic: a second claim returns nothing (no double-delivery)", () => {
+      db.append(m("k1", { ts: 1 }));
+      db.append(m("k2", { ts: 2 }));
+      db.enqueue("k1", "bob");
+      db.enqueue("k2", "bob");
+      const first = db.claimForDelivery("bob", "hook");
+      expect(first.map((x) => x.id)).toEqual(["k1", "k2"]); // ts-ordered, both claimed
+      expect(db.claimForDelivery("bob", "hook")).toEqual([]); // already claimed → empty
+      expect(db.deliveriesFor("k1")[0]?.via).toBe("hook");
+    });
+
     test("a request stays acceptable after being consumed (consume != consent)", () => {
       db.append(m("req1", { kind: "request", ts: 1 }));
       db.enqueue("req1", "bob");

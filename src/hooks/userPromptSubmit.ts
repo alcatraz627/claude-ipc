@@ -13,7 +13,10 @@ import { aliasFor, deliverContext, emitContext, readHookInput } from "./shared.t
 export async function main(): Promise<void> {
   const input = await readHookInput();
   try {
-    const ctx = await deliverContext(new Client(config.socketPath), aliasFor(input), "hook");
+    // Fall back to the durable SQLite log when the broker is down, so a pending
+    // message still surfaces at the next turn instead of being silently skipped.
+    const client = new Client(config.socketPath, { dbPath: config.dbPath });
+    const ctx = await deliverContext(client, aliasFor(input), "hook");
     if (ctx) emitContext("UserPromptSubmit", ctx);
   } catch {
     // broker unreachable — inject nothing, never block the turn

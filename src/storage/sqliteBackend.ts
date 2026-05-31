@@ -206,15 +206,20 @@ export class SqliteBackend implements StorageBackend {
   }
 
   claimForDelivery(alias: string, via: Delivery["via"]): Message[] {
+    // Claim and read in one atomic statement. SQLite serializes writers, so the
+    // WHERE re-evaluates against committed state — if a second deliverer (the
+    // broker and a degraded client racing during a restart window) runs the same
+    // UPDATE, it sees the rows already flipped and returns none. A prior SELECT-
+    // then-UPDATE could let both read the queued rows first and double-deliver.
+    const claimed = this.db
+      .query(`UPDATE deliveries SET state='delivered', via=? WHERE to_alias=? AND state='queued' RETURNING msg_id`)
+      .all(via, alias) as { msg_id: string }[];
+    if (claimed.length === 0) return [];
+    // messages is append-only, so reading the bodies after the claim is race-free.
+    const placeholders = claimed.map(() => "?").join(",");
     const rows = this.db
-      .query(
-        `SELECT m.* FROM deliveries d JOIN messages m ON m.id = d.msg_id
-         WHERE d.to_alias = ? AND d.state = 'queued' ORDER BY m.ts`,
-      )
-      .all(alias) as MsgRow[];
-    this.db
-      .query(`UPDATE deliveries SET state='delivered', via=? WHERE to_alias=? AND state='queued'`)
-      .run(via, alias);
+      .query(`SELECT * FROM messages WHERE id IN (${placeholders}) ORDER BY ts`)
+      .all(...claimed.map((r) => r.msg_id)) as MsgRow[];
     return rows.map(toMessage);
   }
 

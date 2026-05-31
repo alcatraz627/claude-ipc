@@ -13,18 +13,28 @@ import { aliasFor, deliverContext, emitContext, readHookInput } from "./shared.t
 export async function main(): Promise<void> {
   const input = await readHookInput();
   const alias = aliasFor(input);
+  const client = new Client(config.socketPath, { dbPath: config.dbPath });
+
+  // Registration needs the live broker (the registry is in-broker) — best-effort.
   try {
-    const client = new Client(config.socketPath);
     await client.register(alias, {
       sessionId: input.session_id ?? `hook-${alias}`,
       cwd: input.cwd ?? process.cwd(),
       pid: process.ppid, // the Claude process — broker derives the tty from it
       tty: process.env.CLAUDE_IPC_TTY, // explicit override if the launcher set it
     });
+  } catch {
+    // broker down at startup — we can't register, but the backlog drain below
+    // still works off the durable log, so the offline-note guarantee holds.
+  }
+
+  // Drain the offline backlog independently: degraded mode reads it from SQLite,
+  // so a session started while the broker is down still receives its queued notes.
+  try {
     const ctx = await deliverContext(client, alias, "resume");
     if (ctx) emitContext("SessionStart", ctx);
   } catch {
-    // broker unreachable — nothing to register or inject
+    // nothing to drain, or the durable log is unreachable too
   }
 }
 
