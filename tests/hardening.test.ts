@@ -70,6 +70,12 @@ describe("status + context pointer", () => {
     expect(s.responses[0].body).toBe("answer");
   });
 
+  test("count returns the pending message count", async () => {
+    await client.send({ from: "alice", to: "bob", kind: "inform", body: "1" });
+    await client.send({ from: "alice", to: "bob", kind: "inform", body: "2" });
+    expect((await client.count("bob")).count).toBe(2);
+  });
+
   test("ipc_send carries a context pointer back to the sender's session", async () => {
     const alice = createTools(client, { alias: "alice", sessionId: "sess-A", cwd: "/work/be" });
     const sent = (await alice.ipc_send({ to: "bob", kind: "inform", body: "fyi" })) as { msgId: string };

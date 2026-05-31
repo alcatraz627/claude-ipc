@@ -58,6 +58,8 @@ export class Router {
           return this.history(req);
         case "status":
           return this.status(req);
+        case "count":
+          return this.count(req);
         case "list":
           return ok({ peers: this.registry.list() });
         default:
@@ -256,6 +258,13 @@ export class Router {
     if (!a.corrId) return fail("bad_args", "cancel needs corrId");
     this.backend.closeAwaiting(a.corrId, "cancelled");
     return ok({ cancelled: true });
+  }
+
+  /** Cheap pending-count for an alias — for a tab-title segment that runs every turn. */
+  private count(req: Request): Response {
+    const a = req.args as { alias?: string };
+    if (!a.alias) return fail("bad_args", "count needs alias");
+    return ok({ count: this.backend.pending(a.alias).length });
   }
 
   /** A message's full lifecycle: the message, its per-recipient deliveries, and any responses. */

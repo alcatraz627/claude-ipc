@@ -43,6 +43,7 @@ const USAGE = `claude-ipc — cross-session messaging
   reply  <corr-id> --from <alias> [--status error] <body...>
   inbox  <alias> [--consume]
   peers
+  count  <alias>             (pending count — cheap, for tab-title segments)
   log    [--peer <a>] [--since <epoch>]
   status <msg-id>            (a message's delivery + response lifecycle)
   accept <msg-id> --as <alias>
@@ -120,6 +121,15 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
       case "peers":
         out(await client.list());
         return 0;
+      case "count": {
+        const alias = positional[0] ?? "";
+        if (!alias) {
+          console.error("count <alias>");
+          return 2;
+        }
+        out(String((await client.count(alias)).count));
+        return 0;
+      }
       case "log": {
         const q: { peer?: string; since?: number } = {};
         if (flags.peer) q.peer = String(flags.peer);

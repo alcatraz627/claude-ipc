@@ -150,6 +150,9 @@ export class Client {
   status(msgId: string): Promise<any> {
     return this.call("status", { msgId });
   }
+  count(alias: string): Promise<any> {
+    return this.call("count", { alias });
+  }
   reply(args: { from: string; corrId: string; body?: string; terminal?: boolean; status?: "ok" | "error" }): Promise<any> {
     return this.call("reply", { ...args });
   }

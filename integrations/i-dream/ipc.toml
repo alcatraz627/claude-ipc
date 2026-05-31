@@ -1,0 +1,33 @@
+# i-dream domain manifest — claude-ipc (cross-session handoff signal)
+#
+# STAGED, NOT LIVE. Copy to ~/.claude/i-dream/domains/ipc.toml to register (see
+# ACTIVATION.md). One-way: i-dream reads the claude-ipc message log as a
+# behavioural signal; claude-ipc never calls into dreaming. Removable any time.
+
+[domain]
+name        = "claude-ipc"
+version     = "1.0"
+description = "Cross-session IPC handoffs — who hands what to whom, how often"
+root        = "~/.claude-ipc"
+
+[event_stream]
+path        = "{root}/i-dream-events.jsonl"
+format      = "jsonl"
+id_field    = "id"
+ts_field    = "ts"
+
+[consolidation]
+enabled = true
+type    = "external_script"
+script  = "{root}/extract-events.sh"
+cadence = "daily"
+timeout = "60s"
+
+[dream]
+enabled       = true
+cadence       = "every-2-days"
+budget_tokens = 3000
+prompt_path   = "{root}/ipc-dream-prompt.md"
+insights_path = "{root}/ipc-dream-insights.jsonl"
+cursor_path   = "{root}/ipc-dream-cursor.json"
+prompt_fields = ["kind", "from", "to", "corrId", "body"]

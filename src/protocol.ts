@@ -23,7 +23,8 @@ export type Op =
   | "await"
   | "list"
   | "history"
-  | "status";
+  | "status"
+  | "count";
 
 export interface Request {
   v: number;
