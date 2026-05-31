@@ -20,6 +20,8 @@ export const config = {
   socketPath: process.env.CLAUDE_IPC_SOCKET ?? join(home, "run", "ipc.sock"),
   dbPath: process.env.CLAUDE_IPC_DB ?? join(home, "data", "ipc.sqlite"),
   pidPath: join(home, "run", "broker.pid"),
+  tokensDir: join(home, "tokens"), // per-alias capability files (0600), owner-only
+
   defaultTtlS: 3600,
   requestTimeoutMs: 5000, // a single broker round-trip; exceeded → caller stops waiting
   sweepIntervalS: 5,

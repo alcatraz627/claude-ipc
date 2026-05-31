@@ -106,7 +106,7 @@ describe("correlation, consent, timeouts", () => {
 
   test("a reply after the sender cancelled is dropped", async () => {
     const q = await client.send({ from: "alice", to: "bob", kind: "query", body: "?" });
-    await client.cancel(q.msgId);
+    await client.cancel(q.msgId, "alice"); // alice cancels her own ask
     const r = await client.reply({ from: "bob", corrId: q.msgId, body: "nvm" });
     expect(r.dropped).toBe(true);
     expect(r.reason).toBe("cancelled");

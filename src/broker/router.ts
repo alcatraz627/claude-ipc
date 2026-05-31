@@ -81,25 +81,47 @@ export class Router {
     };
     if (!a.alias || !a.sessionId) return fail("bad_args", "register needs alias + sessionId");
     const tty = a.tty ?? (a.pid ? ttyForPid(a.pid) : null);
-    const { replaced } = this.registry.register(a.alias, {
-      sessionId: a.sessionId,
-      cwd: a.cwd ?? "",
-      caps: a.caps,
-      pid: a.pid ?? null,
-      tty,
-    });
-    return ok({ alias: a.alias, registered: true, replaced });
+    const result = this.registry.register(
+      a.alias,
+      { sessionId: a.sessionId, cwd: a.cwd ?? "", caps: a.caps, pid: a.pid ?? null, tty },
+      req.token,
+    );
+    if (!result.ok) {
+      return fail("alias_taken", `${a.alias} is live and owned by another session`);
+    }
+    // The token goes back ONLY here, to the owner who just registered.
+    return ok({ alias: a.alias, registered: true, replaced: result.replaced, token: result.token });
+  }
+
+  /**
+   * Gate an op that acts as `alias`: the caller must present its capability token.
+   * Returns a fail Response to short-circuit, or null when the op may proceed.
+   * An alias with no registered token (never registered, or a legacy pre-token
+   * entry) is unprotected — you can't impersonate an identity nobody claimed.
+   */
+  private requireOwner(req: Request, alias: string): Response | null {
+    const tok = this.registry.tokenOf(alias);
+    if (tok && req.token !== tok) return fail("unauthorized", `not authorized to act as ${alias}`);
+    return null;
   }
 
   private heartbeat(req: Request): Response {
     const a = req.args as { alias?: string };
-    if (a.alias) this.registry.heartbeat(a.alias);
+    if (a.alias) {
+      const denied = this.requireOwner(req, a.alias);
+      if (denied) return denied;
+      this.registry.heartbeat(a.alias);
+    }
     return ok({ ok: true });
   }
 
   private leave(req: Request): Response {
     const a = req.args as { alias?: string };
-    if (a.alias) this.registry.leave(a.alias);
+    if (a.alias) {
+      const denied = this.requireOwner(req, a.alias);
+      if (denied) return denied;
+      this.registry.leave(a.alias);
+    }
     return ok({ left: true });
   }
 
@@ -114,6 +136,8 @@ export class Router {
       contextPtr?: { sessionId: string; transcriptPath: string; cwd: string };
     };
     if (!a.from || !a.to) return fail("bad_args", "send needs from + to");
+    const denied = this.requireOwner(req, a.from); // you may only send AS yourself
+    if (denied) return denied;
     if (!a.kind || !SENDABLE.includes(a.kind)) {
       return fail("bad_args", `kind must be inform|query|request, got ${String(a.kind)}`);
     }
@@ -161,6 +185,8 @@ export class Router {
   private check(req: Request): Response {
     const a = req.args as { alias?: string; consume?: boolean };
     if (!a.alias) return fail("bad_args", "check needs alias");
+    const denied = this.requireOwner(req, a.alias); // only the owner reads its inbox
+    if (denied) return denied;
     const messages = this.backend.pending(a.alias, { consume: a.consume ?? false });
     this.notify(a.alias);
     return ok({ messages });
@@ -170,6 +196,8 @@ export class Router {
   private deliver(req: Request): Response {
     const a = req.args as { alias?: string; via?: DeliveredVia };
     if (!a.alias) return fail("bad_args", "deliver needs alias");
+    const denied = this.requireOwner(req, a.alias); // only the owner drains its queue
+    if (denied) return denied;
     const messages = this.backend.claimForDelivery(a.alias, a.via ?? "hook");
     this.notify(a.alias);
     return ok({ messages });
@@ -186,6 +214,8 @@ export class Router {
       errorCode?: ErrorCode;
     };
     if (!a.from || !a.corrId) return fail("bad_args", "reply needs from + corrId");
+    const denied = this.requireOwner(req, a.from); // you may only reply AS yourself
+    if (denied) return denied;
     const origin = this.backend.originOf(a.corrId);
     if (!origin) return fail("no_origin", `no message for corrId ${a.corrId}`);
     const aw = this.backend.getAwaiting(a.corrId);
@@ -221,6 +251,8 @@ export class Router {
   private accept(req: Request): Response {
     const a = req.args as { alias?: string; msgId?: string };
     if (!a.alias || !a.msgId) return fail("bad_args", "accept needs alias + msgId");
+    const denied = this.requireOwner(req, a.alias); // only the recipient consents
+    if (denied) return denied;
     this.backend.setConsent(a.msgId, a.alias, true);
     return ok({ accepted: true });
   }
@@ -229,6 +261,8 @@ export class Router {
   private decline(req: Request): Response {
     const a = req.args as { from?: string; msgId?: string; reason?: string };
     if (!a.from || !a.msgId) return fail("bad_args", "decline needs from + msgId");
+    const denied = this.requireOwner(req, a.from); // only the recipient declines
+    if (denied) return denied;
     this.backend.setConsent(a.msgId, a.from, false);
     const origin = this.backend.originOf(a.msgId);
     if (origin && this.backend.isAwaitingOpen(a.msgId)) {
@@ -256,6 +290,11 @@ export class Router {
   private cancel(req: Request): Response {
     const a = req.args as { corrId?: string };
     if (!a.corrId) return fail("bad_args", "cancel needs corrId");
+    const origin = this.backend.originOf(a.corrId); // only the asker cancels their ask
+    if (origin) {
+      const denied = this.requireOwner(req, origin.fromAlias);
+      if (denied) return denied;
+    }
     this.backend.closeAwaiting(a.corrId, "cancelled");
     return ok({ cancelled: true });
   }
@@ -290,6 +329,8 @@ export class Router {
   private awaitReply(req: Request): Response {
     const a = req.args as { alias?: string; corrId?: string };
     if (!a.alias || !a.corrId) return fail("bad_args", "await needs alias + corrId");
+    const denied = this.requireOwner(req, a.alias); // only the asker polls its inbox
+    if (denied) return denied;
     const found = this.backend
       .pending(a.alias)
       .find((m) => m.kind === "response" && m.corrId === a.corrId);

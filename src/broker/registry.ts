@@ -30,12 +30,28 @@ export class Registry {
     }
   }
 
+  /**
+   * Bind an alias to a session and return its capability token.
+   *
+   * First registration mints a fresh token. A re-registration by the rightful
+   * holder (the presented token matches) keeps the same token, so a reconnecting
+   * session that kept its token file stays authorized. A live alias whose token
+   * is presented wrong (or not at all) is refused — that's the anti-hijack guard.
+   * An offline alias can always be reclaimed (the old owner is gone) with a fresh
+   * token. `ok:false` means the alias is live and owned by someone else.
+   */
   register(
     alias: string,
     info: { sessionId: string; cwd: string; caps?: string[]; pid?: number | null; tty?: string | null },
-  ): { replaced: boolean } {
+    presentedToken?: string,
+  ): { ok: boolean; replaced: boolean; token: string | null } {
     const prev = this.entries.get(alias);
+    if (prev && this.statusOf(prev) !== "offline" && prev.token && presentedToken !== prev.token) {
+      return { ok: false, replaced: false, token: null }; // live alias, wrong/missing token
+    }
     const replaced = prev !== undefined && prev.sessionId !== info.sessionId;
+    const keep = prev?.token && presentedToken === prev.token;
+    const token = keep ? prev.token : `tok-${crypto.randomUUID()}`;
     this.entries.set(alias, {
       alias,
       sessionId: info.sessionId,
@@ -45,14 +61,21 @@ export class Registry {
       tty: info.tty ?? prev?.tty ?? null,
       lastSeen: this.now(),
       status: "live",
+      token,
     });
     this.snapshot();
-    return { replaced };
+    return { ok: true, replaced, token };
+  }
+
+  /** The capability token registered for an alias, or null if unknown/legacy. */
+  tokenOf(alias: string): string | null {
+    return this.entries.get(alias)?.token ?? null;
   }
 
   get(alias: string): RegistryEntry | null {
     const e = this.entries.get(alias);
-    return e ? { ...e, caps: [...e.caps], status: this.statusOf(e) } : null;
+    // token is a secret — never hand it back through a read accessor.
+    return e ? { ...e, caps: [...e.caps], status: this.statusOf(e), token: null } : null;
   }
 
   heartbeat(alias: string): void {
@@ -81,6 +104,7 @@ export class Registry {
       ...e,
       caps: [...e.caps],
       status: this.statusOf(e),
+      token: null, // never expose tokens in the public roster
     }));
   }
 

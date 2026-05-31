@@ -70,6 +70,11 @@ export interface RegistryEntry {
   tty: string | null; // the session's pty (e.g. /dev/ttys005) for out-of-band tab badging
   lastSeen: number;
   status: "live" | "idle" | "offline";
+  // The capability secret that proves ownership of this alias. Issued at register
+  // time, held by the owner in a 0600 file; required to act as the alias. Never
+  // sent over the wire except in the register response to the owner — strip it
+  // from list/get/status responses. Null on legacy entries from before tokens.
+  token: string | null;
 }
 
 /** Build a Message from the few fields a caller supplies, defaulting the rest. */

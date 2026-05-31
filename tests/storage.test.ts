@@ -117,6 +117,7 @@ function backendSuite(name: string, make: () => StorageBackend): void {
         tty: "/dev/ttys003",
         lastSeen: 5,
         status: "live" as const,
+        token: "tok-abc",
       };
       db.saveRegistry([e]);
       expect(db.loadRegistry()).toEqual([e]);

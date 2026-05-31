@@ -44,8 +44,7 @@ type Writable = { write(data: Uint8Array): number; data: ConnData };
  */
 function pump(socket: Writable): void {
   const q = socket.data.outbox;
-  while (q.length > 0) {
-    const head = q[0];
+  for (let head = q[0]; head !== undefined; head = q[0]) {
     const n = socket.write(head);
     if (n < 0) {
       // Socket is closing; drop anything still queued.

@@ -6,10 +6,33 @@
  * single source of truth.
  */
 
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { config } from "./config.ts";
 import { makeMessage } from "./models.ts";
 import { encodeFrame, FrameDecoder, PROTOCOL_VERSION, type Op, type Request, type Response } from "./protocol.ts";
 import { SqliteBackend } from "./storage/sqliteBackend.ts";
+
+/**
+ * The capability token for an alias is kept in an owner-only file. Holding the
+ * file is what proves ownership: the broker issues the token at register time
+ * and checks it on every op that acts as the alias. 0600 so another UNIX user
+ * can't read it (the local same-user trust boundary is intentional).
+ */
+const tokenFile = (dir: string, alias: string): string => join(dir, encodeURIComponent(alias));
+
+function readToken(dir: string, alias: string): string | undefined {
+  try {
+    return readFileSync(tokenFile(dir, alias), "utf8").trim() || undefined;
+  } catch {
+    return undefined; // no token yet — the op goes out unauthenticated
+  }
+}
+
+function writeToken(dir: string, alias: string, token: string): void {
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  writeFileSync(tokenFile(dir, alias), token, { mode: 0o600 });
+}
 
 /**
  * Send one request and resolve with the broker's one response.
@@ -18,7 +41,7 @@ import { SqliteBackend } from "./storage/sqliteBackend.ts";
  * (a hung handler, a half-sent frame), the call rejects instead of hanging
  * forever — which lets the caller fall back to degraded mode rather than wedge.
  */
-export function request(socketPath: string, req: Request, timeoutMs = config.requestTimeoutMs): Promise<Response> {
+export function request(socketPath: string, req: Request, timeoutMs: number = config.requestTimeoutMs): Promise<Response> {
   return new Promise((resolve, reject) => {
     const dec = new FrameDecoder();
     let settled = false;
@@ -103,13 +126,17 @@ export class Client {
   constructor(
     private socketPath: string,
     private fallback?: { dbPath: string },
+    private tokensDir: string = config.tokensDir,
   ) {}
 
   // Results are intentionally loosely typed at this boundary; callers assert shape.
-  private async call(op: Op, args: Record<string, unknown>, sessionId?: string): Promise<any> {
+  // `actingAlias` names the identity this op acts as; its capability token (if we
+  // hold one) is attached so the broker can authorize ownership-bearing ops.
+  private async call(op: Op, args: Record<string, unknown>, actingAlias?: string): Promise<any> {
     let res: Response;
+    const token = actingAlias ? readToken(this.tokensDir, actingAlias) : undefined;
     try {
-      res = await request(this.socketPath, { v: PROTOCOL_VERSION, op, args, sessionId });
+      res = await request(this.socketPath, { v: PROTOCOL_VERSION, op, args, token });
     } catch (e) {
       if (this.fallback) return this.degraded(op, args);
       throw e;
@@ -155,23 +182,27 @@ export class Client {
     }
   }
 
-  register(alias: string, info: RegisterInfo): Promise<any> {
-    return this.call("register", { alias, ...info });
+  async register(alias: string, info: RegisterInfo): Promise<any> {
+    // Present any token we already hold (proves a reconnect) and persist the one
+    // the broker returns, so later ops from this and sibling processes authorize.
+    const res = await this.call("register", { alias, ...info }, alias);
+    if (res && typeof res === "object" && typeof res.token === "string") writeToken(this.tokensDir, alias, res.token);
+    return res;
   }
   heartbeat(alias: string): Promise<any> {
-    return this.call("heartbeat", { alias });
+    return this.call("heartbeat", { alias }, alias);
   }
   leave(alias: string): Promise<any> {
-    return this.call("leave", { alias });
+    return this.call("leave", { alias }, alias);
   }
   send(args: SendArgs): Promise<any> {
-    return this.call("send", { ...args });
+    return this.call("send", { ...args }, args.from);
   }
   check(alias: string, consume = false): Promise<any> {
-    return this.call("check", { alias, consume });
+    return this.call("check", { alias, consume }, alias);
   }
   deliver(alias: string, via: "hook" | "resume" | "channel"): Promise<any> {
-    return this.call("deliver", { alias, via });
+    return this.call("deliver", { alias, via }, alias);
   }
   list(): Promise<any> {
     return this.call("list", {});
@@ -186,23 +217,23 @@ export class Client {
     return this.call("count", { alias });
   }
   reply(args: { from: string; corrId: string; body?: string; terminal?: boolean; status?: "ok" | "error" }): Promise<any> {
-    return this.call("reply", { ...args });
+    return this.call("reply", { ...args }, args.from);
   }
   accept(alias: string, msgId: string): Promise<any> {
-    return this.call("accept", { alias, msgId });
+    return this.call("accept", { alias, msgId }, alias);
   }
   decline(from: string, msgId: string, reason?: string): Promise<any> {
-    return this.call("decline", { from, msgId, reason });
+    return this.call("decline", { from, msgId, reason }, from);
   }
-  cancel(corrId: string): Promise<any> {
-    return this.call("cancel", { corrId });
+  cancel(corrId: string, as?: string): Promise<any> {
+    return this.call("cancel", { corrId }, as);
   }
 
   /** Block until a correlated response lands in `alias`'s inbox, or the timeout passes. */
   async awaitReply(alias: string, corrId: string, timeoutMs = 2000, pollMs = 15): Promise<any> {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
-      const r = await this.call("await", { alias, corrId });
+      const r = await this.call("await", { alias, corrId }, alias);
       if (r.response) return r.response;
       if (Date.now() >= deadline) return null;
       await new Promise((res) => setTimeout(res, pollMs));

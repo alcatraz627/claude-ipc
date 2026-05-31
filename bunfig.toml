@@ -1,0 +1,3 @@
+[test]
+# Isolate CLAUDE_IPC_HOME to a temp dir before any test imports config.
+preload = ["./tests/setup.ts"]

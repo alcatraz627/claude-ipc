@@ -31,6 +31,9 @@ export interface Request {
   op: Op;
   args: Record<string, unknown>;
   sessionId?: string;
+  // The caller's capability token for the alias it claims to act as. The broker
+  // checks it against the alias's registered token for ownership-bearing ops.
+  token?: string;
 }
 
 export type Response =

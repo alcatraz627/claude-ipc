@@ -52,7 +52,7 @@ export function createTools(client: Client, me: SelfIdentity) {
     ipc_decline: (a: { msgId: string; reason?: string }): Promise<unknown> =>
       client.decline(me.alias, a.msgId, a.reason),
 
-    ipc_cancel: (a: { corrId: string }): Promise<unknown> => client.cancel(a.corrId),
+    ipc_cancel: (a: { corrId: string }): Promise<unknown> => client.cancel(a.corrId, me.alias),
 
     ipc_await: (a: { corrId: string; timeoutMs?: number }): Promise<unknown> =>
       client.awaitReply(me.alias, a.corrId, a.timeoutMs),
