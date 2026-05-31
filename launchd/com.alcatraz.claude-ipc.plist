@@ -5,8 +5,10 @@
   `claude-ipc daemon status` + `claude-ipc tail`).
 
   Install:   cp launchd/com.alcatraz.claude-ipc.plist ~/Library/LaunchAgents/
-             launchctl load ~/Library/LaunchAgents/com.alcatraz.claude-ipc.plist
-  Uninstall: launchctl unload ~/Library/LaunchAgents/com.alcatraz.claude-ipc.plist
+             launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.alcatraz.claude-ipc.plist
+  Uninstall: launchctl bootout gui/$(id -u)/com.alcatraz.claude-ipc
+  (legacy `launchctl load/unload` is deprecated on current macOS — it fails with
+   "Load failed: 5: Input/output error"; use bootstrap/bootout above.)
   Adjust the two absolute paths below if bun or the repo move.
 -->
 <plist version="1.0">
