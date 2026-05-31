@@ -154,14 +154,21 @@ export class Router {
       return ok({ msgId: null, error: { code: "not_allowed", message: `${a.from} may not target ${a.to}` } });
     }
 
+    const id = this.newId();
+    // A directed query/request opens a thread: stamp it with a conversationId
+    // (derived from its own id) so the correlated reply — which inherits the
+    // origin's conversationId — and any follow-ups share one thread key that
+    // history can filter on. An explicit id from the caller always wins.
+    const opensThread = a.to !== "*" && (a.kind === "query" || a.kind === "request");
+    const conversationId = a.conversationId ?? (opensThread ? `conv-${id}` : null);
     const msg = makeMessage({
-      id: this.newId(),
+      id,
       kind: a.kind,
       fromAlias: a.from,
       toAlias: a.to,
       ts: this.now(),
       body: a.body ?? "",
-      conversationId: a.conversationId ?? null,
+      conversationId,
       ttlS: a.ttlS ?? null,
       contextPtr: a.contextPtr ?? null,
     });
@@ -179,7 +186,7 @@ export class Router {
     }
 
     for (const t of targets) this.notify(t);
-    return ok({ msgId: msg.id, recipients: targets });
+    return ok({ msgId: msg.id, recipients: targets, conversationId });
   }
 
   private check(req: Request): Response {

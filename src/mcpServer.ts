@@ -120,7 +120,8 @@ export function resolveIdentity(): SelfIdentity {
   const cwd = process.cwd();
   const sessionId = process.env.CLAUDE_IPC_SESSION ?? crypto.randomUUID();
   const alias = process.env.CLAUDE_IPC_ALIAS ?? sessionId; // addressable by id; friendly name optional
-  return { alias, sessionId, cwd };
+  const transcriptPath = process.env.CLAUDE_IPC_TRANSCRIPT ?? ""; // exposed by the launcher when available
+  return { alias, sessionId, cwd, transcriptPath };
 }
 
 export async function main(): Promise<void> {

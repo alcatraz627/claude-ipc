@@ -13,6 +13,7 @@ export interface SelfIdentity {
   alias: string;
   sessionId: string;
   cwd: string;
+  transcriptPath?: string; // path to this session's transcript, if the launcher exposed it
 }
 
 export function createTools(client: Client, me: SelfIdentity) {
@@ -38,7 +39,7 @@ export function createTools(client: Client, me: SelfIdentity) {
         conversationId: a.conversationId,
         ttlS: a.ttlS,
         // carry a pointer back to this session so the recipient can find context
-        contextPtr: { sessionId: me.sessionId, transcriptPath: "", cwd: me.cwd },
+        contextPtr: { sessionId: me.sessionId, transcriptPath: me.transcriptPath ?? "", cwd: me.cwd },
       });
     },
 

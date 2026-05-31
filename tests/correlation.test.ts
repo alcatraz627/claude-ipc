@@ -30,6 +30,20 @@ describe("correlation, consent, timeouts", () => {
   });
   afterEach(() => broker.stop());
 
+  test("a query and its reply share an auto-generated conversationId thread", async () => {
+    const q = await client.send({ from: "alice", to: "bob", kind: "query", body: "?" });
+    expect(q.conversationId).toBe(`conv-${q.msgId}`); // the query opens a thread
+    await client.reply({ from: "bob", corrId: q.msgId, body: "yes" });
+    const thread = await client.history({ conversationId: q.conversationId });
+    expect(thread.messages.length).toBe(2); // query + response, one thread
+    expect(thread.messages.every((m: { conversationId: string }) => m.conversationId === q.conversationId)).toBe(true);
+  });
+
+  test("a bare inform is not threaded (no conversationId)", async () => {
+    const i = await client.send({ from: "alice", to: "bob", kind: "inform", body: "fyi" });
+    expect(i.conversationId).toBeNull();
+  });
+
   test("query → reply correlates back to the sender's inbox", async () => {
     const q = await client.send({ from: "alice", to: "bob", kind: "query", body: "base url?" });
     await client.reply({ from: "bob", corrId: q.msgId, body: "http://api.localhost:3000" });
