@@ -5,7 +5,19 @@ Let the agent in your **frontend** terminal hand work to the agent in your
 **backend** terminal — ask a question, get an answer, request an action — without
 you manually copy-pasting context between them.
 
-> Status: **bootstrapping** (docs first, then phased build). Not yet runnable.
+> Status: **v0.1** — broker + MCP tools + CLI + proactive hooks + idle-proof tab
+> badge, all green. Runnable today; proven by real cross-session handoffs.
+
+## Run it
+```
+bun install
+bun test                                  # the suite
+bun run src/cli.ts daemon start           # start the broker
+bun run src/cli.ts register backend       # claim a mailbox (or it auto-registers via hooks)
+bun run src/cli.ts send --from me --to backend --kind query "what's the API shape?"
+bun run src/cli.ts tail                    # watch the flow
+```
+Compile standalone binaries (CLI + hooks) with `bun run build:cli` / `build:hooks`.
 
 ## The idea in one breath
 

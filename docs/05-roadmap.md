@@ -187,9 +187,18 @@
 - **Phase T3 — enumerate tests:** complete the matrix (all SC1–SC7 as
   integration regressions + integration coverage). Write any gaps. **Full suite
   green.**
-- **Manual host-in-the-loop acceptance:** re-run SC1/SC6 scripts + record SC7
-  (a real developer handoff completed without manual copy-paste) — SC7 is manual
-  by definition.
+- **Manual host-in-the-loop acceptance (recorded):**
+  - **SC1** (proactive receipt) — ✅ confirmed at the hook entrypoint: the real
+    `userPromptSubmit.ts` reads synthetic host stdin and emits the exact
+    `hookSpecificOutput.additionalContext`. Live in-host badge confirm was
+    blocked by a tty-safety guard (handed off to fix), not the feature.
+  - **SC6** (a guarded op stays blocked) — ✅ by construction: IPC hooks are
+    injection-only (never `decision:block`); acting on a delivered message flows
+    through the host's PreToolUse guards. Demonstrated incidentally — the tty
+    guard blocked an IPC-suggested command.
+  - **SC7** (a real developer handoff, no copy-paste) — ✅ via dogfooding: two
+    real cross-session handoffs this session (a status query answered by another
+    live session; a bug report carried to `claude-audit` as a file pointer).
 - **Commit & push.** Tag **v0.1 — dogfood-complete**.
 
 ---

@@ -60,6 +60,16 @@ describe("correlation, consent, timeouts", () => {
     ]);
   });
 
+  test("an interim (non-terminal) reply delivers but does NOT close the awaiting", async () => {
+    const q = await client.send({ from: "alice", to: "bob", kind: "request", body: "build", ttlS: 60 });
+    await client.reply({ from: "bob", corrId: q.msgId, body: "accepted, running", terminal: false });
+    expect(backend.isAwaitingOpen(q.msgId)).toBe(true); // ack/progress keeps it open
+    await client.reply({ from: "bob", corrId: q.msgId, body: "done" }); // terminal
+    expect(backend.isAwaitingOpen(q.msgId)).toBe(false);
+    const inbox = await client.check("alice");
+    expect(inbox.messages.map((m: { body: string }) => m.body)).toEqual(["accepted, running", "done"]);
+  });
+
   test("request → decline → error{declined} reaches the sender", async () => {
     const req = await client.send({ from: "alice", to: "bob", kind: "request", body: "rm -rf /" });
     await client.decline("bob", req.msgId, "nope");
