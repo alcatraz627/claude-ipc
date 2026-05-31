@@ -53,6 +53,11 @@ describe("ipc_* tools", () => {
     expect(declined?.errorCode).toBe("declined");
   });
 
+  test("ipc_compose returns live peers excluding self", async () => {
+    const res = (await alice.ipc_compose()) as { peers: { alias: string }[] };
+    expect(res.peers.map((p) => p.alias)).toEqual(["bob"]); // alice (self) excluded
+  });
+
   test("ipc_list and ipc_history", async () => {
     const peers = (await alice.ipc_list()) as { peers: { alias: string }[] };
     expect(peers.peers.map((p) => p.alias).sort()).toEqual(["alice", "bob"]);

@@ -47,7 +47,8 @@ const USAGE = `claude-ipc — cross-session messaging
   status <msg-id>            (a message's delivery + response lifecycle)
   accept <msg-id> --as <alias>
   decline <msg-id> --as <alias> [--reason <r>]
-  tail                       (live monitor — Phase 6)
+  compose                    (interactive: pick a live peer + notes, then send)
+  tail                       (live monitor)
   daemon status|start|stop`;
 
 export async function run(argv: string[], opts: { socketPath?: string } = {}): Promise<number> {
@@ -195,6 +196,28 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
         }
         console.error(`daemon: unknown subcommand "${sub}" (status|start|stop)`);
         return 2;
+      }
+      case "compose": {
+        const peers = (await client.list()).peers as { alias: string; cwd: string; status: string }[];
+        const live = peers.filter((p) => p.status !== "offline");
+        if (live.length === 0) {
+          out("no live peers to send to");
+          return 0;
+        }
+        out("Live peers:");
+        live.forEach((p, i) => out(`  [${i + 1}] ${p.alias}  (${p.cwd})`));
+        const target = live[Number(prompt("target #: ")) - 1];
+        if (!target) {
+          console.error("invalid selection");
+          return 2;
+        }
+        const kind = (prompt("kind [inform|query|request] (inform): ") || "inform") as
+          | "inform"
+          | "query"
+          | "request";
+        const body = prompt("notes: ") ?? "";
+        out(await client.send({ from: String(flags.from ?? "cli"), to: target.alias, kind, body }));
+        return 0;
       }
       case "tail": {
         if (flags.once === true || flags.once === "true") {

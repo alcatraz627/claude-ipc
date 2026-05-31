@@ -61,6 +61,23 @@ export function createTools(client: Client, me: SelfIdentity) {
       client.history(a),
 
     ipc_status: (a: { msgId: string }): Promise<unknown> => client.status(a.msgId),
+
+    // The compose flow: returns live peers for the HUMAN to pick from. The agent
+    // must surface these in the host's input UI (pick_one + form) and let the user
+    // choose the target + write notes — it must NOT choose the target itself.
+    ipc_compose: async (): Promise<unknown> => {
+      const { peers } = (await client.list()) as {
+        peers: { alias: string; cwd: string; status: string }[];
+      };
+      return {
+        peers: peers
+          .filter((p) => p.status !== "offline" && p.alias !== me.alias)
+          .map((p) => ({ alias: p.alias, cwd: p.cwd, status: p.status })),
+        instructions:
+          "Present these peers to the USER (e.g. pick_one) and let them choose a target + add notes (form). " +
+          "Never pick the target yourself. Then call ipc_send(to=<their pick>, kind, body=<their notes>).",
+      };
+    },
   };
 }
 

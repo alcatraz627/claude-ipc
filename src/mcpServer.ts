@@ -106,6 +106,13 @@ export function buildMcpServer(tools: IpcTools): McpServer {
     async (a) => asText(await tools.ipc_status(a)),
   );
 
+  server.tool(
+    "ipc_compose",
+    "Start a hand-off: returns the live peers so YOU can let the USER pick the target and add notes (present them with pick_one + form, never choose the target yourself), then call ipc_send.",
+    {},
+    async () => asText(await tools.ipc_compose()),
+  );
+
   return server;
 }
 
