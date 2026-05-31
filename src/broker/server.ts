@@ -25,6 +25,40 @@ export interface BrokerHandle {
 
 interface ConnData {
   dec: FrameDecoder;
+  // Bytes a response wanted to send but the socket's send buffer couldn't take
+  // yet. A socket write only accepts up to the kernel high-water mark (~8 KB);
+  // anything past that must wait for the `drain` event, or it's silently lost.
+  outbox: Uint8Array[];
+}
+
+/** A minimal view of the bits of a Bun socket the write pump touches. */
+type Writable = { write(data: Uint8Array): number; data: ConnData };
+
+/**
+ * Send everything queued for this connection, stopping the instant the socket
+ * pushes back. A socket `write` returns how many bytes it actually accepted; a
+ * large frame (e.g. a full `history` response) overflows the send buffer and is
+ * only partially written. We keep the unsent tail at the head of the outbox and
+ * resume from the `drain` event — without this, the response arrives truncated
+ * and the peer's length-prefix decoder waits forever for bytes that never come.
+ */
+function pump(socket: Writable): void {
+  const q = socket.data.outbox;
+  while (q.length > 0) {
+    const head = q[0];
+    const n = socket.write(head);
+    if (n < 0) {
+      // Socket is closing; drop anything still queued.
+      q.length = 0;
+      return;
+    }
+    if (n >= head.byteLength) {
+      q.shift();
+    } else {
+      q[0] = head.subarray(n); // partial write — keep the remainder, await drain
+      return;
+    }
+  }
 }
 
 export function startBroker(opts: { router: Router; socketPath: string }): BrokerHandle {
@@ -37,12 +71,16 @@ export function startBroker(opts: { router: Router; socketPath: string }): Broke
     unix: opts.socketPath,
     socket: {
       open(socket) {
-        socket.data = { dec: new FrameDecoder() };
+        socket.data = { dec: new FrameDecoder(), outbox: [] };
       },
       data(socket, data) {
         for (const frame of socket.data.dec.push(new Uint8Array(data))) {
-          socket.write(encodeFrame(opts.router.handle(frame as Request)));
+          socket.data.outbox.push(encodeFrame(opts.router.handle(frame as Request)));
         }
+        pump(socket);
+      },
+      drain(socket) {
+        pump(socket);
       },
     },
   });

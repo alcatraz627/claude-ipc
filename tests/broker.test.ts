@@ -62,4 +62,20 @@ describe("broker end-to-end", () => {
     expect((await client.check("carol")).messages.length).toBe(1);
     expect((await client.check("alice")).messages.length).toBe(0);
   });
+
+  // Regression: a response bigger than the socket send-buffer watermark (~8 KB)
+  // is written in pieces. The broker must drain the unsent tail on `drain`, or
+  // the client's length-prefix decoder hangs forever waiting for the lost bytes.
+  // This is the bug that left `history`/`tail` empty for any non-trivial log.
+  test("a >8 KB history response is delivered whole, not truncated", async () => {
+    await client.register("alice", { sessionId: "sA", cwd: "/a" });
+    await client.register("bob", { sessionId: "sB", cwd: "/b" });
+    const body = "x".repeat(600); // ~30 of these clears the 8 KB watermark comfortably
+    for (let i = 0; i < 30; i++) {
+      await client.send({ from: "alice", to: "bob", kind: "inform", body: `${i}:${body}` });
+    }
+    const log = await client.history({});
+    expect(log.messages.length).toBe(30);
+    expect(log.messages.at(-1).body).toBe(`29:${body}`);
+  });
 });
