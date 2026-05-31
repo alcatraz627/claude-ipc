@@ -26,6 +26,7 @@ export class Router {
     private newId: () => string,
     private defaultTtlS: number | null = null, // null = queries don't auto-time-out
     private notify: (alias: string) => void = () => {}, // fired when a peer's inbox changes
+    private allowlist: Record<string, string[]> = {}, // {target: [allowed senders]}; empty = open
   ) {}
 
   handle(req: Request): Response {
@@ -55,6 +56,8 @@ export class Router {
           return this.awaitReply(req);
         case "history":
           return this.history(req);
+        case "status":
+          return this.status(req);
         case "list":
           return ok({ peers: this.registry.list() });
         default:
@@ -106,6 +109,7 @@ export class Router {
       body?: string;
       conversationId?: string;
       ttlS?: number;
+      contextPtr?: { sessionId: string; transcriptPath: string; cwd: string };
     };
     if (!a.from || !a.to) return fail("bad_args", "send needs from + to");
     if (!a.kind || !SENDABLE.includes(a.kind)) {
@@ -114,6 +118,14 @@ export class Router {
 
     if (a.to !== "*" && !this.registry.has(a.to)) {
       return ok({ msgId: null, error: { code: "no_peer", livePeers: this.registry.liveAliases() } });
+    }
+
+    // Allowlist guards who may target a peer (e.g. only certain senders may task a
+    // broad-permission session). A guardrail against accidental targeting, not a
+    // security boundary under the no-auth model.
+    const allowed = this.allowlist[a.to];
+    if (a.to !== "*" && allowed && !allowed.includes(a.from)) {
+      return ok({ msgId: null, error: { code: "not_allowed", message: `${a.from} may not target ${a.to}` } });
     }
 
     const msg = makeMessage({
@@ -125,6 +137,7 @@ export class Router {
       body: a.body ?? "",
       conversationId: a.conversationId ?? null,
       ttlS: a.ttlS ?? null,
+      contextPtr: a.contextPtr ?? null,
     });
     this.backend.append(msg);
 
@@ -243,6 +256,19 @@ export class Router {
     if (!a.corrId) return fail("bad_args", "cancel needs corrId");
     this.backend.closeAwaiting(a.corrId, "cancelled");
     return ok({ cancelled: true });
+  }
+
+  /** A message's full lifecycle: the message, its per-recipient deliveries, and any responses. */
+  private status(req: Request): Response {
+    const a = req.args as { msgId?: string };
+    if (!a.msgId) return fail("bad_args", "status needs msgId");
+    const message = this.backend.get(a.msgId);
+    if (!message) return fail("not_found", `no message ${a.msgId}`);
+    return ok({
+      message,
+      deliveries: this.backend.deliveriesFor(a.msgId),
+      responses: this.backend.history({}).filter((m) => m.corrId === a.msgId),
+    });
   }
 
   /** Audit query: who/what/when, filterable by peer, time, and conversation. */

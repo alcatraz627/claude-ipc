@@ -99,6 +99,13 @@ export function buildMcpServer(tools: IpcTools): McpServer {
     async (a) => asText(await tools.ipc_history(a)),
   );
 
+  server.tool(
+    "ipc_status",
+    "Inspect a message's lifecycle by id: the message, its per-recipient deliveries, and any responses.",
+    { msgId: z.string() },
+    async (a) => asText(await tools.ipc_status(a)),
+  );
+
   return server;
 }
 

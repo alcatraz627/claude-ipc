@@ -61,7 +61,7 @@ export function main(): void {
   const registry = new Registry(backend, nowS, config.liveness);
   const mkId = (): string => `msg-${crypto.randomUUID().slice(0, 8)}`;
   const notifier = new BadgeNotifier(backend, registry, ttyBadgeSink, config.badge);
-  const router = new Router(backend, registry, nowS, mkId, null, (alias) => notifier.update(alias));
+  const router = new Router(backend, registry, nowS, mkId, null, (alias) => notifier.update(alias), config.allowlist);
   const inflight = backend.replayInflight();
   setInterval(() => tickSweeper(backend, nowS, mkId), config.sweepIntervalS * 1000);
   startBroker({ router, socketPath: config.socketPath });

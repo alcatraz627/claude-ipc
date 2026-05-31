@@ -44,6 +44,7 @@ const USAGE = `claude-ipc — cross-session messaging
   inbox  <alias> [--consume]
   peers
   log    [--peer <a>] [--since <epoch>]
+  status <msg-id>            (a message's delivery + response lifecycle)
   accept <msg-id> --as <alias>
   decline <msg-id> --as <alias> [--reason <r>]
   tail                       (live monitor — Phase 6)
@@ -123,6 +124,15 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
         if (flags.peer) q.peer = String(flags.peer);
         if (flags.since) q.since = Number(flags.since);
         out(await client.history(q));
+        return 0;
+      }
+      case "status": {
+        const msgId = positional[0] ?? "";
+        if (!msgId) {
+          console.error("status <msg-id>");
+          return 2;
+        }
+        out(await client.status(msgId));
         return 0;
       }
       case "accept": {

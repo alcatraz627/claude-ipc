@@ -37,6 +37,8 @@ export function createTools(client: Client, me: SelfIdentity) {
         body: a.body,
         conversationId: a.conversationId,
         ttlS: a.ttlS,
+        // carry a pointer back to this session so the recipient can find context
+        contextPtr: { sessionId: me.sessionId, transcriptPath: "", cwd: me.cwd },
       });
     },
 
@@ -57,6 +59,8 @@ export function createTools(client: Client, me: SelfIdentity) {
 
     ipc_history: (a: { peer?: string; since?: number; conversationId?: string } = {}): Promise<unknown> =>
       client.history(a),
+
+    ipc_status: (a: { msgId: string }): Promise<unknown> => client.status(a.msgId),
   };
 }
 
