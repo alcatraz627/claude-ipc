@@ -78,4 +78,17 @@ describe("broker end-to-end", () => {
     expect(log.messages.length).toBe(30);
     expect(log.messages.at(-1).body).toBe(`29:${body}`);
   });
+
+  // Sibling of the above on the send path: a single request frame larger than
+  // the watermark is itself written in pieces. The client must drain its own
+  // outbound tail, or the broker never sees a whole frame and the call hangs.
+  test("a >8 KB request body is sent whole and round-trips", async () => {
+    await client.register("alice", { sessionId: "sA", cwd: "/a" });
+    await client.register("bob", { sessionId: "sB", cwd: "/b" });
+    const big = "y".repeat(20_000); // one frame, well over the 8 KB watermark
+    const sent = await client.send({ from: "alice", to: "bob", kind: "inform", body: big });
+    expect(sent.msgId).toBeDefined();
+    const inbox = await client.check("bob");
+    expect(inbox.messages[0].body).toBe(big);
+  });
 });

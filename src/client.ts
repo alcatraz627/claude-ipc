@@ -21,11 +21,28 @@ export function request(socketPath: string, req: Request): Promise<Response> {
         fn();
       }
     };
+    // A socket write only accepts up to the send-buffer watermark (~8 KB); a
+    // large request (a fat message body, a long contextPtr) overflows it and is
+    // written in pieces. Keep the unsent tail and resume on `drain`, or the
+    // broker never receives a complete frame and this call hangs forever.
+    let outbound = encodeFrame(req);
+    const pump = (socket: { write(d: Uint8Array): number }): void => {
+      if (outbound.byteLength === 0) return;
+      const n = socket.write(outbound);
+      if (n < 0) {
+        settle(() => reject(new Error("connection write failed")));
+        return;
+      }
+      outbound = outbound.subarray(n); // fully written → zero-length; partial → remainder
+    };
     Bun.connect({
       unix: socketPath,
       socket: {
         open(socket) {
-          socket.write(encodeFrame(req));
+          pump(socket);
+        },
+        drain(socket) {
+          pump(socket);
         },
         data(socket, data) {
           const first = dec.push(new Uint8Array(data))[0];
