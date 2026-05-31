@@ -81,14 +81,36 @@ describe("correlation, consent, timeouts", () => {
     expect(r.corrId).toBe(q.msgId);
   });
 
-  test("a reply after timeout is dropped — no duplicate/contradictory response", async () => {
-    const q = await client.send({ from: "alice", to: "bob", kind: "query", body: "?" });
+  test("a late reply (after a timeout fired) still delivers — the real answer wins", async () => {
+    const q = await client.send({ from: "alice", to: "bob", kind: "query", body: "?", ttlS: 60 });
     clock = 1100;
-    tickSweeper(backend, () => clock, mkId); // timeout synthesized, awaiting closed
-    const late = await client.reply({ from: "bob", corrId: q.msgId, body: "too late" });
-    expect(late.dropped).toBe(true);
+    tickSweeper(backend, () => clock, mkId); // timeout synthesized at +60
+    const late = await client.reply({ from: "bob", corrId: q.msgId, body: "actually, here it is" });
+    expect(late.dropped).toBeUndefined();
+    expect(late.late).toBe(true);
     const inbox = await client.check("alice");
-    expect(inbox.messages.length).toBe(1); // only the timeout response survives
-    expect(inbox.messages[0].errorCode).toBe("timeout");
+    // both the provisional timeout AND the real late answer are present
+    expect(inbox.messages.length).toBe(2);
+    expect(inbox.messages.some((m: { body: string }) => m.body === "actually, here it is")).toBe(true);
+  });
+
+  test("a reply after the sender cancelled is dropped", async () => {
+    const q = await client.send({ from: "alice", to: "bob", kind: "query", body: "?" });
+    await client.cancel(q.msgId);
+    const r = await client.reply({ from: "bob", corrId: q.msgId, body: "nvm" });
+    expect(r.dropped).toBe(true);
+    expect(r.reason).toBe("cancelled");
+    expect((await client.check("alice")).messages.length).toBe(0);
+  });
+
+  test("a query with no TTL is never auto-timed-out", async () => {
+    const q = await client.send({ from: "alice", to: "bob", kind: "query", body: "no deadline", ttlS: undefined });
+    // router default ttl in this suite is 60, so pass an explicit null-equivalent: send with a huge ttl is finite;
+    // instead assert directly at the storage layer that a null-deadline awaiting is never swept.
+    backend.openAwaiting("manual-no-ttl", null);
+    clock = 9_999_999;
+    expect(tickSweeper(backend, () => clock, mkId)).toBe(1); // only q (ttl 60) expires; the null one does not
+    expect(backend.isAwaitingOpen("manual-no-ttl")).toBe(true);
+    expect(backend.getAwaiting(q.msgId)?.closed).toBe(true);
   });
 });

@@ -25,10 +25,11 @@ export interface StorageBackend {
   deliveriesFor(msgId: string): Delivery[];
 
   // sender's outstanding query/request
-  openAwaiting(originId: string, expiresAt: number): void;
+  openAwaiting(originId: string, expiresAt: number | null): void; // null = no deadline
   closeAwaiting(originId: string, reason: Awaiting["closedReason"]): void;
   isAwaitingOpen(originId: string): boolean;
-  awaitingPastTtl(now: number): Awaiting[];
+  getAwaiting(originId: string): Awaiting | null;
+  awaitingPastTtl(now: number): Awaiting[]; // only records with a deadline that has passed
   originOf(corrId: string): Message | null;
 
   // registry warm-restart snapshot

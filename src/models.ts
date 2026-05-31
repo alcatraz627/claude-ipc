@@ -56,7 +56,7 @@ export interface Delivery {
 /** A sender's outstanding query/request — open until answered or timed out. */
 export interface Awaiting {
   originId: string; // the query/request id (== corrId of its responses)
-  expiresAt: number;
+  expiresAt: number | null; // null = no deadline (the default — never auto-times-out)
   closed: boolean;
   closedReason: "responded" | "timeout" | "cancelled" | null;
 }

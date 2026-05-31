@@ -71,7 +71,7 @@ interface DelRow {
 
 interface AwaitRow {
   origin_id: string;
-  expires_at: number;
+  expires_at: number | null;
   closed: number;
   closed_reason: string | null;
 }
@@ -223,7 +223,7 @@ export class SqliteBackend implements StorageBackend {
     return rows.map(toDelivery);
   }
 
-  openAwaiting(originId: string, expiresAt: number): void {
+  openAwaiting(originId: string, expiresAt: number | null): void {
     this.db
       .query(`INSERT OR REPLACE INTO awaiting (origin_id, expires_at, closed, closed_reason) VALUES (?,?,0,NULL)`)
       .run(originId, expiresAt);
@@ -240,9 +240,14 @@ export class SqliteBackend implements StorageBackend {
     return r ? r.closed === 0 : false;
   }
 
+  getAwaiting(originId: string): Awaiting | null {
+    const r = this.db.query("SELECT * FROM awaiting WHERE origin_id = ?").get(originId) as AwaitRow | null;
+    return r ? toAwaiting(r) : null;
+  }
+
   awaitingPastTtl(now: number): Awaiting[] {
     const rows = this.db
-      .query("SELECT * FROM awaiting WHERE closed=0 AND expires_at <= ?")
+      .query("SELECT * FROM awaiting WHERE closed=0 AND expires_at IS NOT NULL AND expires_at <= ?")
       .all(now) as AwaitRow[];
     return rows.map(toAwaiting);
   }

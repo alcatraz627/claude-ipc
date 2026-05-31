@@ -115,10 +115,9 @@ export interface Delivery {
   ts: number;
 }
 
-// The sender's view of an outstanding query/request: open until a terminal
-// response correlates to it, or it is timed out. A timeout CLOSES it, so a late
-// reply is dropped rather than producing a contradictory second response
-// (review finding #9).
+// The sender's view of an outstanding query/request: open until answered,
+// timed out (only if an explicit deadline was set), or cancelled. A late reply
+// still delivers; only a cancel drops it. expiresAt is null by default.
 export interface Awaiting {
   originId: string;           // the query/request id (== corrId of its responses)
   expiresAt: number;
@@ -147,10 +146,11 @@ export interface StorageBackend {
   setConsent(msgId: string, alias: string, accepted: boolean): void; // request accept/decline
   deliveriesFor(msgId: string): Delivery[];               // all recipients (broadcast fan-out)
   // sender's outstanding query/request (Awaiting rows)
-  openAwaiting(originId: string, expiresAt: number): void;
+  openAwaiting(originId: string, expiresAt: number | null): void; // null = no deadline (default)
   closeAwaiting(originId: string, reason: Awaiting["closedReason"]): void;
-  isAwaitingOpen(originId: string): boolean;              // false ⇒ drop a late reply (#9)
-  awaitingPastTtl(now: number): Awaiting[];               // open AND expired
+  isAwaitingOpen(originId: string): boolean;
+  getAwaiting(originId: string): Awaiting | null;         // closedReason=cancelled ⇒ drop a reply
+  awaitingPastTtl(now: number): Awaiting[];               // open, with a deadline, that has passed
   originOf(corrId: string): Message | null;
   // registry snapshot (warm restart)
   saveRegistry(entries: RegistryEntry[]): void;
@@ -285,8 +285,11 @@ foreground run. Help text follows the gcc CLI-help convention.
 - A `setInterval` task runs `sweeper.tick(now)` (default 5 s): for each
   `awaitingPastTtl(now)`, `closeAwaiting(reason:"timeout")` and synthesize
   `response{error,timeout}` → route to origin; age registry entries
-  (live→idle→offline). A reply whose `isAwaitingOpen(corrId)` is already false is
-  dropped (the origin closed by timeout) — no duplicate/contradictory response.
+  (live→idle→offline). Queries have **no deadline by default** (timeouts are
+  opt-in via an explicit `ttlS`); a late reply still **delivers** (the real answer
+  beats a provisional timeout), and a reply is dropped only if the sender
+  **cancelled**. [dogfood-corrected: a 1h default + late-drop threw away real,
+  human-paced answers.]
 - **Registry snapshot cadence (review #21):** the snapshot is written on every
   `register`/`leave` plus a periodic flush, so a known alias survives a broker
   restart — offline-queueing (FR8/SC3) holds *across* restarts, not just within

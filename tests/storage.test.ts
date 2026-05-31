@@ -76,10 +76,18 @@ function backendSuite(name: string, make: () => StorageBackend): void {
       expect(db.awaitingPastTtl(150)).toEqual([]);
     });
 
-    test("a timed-out awaiting is closed, so a late reply can be dropped", () => {
+    test("a timed-out awaiting is closed, and its reason is readable", () => {
       db.openAwaiting("q2", 100);
       db.closeAwaiting("q2", "timeout");
-      expect(db.isAwaitingOpen("q2")).toBe(false); // broker drops a reply correlated here
+      expect(db.isAwaitingOpen("q2")).toBe(false);
+      expect(db.getAwaiting("q2")?.closedReason).toBe("timeout");
+    });
+
+    test("a no-deadline awaiting stays open and is never swept", () => {
+      db.openAwaiting("nd1", null);
+      expect(db.isAwaitingOpen("nd1")).toBe(true);
+      expect(db.awaitingPastTtl(9_999_999_999)).toEqual([]); // null expiry → never returned
+      expect(db.getAwaiting("nd1")?.expiresAt).toBeNull();
     });
 
     test("originOf resolves a correlation id to its message", () => {

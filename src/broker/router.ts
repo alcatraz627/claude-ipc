@@ -23,7 +23,7 @@ export class Router {
     private registry: Registry,
     private now: () => number,
     private newId: () => string,
-    private defaultTtlS = 3600,
+    private defaultTtlS: number | null = null, // null = queries don't auto-time-out
   ) {}
 
   handle(req: Request): Response {
@@ -120,10 +120,12 @@ export class Router {
     const targets = a.to === "*" ? this.registry.liveAliases(a.from) : [a.to];
     for (const t of targets) this.backend.enqueue(msg.id, t);
 
-    // A directed query/request is something the sender waits on — track it so it
-    // can be correlated to a reply or timed out by the sweeper.
+    // A directed query/request is something the sender waits on — track it for
+    // correlation. It auto-times-out only if an explicit ttl was given (or a
+    // default configured); by default it stays open until answered.
     if (a.to !== "*" && (a.kind === "query" || a.kind === "request")) {
-      this.backend.openAwaiting(msg.id, this.now() + (a.ttlS ?? this.defaultTtlS));
+      const ttl = a.ttlS ?? this.defaultTtlS;
+      this.backend.openAwaiting(msg.id, ttl !== null ? this.now() + ttl : null);
     }
 
     return ok({ msgId: msg.id, recipients: targets });
@@ -155,10 +157,15 @@ export class Router {
     if (!a.from || !a.corrId) return fail("bad_args", "reply needs from + corrId");
     const origin = this.backend.originOf(a.corrId);
     if (!origin) return fail("no_origin", `no message for corrId ${a.corrId}`);
-    if (!this.backend.isAwaitingOpen(a.corrId)) {
-      return ok({ dropped: true, reason: "awaiting_closed" }); // late or duplicate
+    const aw = this.backend.getAwaiting(a.corrId);
+    // Drop only if the sender explicitly cancelled. Otherwise deliver — even after
+    // a timeout fired: a real (if late) answer beats a provisional timeout, and a
+    // human-paced reply hours later is the normal case, not an error to discard.
+    if (aw?.closed && aw.closedReason === "cancelled") {
+      return ok({ dropped: true, reason: "cancelled" });
     }
     const terminal = a.terminal ?? true;
+    const late = aw?.closed === true;
     const resp = makeMessage({
       id: this.newId(),
       kind: "response",
@@ -174,8 +181,8 @@ export class Router {
     });
     this.backend.append(resp);
     this.backend.enqueue(resp.id, origin.fromAlias);
-    if (terminal) this.backend.closeAwaiting(a.corrId, "responded");
-    return ok({ msgId: resp.id, terminal });
+    if (terminal && (aw === null || !aw.closed)) this.backend.closeAwaiting(a.corrId, "responded");
+    return ok({ msgId: resp.id, terminal, late });
   }
 
   /** Consent to act on a request. Marks the delivery accepted; the work + reply follow. */

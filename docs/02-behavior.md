@@ -170,8 +170,9 @@ it is consumed. [FR3, FR4, NFR2]
 | Situation | Observable result |
 |-----------|-------------------|
 | Send to unknown alias | immediate `response{error,no_peer}` + live-peer list |
-| Query/request unanswered past TTL | `response{error,timeout}` to sender; the awaiting origin is **closed** |
-| Reply arrives after timeout was synthesized | dropped — origin already closed; recipient told "too late" (no duplicate/contradictory response) (review #9) |
+| Query/request past an EXPLICIT TTL (opt-in; default = no deadline) | `response{error,timeout}` to sender (provisional) |
+| A real reply arrives after that timeout | **DELIVERS (late)** — the real answer beats the provisional timeout; the sender sees both. Human-paced replies hours later are normal, not errors. |
+| Reply after the sender CANCELLED | dropped (the sender abandoned the request) |
 | Recipient declines a request | `response{error,declined}` to sender |
 | Recipient's action fails a guardrail / errors | `response{error,internal}` with detail |
 | Broker unavailable | degraded mode (§10); a status surface shows it is down |
