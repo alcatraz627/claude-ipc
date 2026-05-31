@@ -76,6 +76,10 @@ export function request(socketPath: string, req: Request, timeoutMs: number = co
       unix: socketPath,
       socket: {
         open(socket) {
+          if (settled) {
+            socket.end(); // the deadline already fired before we connected — don't leak it
+            return;
+          }
           sock = socket;
           pump(socket);
         },
@@ -214,7 +218,7 @@ export class Client {
     return this.call("status", { msgId });
   }
   count(alias: string): Promise<any> {
-    return this.call("count", { alias });
+    return this.call("count", { alias }, alias);
   }
   reply(args: { from: string; corrId: string; body?: string; terminal?: boolean; status?: "ok" | "error" }): Promise<any> {
     return this.call("reply", { ...args }, args.from);

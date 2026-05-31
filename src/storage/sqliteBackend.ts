@@ -222,10 +222,16 @@ export class SqliteBackend implements StorageBackend {
       .all(via, alias) as { msg_id: string }[];
     if (claimed.length === 0) return [];
     // messages is append-only, so reading the bodies after the claim is race-free.
-    const placeholders = claimed.map(() => "?").join(",");
-    const rows = this.db
-      .query(`SELECT * FROM messages WHERE id IN (${placeholders}) ORDER BY ts`)
-      .all(...claimed.map((r) => r.msg_id)) as MsgRow[];
+    // Fetch in batches so a large backlog can't exceed SQLite's bound-variable
+    // limit; re-sort by ts since the batches arrive independently.
+    const ids = claimed.map((r) => r.msg_id);
+    const rows: MsgRow[] = [];
+    for (let i = 0; i < ids.length; i += 500) {
+      const batch = ids.slice(i, i + 500);
+      const placeholders = batch.map(() => "?").join(",");
+      rows.push(...(this.db.query(`SELECT * FROM messages WHERE id IN (${placeholders})`).all(...batch) as MsgRow[]));
+    }
+    rows.sort((a, b) => a.ts - b.ts);
     return rows.map(toMessage);
   }
 

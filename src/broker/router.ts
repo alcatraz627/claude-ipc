@@ -310,6 +310,8 @@ export class Router {
   private count(req: Request): Response {
     const a = req.args as { alias?: string };
     if (!a.alias) return fail("bad_args", "count needs alias");
+    const denied = this.requireOwner(req, a.alias); // your own inbox size only
+    if (denied) return denied;
     return ok({ count: this.backend.pending(a.alias).length });
   }
 

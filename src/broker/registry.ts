@@ -35,10 +35,12 @@ export class Registry {
    *
    * First registration mints a fresh token. A re-registration by the rightful
    * holder (the presented token matches) keeps the same token, so a reconnecting
-   * session that kept its token file stays authorized. A live alias whose token
-   * is presented wrong (or not at all) is refused — that's the anti-hijack guard.
-   * An offline alias can always be reclaimed (the old owner is gone) with a fresh
-   * token. `ok:false` means the alias is live and owned by someone else.
+   * session that kept its token file stays authorized. Any token-bearing alias
+   * whose token is presented wrong (or not at all) is refused — even when it's
+   * shown as offline, because warm-started entries after a broker restart are
+   * marked offline yet are still owned; reclaiming them tokenlessly was a hijack
+   * window. Only a legacy alias with no token (pre-upgrade) is freely claimable.
+   * `ok:false` means the alias is owned and you didn't prove ownership.
    */
   register(
     alias: string,
@@ -46,8 +48,8 @@ export class Registry {
     presentedToken?: string,
   ): { ok: boolean; replaced: boolean; token: string | null } {
     const prev = this.entries.get(alias);
-    if (prev && this.statusOf(prev) !== "offline" && prev.token && presentedToken !== prev.token) {
-      return { ok: false, replaced: false, token: null }; // live alias, wrong/missing token
+    if (prev?.token && presentedToken !== prev.token) {
+      return { ok: false, replaced: false, token: null }; // owned alias, wrong/missing token
     }
     const replaced = prev !== undefined && prev.sessionId !== info.sessionId;
     const keep = prev?.token && presentedToken === prev.token;

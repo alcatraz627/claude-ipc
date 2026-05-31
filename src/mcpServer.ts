@@ -129,7 +129,14 @@ export async function main(): Promise<void> {
   // Fallback lets ipc_send/ipc_check/ipc_deliver keep working off the durable log
   // when the broker is down, instead of throwing at the agent.
   const tools = createTools(new Client(config.socketPath, { dbPath: config.dbPath }), me);
-  await tools.ipc_register({}); // make this session addressable immediately
+  // Best-effort: register makes this session addressable, but the broker may be
+  // down. Don't let that abort startup — the degraded fallback still serves
+  // ipc_send/check/deliver off the durable log, and a later op re-registers.
+  try {
+    await tools.ipc_register({});
+  } catch {
+    // broker unreachable at startup — come up anyway, register when it returns
+  }
   await buildMcpServer(tools).connect(new StdioServerTransport());
 }
 

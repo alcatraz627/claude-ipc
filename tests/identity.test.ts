@@ -55,11 +55,14 @@ describe("identity / token capability", () => {
     expect(re.registered).toBe(true);
   });
 
-  test("an offline alias can be reclaimed once the old owner ages out", async () => {
+  test("an owned alias stays protected after going offline; only the token-holder reconnects", async () => {
     await owner.register("backend", { sessionId: "s1", cwd: "/x" });
-    clock += 2000; // past offlineS=1800 → backend is offline, so reclaim is allowed
-    const claimed = await attacker.register("backend", { sessionId: "new", cwd: "/z" });
-    expect(claimed.registered).toBe(true);
+    clock += 2000; // past offlineS=1800 → backend shows offline (also models a warm-start after restart)
+    // a tokenless attacker still cannot reclaim it — this is the post-restart hijack window, closed
+    await expect(attacker.register("backend", { sessionId: "evil", cwd: "/z" })).rejects.toThrow(/alias_taken/);
+    // the real owner reconnects because its token file persisted
+    const re = await owner.register("backend", { sessionId: "s1b", cwd: "/x" });
+    expect(re.registered).toBe(true);
   });
 
   test("tokens never appear in the public peer list", async () => {
