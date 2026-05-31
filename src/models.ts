@@ -67,6 +67,7 @@ export interface RegistryEntry {
   cwd: string;
   caps: string[];
   pid: number | null;
+  tty: string | null; // the session's pty (e.g. /dev/ttys005) for out-of-band tab badging
   lastSeen: number;
   status: "live" | "idle" | "offline";
 }

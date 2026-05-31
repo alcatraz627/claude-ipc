@@ -18,6 +18,8 @@ export async function main(): Promise<void> {
     await client.register(alias, {
       sessionId: input.session_id ?? `hook-${alias}`,
       cwd: input.cwd ?? process.cwd(),
+      pid: process.ppid, // the Claude process — broker derives the tty from it
+      tty: process.env.CLAUDE_IPC_TTY, // explicit override if the launcher set it
     });
     const ctx = await deliverContext(client, alias, "resume");
     if (ctx) emitContext("SessionStart", ctx);

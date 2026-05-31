@@ -36,10 +36,12 @@ make the idle session *act*. Waking-to-act needs input injection (`TIOCSTI` —
 generally blocked on modern macOS) or real `--channels`. So: glance → see badged
 tab → click it → your next turn delivers. Ambient awareness, idle-proof, no tmux.
 
-### Unknowns to settle BEFORE building (prototype first)
-- Prove ONE cross-tab write: from process A, write an OSC title escape to process
-  B's `/dev/ttysNNN` and confirm B's Ghostty tab title changes. If this doesn't
-  work cross-process, the whole direction is dead too.
+### Unknowns settled
+- **✅ VALIDATED 2026-05-31** — one process writing `\033]0;…\007` to another
+  Ghostty tab's `/dev/ttysNNN` DOES change that tab's title. The broker→peer-TTY
+  badge is viable and idle-proof. This was the make-or-break; it passed.
+
+### Still to settle while building
 - Permission/ownership of another session's pty (same user — expected OK).
 - Capturing `TTY_PATH` reliably from the SessionStart hook context.
 - Clearing/refreshing the badge as the inbox drains (broker re-writes on change).

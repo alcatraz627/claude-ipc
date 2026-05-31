@@ -103,6 +103,7 @@ function backendSuite(name: string, make: () => StorageBackend): void {
         cwd: "/x",
         caps: ["fe", "next"],
         pid: 123,
+        tty: "/dev/ttys003",
         lastSeen: 5,
         status: "live" as const,
       };

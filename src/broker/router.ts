@@ -7,6 +7,7 @@
  * is synchronous — so it is trivially testable with an injected clock + id source.
  */
 
+import { ttyForPid } from "../badge.ts";
 import { makeMessage, type DeliveredVia, type ErrorCode, type Kind, type Status } from "../models.ts";
 import type { Request, Response } from "../protocol.ts";
 import type { StorageBackend } from "../storage/base.ts";
@@ -24,6 +25,7 @@ export class Router {
     private now: () => number,
     private newId: () => string,
     private defaultTtlS: number | null = null, // null = queries don't auto-time-out
+    private notify: (alias: string) => void = () => {}, // fired when a peer's inbox changes
   ) {}
 
   handle(req: Request): Response {
@@ -64,13 +66,22 @@ export class Router {
   }
 
   private register(req: Request): Response {
-    const a = req.args as { alias?: string; sessionId?: string; cwd?: string; caps?: string[]; pid?: number };
+    const a = req.args as {
+      alias?: string;
+      sessionId?: string;
+      cwd?: string;
+      caps?: string[];
+      pid?: number;
+      tty?: string;
+    };
     if (!a.alias || !a.sessionId) return fail("bad_args", "register needs alias + sessionId");
+    const tty = a.tty ?? (a.pid ? ttyForPid(a.pid) : null);
     const { replaced } = this.registry.register(a.alias, {
       sessionId: a.sessionId,
       cwd: a.cwd ?? "",
       caps: a.caps,
       pid: a.pid ?? null,
+      tty,
     });
     return ok({ alias: a.alias, registered: true, replaced });
   }
@@ -128,20 +139,25 @@ export class Router {
       this.backend.openAwaiting(msg.id, ttl !== null ? this.now() + ttl : null);
     }
 
+    for (const t of targets) this.notify(t);
     return ok({ msgId: msg.id, recipients: targets });
   }
 
   private check(req: Request): Response {
     const a = req.args as { alias?: string; consume?: boolean };
     if (!a.alias) return fail("bad_args", "check needs alias");
-    return ok({ messages: this.backend.pending(a.alias, { consume: a.consume ?? false }) });
+    const messages = this.backend.pending(a.alias, { consume: a.consume ?? false });
+    this.notify(a.alias);
+    return ok({ messages });
   }
 
   /** Hand a hook the alias's freshly-queued messages exactly once (idempotent inject). */
   private deliver(req: Request): Response {
     const a = req.args as { alias?: string; via?: DeliveredVia };
     if (!a.alias) return fail("bad_args", "deliver needs alias");
-    return ok({ messages: this.backend.claimForDelivery(a.alias, a.via ?? "hook") });
+    const messages = this.backend.claimForDelivery(a.alias, a.via ?? "hook");
+    this.notify(a.alias);
+    return ok({ messages });
   }
 
   /** Answer a query/request. A reply after the origin closed (timeout/cancel) is dropped. */
@@ -182,6 +198,7 @@ export class Router {
     this.backend.append(resp);
     this.backend.enqueue(resp.id, origin.fromAlias);
     if (terminal && (aw === null || !aw.closed)) this.backend.closeAwaiting(a.corrId, "responded");
+    this.notify(origin.fromAlias);
     return ok({ msgId: resp.id, terminal, late });
   }
 

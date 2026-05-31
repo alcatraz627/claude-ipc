@@ -32,7 +32,7 @@ export class Registry {
 
   register(
     alias: string,
-    info: { sessionId: string; cwd: string; caps?: string[]; pid?: number | null },
+    info: { sessionId: string; cwd: string; caps?: string[]; pid?: number | null; tty?: string | null },
   ): { replaced: boolean } {
     const prev = this.entries.get(alias);
     const replaced = prev !== undefined && prev.sessionId !== info.sessionId;
@@ -42,11 +42,17 @@ export class Registry {
       cwd: info.cwd,
       caps: info.caps ?? [],
       pid: info.pid ?? null,
+      tty: info.tty ?? prev?.tty ?? null,
       lastSeen: this.now(),
       status: "live",
     });
     this.snapshot();
     return { replaced };
+  }
+
+  get(alias: string): RegistryEntry | null {
+    const e = this.entries.get(alias);
+    return e ? { ...e, caps: [...e.caps], status: this.statusOf(e) } : null;
   }
 
   heartbeat(alias: string): void {

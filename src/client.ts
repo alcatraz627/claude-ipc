@@ -50,6 +50,7 @@ export interface RegisterInfo {
   cwd: string;
   caps?: string[];
   pid?: number;
+  tty?: string;
 }
 
 export interface SendArgs {

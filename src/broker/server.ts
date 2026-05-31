@@ -15,6 +15,7 @@ import { encodeFrame, FrameDecoder, type Request } from "../protocol.ts";
 import { Registry } from "./registry.ts";
 import { Router } from "./router.ts";
 import { tickSweeper } from "./sweeper.ts";
+import { BadgeNotifier, ttyBadgeSink } from "../badge.ts";
 import { SqliteBackend } from "../storage/sqliteBackend.ts";
 
 export interface BrokerHandle {
@@ -58,9 +59,10 @@ export function main(): void {
   mkdirSync(dirname(config.dbPath), { recursive: true });
   const backend = new SqliteBackend(config.dbPath);
   const registry = new Registry(backend, nowS, config.liveness);
-  const router = new Router(backend, registry, nowS, () => `msg-${crypto.randomUUID().slice(0, 8)}`);
-  const inflight = backend.replayInflight();
   const mkId = (): string => `msg-${crypto.randomUUID().slice(0, 8)}`;
+  const notifier = new BadgeNotifier(backend, registry, ttyBadgeSink, config.badge);
+  const router = new Router(backend, registry, nowS, mkId, null, (alias) => notifier.update(alias));
+  const inflight = backend.replayInflight();
   setInterval(() => tickSweeper(backend, nowS, mkId), config.sweepIntervalS * 1000);
   startBroker({ router, socketPath: config.socketPath });
   writeFileSync(config.pidPath, String(process.pid));

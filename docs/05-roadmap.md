@@ -140,13 +140,21 @@
 
 ## Triad 3 — Enhancements & integration
 
-### Phase 7 — Channel adapter (optional push)
-- **Goal:** top ladder rung where the host supports it.
-- **Deliverables:** `channelAdapter.ts` with feature detection; dispatcher uses
-  push when available, falls back silently.
-- **Testing:** integration with a **fake channel** — push delivers to a running
-  peer; absence falls back to hook rung; no regression when off.
-- **Done when:** push path proven with a fake; fallback verified.
+### Phase 7 — Notify rung: broker→peer-TTY tab badge
+- **Goal:** ambient awareness for a recipient even while idle — the broker badges
+  the peer's Ghostty tab title with its pending count. Validated mechanism (see
+  `docs/notes/tab-title-badge.md`): writing an OSC title escape to a peer's
+  captured `/dev/ttysNNN` changes its tab title, independent of that session's
+  (dead, if idle) hooks. A signal, not a wake — `--channels` remains the only
+  true auto-wake. `channelAdapter` stays a stub for when `--channels` ships.
+- **Deliverables:** registry captures each session's `tty` at register; a
+  `badge.ts` (OSC escape writer behind an injectable sink); dispatcher writes/
+  clears the badge on a peer's pending-count change; config flag to enable.
+- **Testing:** unit — badge escape formatting; dispatcher calls the sink with the
+  right `(tty, count)` on enqueue and on drain; absent-tty peers are skipped; off
+  by config = no-op. (Real-tty write is manual, like SC1.)
+- **Done when:** badge sink is driven correctly by message flow in tests; one
+  manual cross-tab badge confirmed on a live tab.
 
 ### Phase 8 — honker backend (swappable substrate)
 - **Goal:** validate storage swappability without betting on alpha software.

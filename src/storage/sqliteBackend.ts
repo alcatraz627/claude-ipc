@@ -41,7 +41,7 @@ CREATE INDEX IF NOT EXISTS ix_await_open ON awaiting(closed, expires_at);
 
 CREATE TABLE IF NOT EXISTS registry_snapshot (
   alias TEXT PRIMARY KEY, session_id TEXT, cwd TEXT, caps TEXT,
-  pid INTEGER, last_seen REAL, status TEXT);
+  pid INTEGER, tty TEXT, last_seen REAL, status TEXT);
 `;
 
 interface MsgRow {
@@ -82,6 +82,7 @@ interface RegRow {
   cwd: string;
   caps: string;
   pid: number | null;
+  tty: string | null;
   last_seen: number;
   status: string;
 }
@@ -133,6 +134,11 @@ export class SqliteBackend implements StorageBackend {
     this.db.run("PRAGMA busy_timeout = 2000");
     this.db.run("PRAGMA foreign_keys = ON");
     this.db.exec(SCHEMA);
+    try {
+      this.db.run("ALTER TABLE registry_snapshot ADD COLUMN tty TEXT");
+    } catch {
+      // column already present on an existing DB — fine
+    }
   }
 
   append(m: Message): void {
@@ -260,11 +266,11 @@ export class SqliteBackend implements StorageBackend {
     const tx = this.db.transaction((rows: RegistryEntry[]) => {
       this.db.run("DELETE FROM registry_snapshot");
       const stmt = this.db.query(
-        `INSERT INTO registry_snapshot (alias, session_id, cwd, caps, pid, last_seen, status)
-         VALUES (?,?,?,?,?,?,?)`,
+        `INSERT INTO registry_snapshot (alias, session_id, cwd, caps, pid, tty, last_seen, status)
+         VALUES (?,?,?,?,?,?,?,?)`,
       );
       for (const e of rows) {
-        stmt.run(e.alias, e.sessionId, e.cwd, JSON.stringify(e.caps), e.pid, e.lastSeen, e.status);
+        stmt.run(e.alias, e.sessionId, e.cwd, JSON.stringify(e.caps), e.pid, e.tty, e.lastSeen, e.status);
       }
     });
     tx(entries);
@@ -278,6 +284,7 @@ export class SqliteBackend implements StorageBackend {
       cwd: r.cwd,
       caps: JSON.parse(r.caps) as string[],
       pid: r.pid,
+      tty: r.tty,
       lastSeen: r.last_seen,
       status: r.status as RegistryEntry["status"],
     }));
