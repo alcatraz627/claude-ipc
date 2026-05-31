@@ -59,10 +59,16 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
       case "register": {
         const alias = positional[0] ?? String(flags.as ?? "");
         if (!alias) {
-          console.error("register <alias>");
+          console.error("register <alias> [--tty /dev/ttysNNN]");
           return 2;
         }
-        out(await client.register(alias, { sessionId: `cli-${alias}`, cwd: process.cwd() }));
+        out(
+          await client.register(alias, {
+            sessionId: `cli-${alias}`,
+            cwd: process.cwd(),
+            tty: flags.tty ? String(flags.tty) : undefined,
+          }),
+        );
         return 0;
       }
       case "send": {
