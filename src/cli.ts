@@ -69,6 +69,7 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
           await client.register(alias, {
             sessionId: `cli-${alias}`,
             cwd: process.cwd(),
+            pid: process.ppid, // broker derives the tty from the parent shell/session
             tty: flags.tty ? String(flags.tty) : undefined,
           }),
         );
