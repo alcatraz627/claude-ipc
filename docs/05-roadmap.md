@@ -156,14 +156,20 @@
 - **Done when:** badge sink is driven correctly by message flow in tests; one
   manual cross-tab badge confirmed on a live tab.
 
-### Phase 8 — honker backend (swappable substrate)
-- **Goal:** validate storage swappability without betting on alpha software.
-- **Deliverables:** `storage/honkerBackend.ts` implementing `StorageBackend`;
-  `config.backend="honker"` selection.
-- **Testing:** **backend-parity** — run the core integration suite against the
-  honker backend; document any honker-specific caveats/failures.
-- **Done when:** the SC suite passes on honker, or gaps are documented and the
-  default stays sqlite.
+### Phase 8 — honker backend (spike: evaluated, NOT adopted)
+- **Goal:** validate storage swappability against a real second engine (honker).
+- **Outcome (grounded in honker's source):** honker is a WORKER QUEUE
+  (`queue().enqueue` → `claimOne` → `ack`), not a per-recipient mailbox — its
+  primitives can't model our `delivered/consumed/accepted/declined`-per-recipient
+  states; it also lacks `:memory:` (our whole test suite) and needs a Rust-built
+  extension + a custom extension-enabled SQLite. Wrong shape. Writeup:
+  `docs/notes/honker-spike.md`.
+- **Decision:** keep `bun:sqlite` as default; do NOT add a honker backend. The
+  `StorageBackend` seam stays — already validated by the in-memory + sqlite
+  parity suite (two real backends since Phase 1). Realistic future seam use: a
+  networked store (Postgres) if cross-machine/multi-writer is ever needed.
+- **Done:** gaps documented, default stays sqlite (the roadmap's alternate
+  done-when). ✅
 
 ### Phase 9 — Integrations & hardening
 - **Goal:** dreaming hook-in (one-way), trust seam, polish, packaging.
