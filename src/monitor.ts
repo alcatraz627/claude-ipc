@@ -50,9 +50,7 @@ function kindTag(m: Msg): string {
           ? m.status === "error"
             ? "31"
             : "32"
-          : m.kind === "control"
-            ? "35"
-            : "37";
+          : "37";
   return c(color, m.errorCode ? `${m.kind}:${m.errorCode}` : m.kind);
 }
 
@@ -67,9 +65,14 @@ export async function monitorSnapshot(client: Client): Promise<string> {
   const recent = all.slice(-10);
 
   const header = dim(`claude-ipc · ${clock(Math.floor(Date.now() / 1000))}`);
-  const plines = peers.length
-    ? peers.map((p) => `  ${statusDot(p.status)} ${bold(p.alias)}  ${dim(p.cwd)}`)
-    : [dim("  (none)")];
+  // Show the real current actors (live/idle) in full; collapse the offline
+  // graveyard to a count so dead ephemeral sessions don't bury the roster.
+  const active = peers.filter((p) => p.status !== "offline");
+  const offline = peers.length - active.length;
+  const plines = active.length
+    ? active.map((p) => `  ${statusDot(p.status)} ${bold(p.alias)}  ${dim(p.cwd)}`)
+    : [dim("  (no active peers)")];
+  if (offline) plines.push(dim(`  +${offline} offline  ·  claude-ipc prune to clear`));
   const mlines = recent.length
     ? recent.map((m) => {
         const route = `${bold(m.fromAlias)}${dim("→")}${bold(m.toAlias)}`;
@@ -80,7 +83,7 @@ export async function monitorSnapshot(client: Client): Promise<string> {
 
   return [
     header,
-    bold(`peers (${peers.length})`),
+    bold(`peers (${active.length} active${offline ? `, ${offline} offline` : ""})`),
     ...plines,
     bold(`recent (${recent.length}/${all.length})`),
     ...mlines,

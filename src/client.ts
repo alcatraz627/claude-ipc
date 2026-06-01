@@ -153,8 +153,19 @@ export class Client {
    * Broker unreachable: keep working with reduced function. Sends persist (the
    * broker routes/reconciles them on return); checks read the durable log. Lost
    * while down: proactive push, no_peer classification, and timeout synthesis.
+   *
+   * In strict mode the fallback still refuses to act as an alias this client
+   * holds no token for — so a forged `from` can't be persisted while the broker
+   * is down. This is not a hard boundary (a process bypassing this client can
+   * write the DB directly); the broker is the real authority when it's up.
    */
   private degraded(op: Op, args: Record<string, any>): unknown {
+    if (config.strict) {
+      const actingAlias = op === "send" ? args.from : args.alias;
+      if (actingAlias && !readToken(this.tokensDir, actingAlias)) {
+        throw new Error(`unauthorized: no token for "${actingAlias}" (broker down, strict mode)`);
+      }
+    }
     const db = new SqliteBackend(this.fallback!.dbPath);
     try {
       if (op === "send") {
@@ -219,6 +230,9 @@ export class Client {
   }
   count(alias: string): Promise<any> {
     return this.call("count", { alias }, alias);
+  }
+  prune(offlineForS?: number): Promise<any> {
+    return this.call("prune", { offlineForS });
   }
   reply(args: { from: string; corrId: string; body?: string; terminal?: boolean; status?: "ok" | "error" }): Promise<any> {
     return this.call("reply", { ...args }, args.from);

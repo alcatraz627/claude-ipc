@@ -24,7 +24,8 @@ export type Op =
   | "list"
   | "history"
   | "status"
-  | "count";
+  | "count"
+  | "prune";
 
 export interface Request {
   v: number;

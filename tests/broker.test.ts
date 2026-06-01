@@ -142,4 +142,19 @@ describe("broker end-to-end", () => {
     await client.register("alice", { sessionId: "sA", cwd: "/a" });
     expect((await client.list()).peers.map((p: { alias: string }) => p.alias)).toContain("alice");
   });
+
+  // Registry GC: prune drops dead offline peers but keeps live ones and any
+  // offline alias that still has pending mail (a mailbox awaiting its owner).
+  test("prune drops offline peers, keeping live ones and pending mailboxes", async () => {
+    await client.register("alice", { sessionId: "sA", cwd: "/a" });
+    await client.register("bob", { sessionId: "sB", cwd: "/b" });
+    await client.register("ghost", { sessionId: "sG", cwd: "/private/tmp" });
+    await client.send({ from: "alice", to: "bob", kind: "inform", body: "hi" }); // bob now has mail
+    clock += 5000; // age everyone past offlineS=1800
+    await client.register("alice", { sessionId: "sA", cwd: "/a" }); // alice is live again
+    const r = await client.prune(1000); // window 1000s → cutoff at clock-1000
+    expect(r.pruned).toBe(1); // only ghost: offline, no mail
+    const aliases = (await client.list()).peers.map((p: { alias: string }) => p.alias).sort();
+    expect(aliases).toEqual(["alice", "bob"]); // ghost gone; bob kept (pending), alice kept (live)
+  });
 });

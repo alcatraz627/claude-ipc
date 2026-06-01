@@ -71,4 +71,21 @@ describe("identity / token capability", () => {
     expect(peers.length).toBe(1);
     expect(peers[0]?.token ?? null).toBeNull();
   });
+
+  test("strict mode: an unregistered alias cannot send (closes the forge window)", async () => {
+    const backend = new MemoryBackend();
+    const registry = new Registry(backend, () => 1000, { idleS: 300, offlineS: 1800 });
+    let n = 0;
+    const strictRouter = new Router(backend, registry, () => 1000, () => `msg-${++n}`, null, () => {}, {}, true);
+    const b = startBroker({ router: strictRouter, socketPath: tmpSock() });
+    const c = new Client(b.socketPath, undefined, tmpTokens());
+    await c.register("bob", { sessionId: "sB", cwd: "/b" }); // a registered target
+    // alice never registered → strict refuses to let her send
+    await expect(c.send({ from: "alice", to: "bob", kind: "inform", body: "x" })).rejects.toThrow(
+      /must register|not_registered/,
+    );
+    await c.register("alice", { sessionId: "sA", cwd: "/a" }); // now she's a known actor
+    expect((await c.send({ from: "alice", to: "bob", kind: "inform", body: "x" })).msgId).toBeDefined();
+    b.stop();
+  });
 });

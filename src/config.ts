@@ -23,10 +23,20 @@ export const config = {
   logPath: join(home, "logs", "broker.log"), // broker's own size-rotated operational log
   tokensDir: join(home, "tokens"), // per-alias capability files (0600), owner-only
 
-  defaultTtlS: 3600,
+  // Default TTL for a directed query/request when the sender gives none. null
+  // (the default) means it stays open until answered — set CLAUDE_IPC_DEFAULT_TTL_S
+  // to auto-time-out unanswered asks after N seconds.
+  defaultTtlS: process.env.CLAUDE_IPC_DEFAULT_TTL_S ? Number(process.env.CLAUDE_IPC_DEFAULT_TTL_S) : null,
   requestTimeoutMs: 5000, // a single broker round-trip; exceeded → caller stops waiting
   sweepIntervalS: 5,
   retentionS: Number(process.env.CLAUDE_IPC_RETENTION_S) || 7 * 24 * 3600, // purge settled msgs older than this
+  registryRetentionS: Number(process.env.CLAUDE_IPC_REGISTRY_RETENTION_S) || 24 * 3600, // drop peers offline longer than this
+
+  // Strict identity: a send's `from` must be a registered alias, closing the
+  // "forge a message from an alias nobody registered yet" window. On by default
+  // (real sessions register via the SessionStart hook); set =0 to allow ad-hoc
+  // unregistered senders (e.g. quick CLI tests).
+  strict: (process.env.CLAUDE_IPC_STRICT ?? "1") !== "0",
 
   liveness: { idleS: 300, offlineS: 1800 },
   badge: (process.env.CLAUDE_IPC_BADGE ?? "1") !== "0", // broker→peer-TTY tab badge

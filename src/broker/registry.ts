@@ -110,6 +110,26 @@ export class Registry {
     }));
   }
 
+  /**
+   * Drop offline peers last seen before `beforeTs` that have no pending mail.
+   *
+   * Without this the roster accumulates every session that ever registered —
+   * ephemeral sub-agents and headless runs that die without calling `leave`
+   * pile up as dead entries. A peer with queued messages is kept (it's a live
+   * mailbox awaiting its owner's return). Returns how many were removed.
+   */
+  pruneOffline(beforeTs: number): number {
+    let removed = 0;
+    for (const [alias, e] of this.entries) {
+      if (this.statusOf(e) !== "offline" || e.lastSeen >= beforeTs) continue;
+      if (this.backend.pending(alias).length > 0) continue; // keep live mailboxes
+      this.entries.delete(alias);
+      removed++;
+    }
+    if (removed > 0) this.snapshot();
+    return removed;
+  }
+
   liveAliases(exclude?: string): string[] {
     return this.list()
       .filter((e) => e.status !== "offline" && e.alias !== exclude)

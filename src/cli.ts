@@ -14,6 +14,14 @@ import { monitorSnapshot } from "./monitor.ts";
 
 type FlagValue = string | boolean;
 
+/** Parse a duration like "30m", "2h", "1d" (or bare seconds) to seconds; null if malformed. */
+function parseDuration(s: string): number | null {
+  const m = /^(\d+)\s*([smhd]?)$/.exec(s.trim());
+  if (!m) return null;
+  const n = Number(m[1]);
+  return n * { s: 1, m: 60, h: 3600, d: 86400, "": 1 }[m[2] ?? ""]!;
+}
+
 function parse(argv: string[]): { cmd: string; positional: string[]; flags: Record<string, FlagValue> } {
   const cmd = argv[0] ?? "help";
   const positional: string[] = [];
@@ -50,6 +58,7 @@ const USAGE = `claude-ipc — cross-session messaging
   decline <msg-id> --as <alias> [--reason <r>]
   compose                    (interactive: pick a live peer + notes, then send)
   tail                       (live monitor)
+  prune  [--offline-for <30m|2h|1d>]   (drop peers offline past the window; default 1d)
   daemon status|start|stop`;
 
 export async function run(argv: string[], opts: { socketPath?: string } = {}): Promise<number> {
@@ -129,6 +138,15 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
           return 2;
         }
         out(String((await client.count(alias)).count));
+        return 0;
+      }
+      case "prune": {
+        const window = parseDuration(String(flags["offline-for"] ?? "1d"));
+        if (window === null) {
+          console.error("prune: --offline-for must look like 30m, 2h, or 1d");
+          return 2;
+        }
+        out(`pruned ${(await client.prune(window)).pruned} offline peer(s)`);
         return 0;
       }
       case "log": {

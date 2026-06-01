@@ -27,6 +27,7 @@ export class Router {
     private defaultTtlS: number | null = null, // null = queries don't auto-time-out
     private notify: (alias: string) => void = () => {}, // fired when a peer's inbox changes
     private allowlist: Record<string, string[]> = {}, // {target: [allowed senders]}; empty = open
+    private strict = false, // require a send's `from` to be registered (closes the forge-before-register window)
   ) {}
 
   handle(req: Request): Response {
@@ -66,6 +67,8 @@ export class Router {
           return this.status(req);
         case "count":
           return this.count(req);
+        case "prune":
+          return this.prune(req);
         case "list":
           return ok({ peers: this.registry.list() });
         default:
@@ -144,6 +147,11 @@ export class Router {
     if (!a.from || !a.to) return fail("bad_args", "send needs from + to");
     const denied = this.requireOwner(req, a.from); // you may only send AS yourself
     if (denied) return denied;
+    // Strict identity: an unregistered `from` can't send — closes the window
+    // where you forge a message from an alias before its owner registers.
+    if (this.strict && !this.registry.has(a.from)) {
+      return fail("not_registered", `${a.from} must register before sending (strict mode)`);
+    }
     if (!a.kind || !SENDABLE.includes(a.kind)) {
       return fail("bad_args", `kind must be inform|query|request, got ${String(a.kind)}`);
     }
@@ -319,6 +327,13 @@ export class Router {
     const denied = this.requireOwner(req, a.alias); // your own inbox size only
     if (denied) return denied;
     return ok({ count: this.backend.pending(a.alias).length });
+  }
+
+  /** Drop offline peers idle past a window — clears the dead-session graveyard. */
+  private prune(req: Request): Response {
+    const a = req.args as { offlineForS?: number };
+    const window = a.offlineForS ?? 24 * 3600;
+    return ok({ pruned: this.registry.pruneOffline(this.now() - window) });
   }
 
   /** A message's full lifecycle: the message, its per-recipient deliveries, and any responses. */
