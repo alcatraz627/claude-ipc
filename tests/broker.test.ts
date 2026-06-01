@@ -93,6 +93,13 @@ describe("broker end-to-end", () => {
     expect(inbox.messages[0].body).toBe(big);
   });
 
+  // B3: a frame from an incompatible protocol version is rejected, not mis-parsed.
+  test("a request with an incompatible protocol version is rejected", async () => {
+    const res = await request(broker.socketPath, { v: 999, op: "list", args: {} });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error.code).toBe("bad_version");
+  });
+
   // A2: a broker that accepts the connection but never replies must not hang the
   // caller forever — the request deadline turns it into a reject.
   test("request() rejects on its deadline when the broker never replies", async () => {

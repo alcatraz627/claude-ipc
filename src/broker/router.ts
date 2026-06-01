@@ -9,7 +9,7 @@
 
 import { ttyForPid } from "../badge.ts";
 import { makeMessage, type DeliveredVia, type ErrorCode, type Kind, type Status } from "../models.ts";
-import type { Request, Response } from "../protocol.ts";
+import { PROTOCOL_VERSION, type Request, type Response } from "../protocol.ts";
 import type { StorageBackend } from "../storage/base.ts";
 import type { Registry } from "./registry.ts";
 
@@ -30,6 +30,12 @@ export class Router {
   ) {}
 
   handle(req: Request): Response {
+    // Reject a frame from an incompatible client loudly rather than mis-parsing
+    // it silently — a stale compiled CLI talking to a newer broker (or vice
+    // versa) gets a clear error instead of confusing behavior.
+    if (req.v !== PROTOCOL_VERSION) {
+      return fail("bad_version", `broker speaks protocol ${PROTOCOL_VERSION}, client sent ${req.v}`);
+    }
     try {
       switch (req.op) {
         case "register":

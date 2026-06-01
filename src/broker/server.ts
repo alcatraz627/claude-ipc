@@ -92,6 +92,13 @@ export function startBroker(opts: { router: Router; socketPath: string }): Broke
       drain(socket) {
         pump(socket);
       },
+      error(socket) {
+        // A connection-level error must never crash the broker; drop its buffer.
+        if (socket.data) socket.data.outbox.length = 0;
+      },
+      close(socket) {
+        if (socket.data) socket.data.outbox.length = 0; // release any unsent frames
+      },
     },
   });
   return {
@@ -111,10 +118,20 @@ export function main(): void {
   const notifier = new BadgeNotifier(backend, registry, ttyBadgeSink, config.badge);
   const router = new Router(backend, registry, nowS, mkId, null, (alias) => notifier.update(alias), config.allowlist);
   const inflight = backend.replayInflight();
-  setInterval(() => tickSweeper(backend, nowS, mkId), config.sweepIntervalS * 1000);
-  startBroker({ router, socketPath: config.socketPath });
+  const sweeper = setInterval(() => tickSweeper(backend, nowS, mkId), config.sweepIntervalS * 1000);
+  const broker = startBroker({ router, socketPath: config.socketPath });
   writeFileSync(config.pidPath, String(process.pid));
+  // Shut down cleanly: stop the sweeper, release the socket, and close SQLite so
+  // its WAL is checkpointed — otherwise a restart inherits a dirty WAL and a
+  // stale listening socket.
   const cleanup = (): void => {
+    clearInterval(sweeper);
+    broker.stop();
+    try {
+      backend.close();
+    } catch {
+      // already closed
+    }
     try {
       unlinkSync(config.pidPath);
     } catch {
