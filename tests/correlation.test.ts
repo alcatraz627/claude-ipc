@@ -44,6 +44,31 @@ describe("correlation, consent, timeouts", () => {
     expect(i.conversationId).toBeNull();
   });
 
+  test("incremental replies: ack + updates stream; await holds for the terminal final", async () => {
+    const q = await client.send({ from: "alice", to: "bob", kind: "query", body: "do X" });
+    await client.reply({ from: "bob", corrId: q.msgId, body: "on it", terminal: false }); // ack
+    await client.reply({ from: "bob", corrId: q.msgId, body: "leaning Y", terminal: false }); // update
+    // await (default untilTerminal) must NOT return on the ack/update — no terminal yet
+    expect(await client.awaitReply("alice", q.msgId, 80)).toBeNull();
+    await client.reply({ from: "bob", corrId: q.msgId, body: "done: Y", terminal: true }); // final
+    const final = await client.awaitReply("alice", q.msgId, 500);
+    expect(final.body).toBe("done: Y");
+    expect(final.terminal).toBe(true);
+    // every reply correlated to the same query landed in alice's inbox, in order
+    const inbox = await client.check("alice");
+    const bodies = inbox.messages
+      .filter((m: { corrId: string }) => m.corrId === q.msgId)
+      .map((m: { body: string }) => m.body);
+    expect(bodies).toEqual(["on it", "leaning Y", "done: Y"]);
+  });
+
+  test("await untilTerminal=false returns as soon as the first reply (an ack) lands", async () => {
+    const q = await client.send({ from: "alice", to: "bob", kind: "query", body: "?" });
+    await client.reply({ from: "bob", corrId: q.msgId, body: "ack", terminal: false });
+    const first = await client.awaitReply("alice", q.msgId, 500, false);
+    expect(first.body).toBe("ack");
+  });
+
   test("query → reply correlates back to the sender's inbox", async () => {
     const q = await client.send({ from: "alice", to: "bob", kind: "query", body: "base url?" });
     await client.reply({ from: "bob", corrId: q.msgId, body: "http://api.localhost:3000" });

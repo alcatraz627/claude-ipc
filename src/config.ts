@@ -22,6 +22,7 @@ export const config = {
   pidPath: join(home, "run", "broker.pid"),
   logPath: join(home, "logs", "broker.log"), // broker's own size-rotated operational log
   tokensDir: join(home, "tokens"), // per-alias capability files (0600), owner-only
+  metaDir: join(home, "meta"), // per-alias side-channel the hook writes (e.g. transcript path)
 
   // Default TTL for a directed query/request when the sender gives none. null
   // (the default) means it stays open until answered — set CLAUDE_IPC_DEFAULT_TTL_S
@@ -37,6 +38,10 @@ export const config = {
   // (real sessions register via the SessionStart hook); set =0 to allow ad-hoc
   // unregistered senders (e.g. quick CLI tests).
   strict: (process.env.CLAUDE_IPC_STRICT ?? "1") !== "0",
+
+  // Transient/headless sessions opt out of joining the roster (set by a launcher
+  // for sub-agents / `claude -p` runs that shouldn't appear as addressable peers).
+  noRegister: process.env.CLAUDE_IPC_NO_REGISTER === "1",
 
   liveness: { idleS: 300, offlineS: 1800 },
   badge: (process.env.CLAUDE_IPC_BADGE ?? "1") !== "0", // broker→peer-TTY tab badge

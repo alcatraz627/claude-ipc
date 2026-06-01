@@ -355,15 +355,17 @@ export class Router {
     return ok({ messages: this.backend.history(a) });
   }
 
-  /** Non-blocking peek: has a correlated response landed in this alias's inbox yet? */
+  /** Non-blocking peek: has a correlated reply landed in this alias's inbox yet? */
   private awaitReply(req: Request): Response {
-    const a = req.args as { alias?: string; corrId?: string };
+    const a = req.args as { alias?: string; corrId?: string; untilTerminal?: boolean };
     if (!a.alias || !a.corrId) return fail("bad_args", "await needs alias + corrId");
     const denied = this.requireOwner(req, a.alias); // only the asker polls its inbox
     if (denied) return denied;
-    const found = this.backend
-      .pending(a.alias)
-      .find((m) => m.kind === "response" && m.corrId === a.corrId);
-    return ok(found ? { response: found } : { pending: true });
+    const matches = this.backend.pending(a.alias).filter((m) => m.kind === "response" && m.corrId === a.corrId);
+    // Default: wait for the FINAL (terminal) reply, skipping acks/interim updates
+    // — those still surface in the inbox at the asker's turns, they just don't
+    // satisfy a blocking await. untilTerminal=false returns the latest reply.
+    const found = (a.untilTerminal ?? true) ? matches.find((m) => m.terminal) : matches.at(-1);
+    return ok(found ? { response: found } : { pending: true, updates: matches.length });
   }
 }

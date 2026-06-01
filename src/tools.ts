@@ -48,6 +48,15 @@ export function createTools(client: Client, me: SelfIdentity) {
     ipc_reply: (a: { corrId: string; body: string; terminal?: boolean; status?: "ok" | "error" }): Promise<unknown> =>
       client.reply({ from: me.alias, corrId: a.corrId, body: a.body, terminal: a.terminal, status: a.status }),
 
+    // Incremental replies: acknowledge on receipt and stream progress WITHOUT
+    // ending the exchange, then ipc_reply (terminal) with the final result. All
+    // correlate to the same corrId; the asker sees each as it lands.
+    ipc_ack: (a: { corrId: string; note?: string }): Promise<unknown> =>
+      client.reply({ from: me.alias, corrId: a.corrId, body: a.note ?? "received — working on it", terminal: false }),
+
+    ipc_update: (a: { corrId: string; body: string }): Promise<unknown> =>
+      client.reply({ from: me.alias, corrId: a.corrId, body: a.body, terminal: false }),
+
     ipc_accept: (a: { msgId: string }): Promise<unknown> => client.accept(me.alias, a.msgId),
 
     ipc_decline: (a: { msgId: string; reason?: string }): Promise<unknown> =>
@@ -55,8 +64,8 @@ export function createTools(client: Client, me: SelfIdentity) {
 
     ipc_cancel: (a: { corrId: string }): Promise<unknown> => client.cancel(a.corrId, me.alias),
 
-    ipc_await: (a: { corrId: string; timeoutMs?: number }): Promise<unknown> =>
-      client.awaitReply(me.alias, a.corrId, a.timeoutMs),
+    ipc_await: (a: { corrId: string; timeoutMs?: number; untilTerminal?: boolean }): Promise<unknown> =>
+      client.awaitReply(me.alias, a.corrId, a.timeoutMs, a.untilTerminal),
 
     ipc_history: (a: { peer?: string; since?: number; conversationId?: string } = {}): Promise<unknown> =>
       client.history(a),

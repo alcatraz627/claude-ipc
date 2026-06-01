@@ -127,6 +127,12 @@ export function main(): void {
     config.allowlist,
     config.strict,
   );
+  // Boot-time counts for the log only — the broker is DB-backed (every op reads
+  // SQLite live), so there is no in-memory working set to rebuild: a queued
+  // message simply stays queued and is claimed by the next hook. (Caveat: a
+  // message claimed by a hook that then crashed before surfacing it is stuck
+  // 'delivered' and not retried — at-most-once after claim, inherent to the
+  // fire-and-forget injection model, not fixable without an agent-side ack.)
   const inflight = backend.replayInflight();
   const sweeper = setInterval(() => {
     tickSweeper(backend, nowS, mkId, config.retentionS); // purge settled messages

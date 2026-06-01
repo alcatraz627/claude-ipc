@@ -120,9 +120,11 @@ function backendSuite(name: string, make: () => StorageBackend): void {
       expect(db.getAwaiting("nd1")?.expiresAt).toBeNull();
     });
 
-    test("originOf resolves a correlation id to its message", () => {
-      db.append(m("o1", { ts: 1 }));
+    test("originOf resolves a query/request correlation id; not an inform or response", () => {
+      db.append(m("o1", { kind: "query", ts: 1 }));
       expect(db.originOf("o1")?.id).toBe("o1");
+      db.append(m("inf1", { kind: "inform", ts: 2 })); // informs don't open a correlation
+      expect(db.originOf("inf1")).toBeNull();
       expect(db.originOf("nope")).toBeNull();
     });
 

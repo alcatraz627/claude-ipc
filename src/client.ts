@@ -247,11 +247,16 @@ export class Client {
     return this.call("cancel", { corrId }, as);
   }
 
-  /** Block until a correlated response lands in `alias`'s inbox, or the timeout passes. */
-  async awaitReply(alias: string, corrId: string, timeoutMs = 2000, pollMs = 15): Promise<any> {
+  /**
+   * Block until a correlated reply lands in `alias`'s inbox, or the timeout passes.
+   * By default waits for the FINAL (terminal) reply — interim acks/updates still
+   * land in the inbox but don't satisfy the wait. Pass untilTerminal=false to
+   * return as soon as any correlated reply (incl. an ack) arrives.
+   */
+  async awaitReply(alias: string, corrId: string, timeoutMs = 2000, untilTerminal = true, pollMs = 15): Promise<any> {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
-      const r = await this.call("await", { alias, corrId }, alias);
+      const r = await this.call("await", { alias, corrId, untilTerminal }, alias);
       if (r.response) return r.response;
       if (Date.now() >= deadline) return null;
       await new Promise((res) => setTimeout(res, pollMs));

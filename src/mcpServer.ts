@@ -7,12 +7,23 @@
  * so peers can address it immediately.
  */
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { Client } from "./client.ts";
 import { config } from "./config.ts";
 import { createTools, type IpcTools, type SelfIdentity } from "./tools.ts";
+
+/** The transcript path the SessionStart hook captured for this alias, if any. */
+function readMeta(alias: string): string | undefined {
+  try {
+    return readFileSync(join(config.metaDir, encodeURIComponent(alias)), "utf8").trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 function asText(result: unknown): { content: { type: "text"; text: string }[] } {
   return { content: [{ type: "text", text: JSON.stringify(result) }] };
@@ -54,7 +65,7 @@ export function buildMcpServer(tools: IpcTools): McpServer {
 
   server.tool(
     "ipc_reply",
-    "Reply to a query/request by its corrId. Set terminal=false for an interim ack/progress note before the final result.",
+    "Send the FINAL reply to a query/request by its corrId (terminal). For incremental work, ipc_ack on receipt and ipc_update as you go, then ipc_reply with the result.",
     {
       corrId: z.string(),
       body: z.string(),
@@ -62,6 +73,20 @@ export function buildMcpServer(tools: IpcTools): McpServer {
       status: z.enum(["ok", "error"]).optional(),
     },
     async (a) => asText(await tools.ipc_reply(a)),
+  );
+
+  server.tool(
+    "ipc_ack",
+    "Acknowledge a query/request immediately on receipt, before you start — tells the asker you got it and are working. Non-final; the exchange stays open for ipc_update / ipc_reply.",
+    { corrId: z.string(), note: z.string().optional() },
+    async (a) => asText(await tools.ipc_ack(a)),
+  );
+
+  server.tool(
+    "ipc_update",
+    "Send an interim update on a query/request you're working — a partial result, an idea, a status. Non-final; correlates to the same corrId. Send as many as useful, then ipc_reply with the final result.",
+    { corrId: z.string(), body: z.string() },
+    async (a) => asText(await tools.ipc_update(a)),
   );
 
   server.tool(
@@ -87,8 +112,8 @@ export function buildMcpServer(tools: IpcTools): McpServer {
 
   server.tool(
     "ipc_await",
-    "Block until a correlated reply to your query/request arrives, or the timeout passes.",
-    { corrId: z.string(), timeoutMs: z.number().optional() },
+    "Block until the FINAL reply to your query/request arrives, or the timeout passes. Interim acks/updates land in your inbox separately. Pass untilTerminal=false to return on the first reply (incl. an ack).",
+    { corrId: z.string(), timeoutMs: z.number().optional(), untilTerminal: z.boolean().optional() },
     async (a) => asText(await tools.ipc_await(a)),
   );
 
@@ -120,7 +145,10 @@ export function resolveIdentity(): SelfIdentity {
   const cwd = process.cwd();
   const sessionId = process.env.CLAUDE_IPC_SESSION ?? crypto.randomUUID();
   const alias = process.env.CLAUDE_IPC_ALIAS ?? sessionId; // addressable by id; friendly name optional
-  const transcriptPath = process.env.CLAUDE_IPC_TRANSCRIPT ?? ""; // exposed by the launcher when available
+  // Transcript path: explicit env wins; else the value the SessionStart hook
+  // captured for this alias (works when hook + MCP share an alias, i.e.
+  // CLAUDE_IPC_ALIAS is set — see docs/06-security-and-ops.md).
+  const transcriptPath = process.env.CLAUDE_IPC_TRANSCRIPT ?? readMeta(alias) ?? "";
   return { alias, sessionId, cwd, transcriptPath };
 }
 

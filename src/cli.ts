@@ -48,7 +48,8 @@ const USAGE = `claude-ipc — cross-session messaging
 
   register <alias>           (claim a mailbox from the shell)
   send   --from <a> --to <b> --kind <inform|query|request> [--ttl N] <body...>
-  reply  <corr-id> --from <alias> [--status error] <body...>
+  reply  <corr-id> --from <alias> [--status error] [--partial] <body...>
+                             (--partial = interim ack/update; omit for the final reply)
   inbox  <alias> [--consume]
   peers
   count  <alias>             (pending count — cheap, for tab-title segments)
@@ -115,6 +116,7 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
             corrId,
             body: positional.slice(1).join(" "),
             status: flags.status === "error" ? "error" : "ok",
+            terminal: !flags.partial, // --partial → interim ack/update; default is the final reply
           }),
         );
         return 0;

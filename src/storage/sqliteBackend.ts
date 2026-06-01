@@ -276,7 +276,10 @@ export class SqliteBackend implements StorageBackend {
   }
 
   originOf(corrId: string): Message | null {
-    return this.get(corrId);
+    const m = this.get(corrId);
+    // Only a query/request opens a correlation — you can't reply-correlate to a
+    // response or an inform.
+    return m && (m.kind === "query" || m.kind === "request") ? m : null;
   }
 
   saveRegistry(entries: RegistryEntry[]): void {
