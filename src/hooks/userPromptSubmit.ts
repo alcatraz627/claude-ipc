@@ -18,8 +18,10 @@ export async function main(): Promise<void> {
     const client = new Client(config.socketPath, { dbPath: config.dbPath });
     const ctx = await deliverContext(client, aliasFor(input), "hook");
     if (ctx) emitContext("UserPromptSubmit", ctx);
-  } catch {
-    // broker unreachable — inject nothing, never block the turn
+  } catch (e) {
+    // Never block the turn — but log to stderr (the hook debug log, not the
+    // turn output) so a broker-up-but-buggy deliver isn't invisible (NFR5).
+    console.error("[claude-ipc] UserPromptSubmit hook:", e instanceof Error ? e.message : e);
   }
 }
 

@@ -2,9 +2,11 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { MemoryBackend } from "../src/storage/memoryBackend.ts";
 import { Registry } from "../src/broker/registry.ts";
 import { Router } from "../src/broker/router.ts";
-import { statSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
+import { join } from "node:path";
 import { startBroker, type BrokerHandle } from "../src/broker/server.ts";
 import { Client, request } from "../src/client.ts";
+import { config } from "../src/config.ts";
 import { FrameDecoder } from "../src/protocol.ts";
 
 const tmpSock = (): string => `/tmp/cipc-${process.pid}-${Math.random().toString(36).slice(2, 10)}.sock`;
@@ -158,9 +160,12 @@ describe("broker end-to-end", () => {
     await client.send({ from: "alice", to: "bob", kind: "inform", body: "hi" }); // bob now has mail
     clock += 5000; // age everyone past offlineS=1800
     await client.register("alice", { sessionId: "sA", cwd: "/a" }); // alice is live again
+    const ghostToken = join(config.tokensDir, "ghost");
+    expect(existsSync(ghostToken)).toBe(true); // registered → token file written
     const r = await client.prune(1000); // window 1000s → cutoff at clock-1000
     expect(r.pruned).toBe(1); // only ghost: offline, no mail
     const aliases = (await client.list()).peers.map((p: { alias: string }) => p.alias).sort();
     expect(aliases).toEqual(["alice", "bob"]); // ghost gone; bob kept (pending), alice kept (live)
+    expect(existsSync(ghostToken)).toBe(false); // and its orphan token file is cleaned up
   });
 });

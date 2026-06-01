@@ -57,8 +57,10 @@ export async function main(): Promise<void> {
   try {
     const ctx = await deliverContext(client, alias, "resume");
     if (ctx) emitContext("SessionStart", ctx);
-  } catch {
-    // nothing to drain, or the durable log is unreachable too
+  } catch (e) {
+    // Don't block startup — but log to stderr so a buggy drain (broker up) is
+    // visible in the hook debug log rather than silently dropping the backlog.
+    console.error("[claude-ipc] SessionStart drain:", e instanceof Error ? e.message : e);
   }
 }
 

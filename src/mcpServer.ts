@@ -112,7 +112,7 @@ export function buildMcpServer(tools: IpcTools): McpServer {
 
   server.tool(
     "ipc_await",
-    "Block until the FINAL reply to your query/request arrives, or the timeout passes. Interim acks/updates land in your inbox separately. Pass untilTerminal=false to return on the first reply (incl. an ack).",
+    "Wait up to timeoutMs (default 30s) for the FINAL reply to your query/request, then return (null on timeout). It's a bounded wait, not an open-ended block — a later reply still surfaces in your inbox at your next turn, so for long-running work don't block here. Interim acks/updates land in your inbox separately; untilTerminal=false returns on the first reply.",
     { corrId: z.string(), timeoutMs: z.number().optional(), untilTerminal: z.boolean().optional() },
     async (a) => asText(await tools.ipc_await(a)),
   );

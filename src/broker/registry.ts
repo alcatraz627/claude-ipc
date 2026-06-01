@@ -8,6 +8,9 @@
  * so re-binding an alias to a new session does not strand its pending messages.
  */
 
+import { unlinkSync } from "node:fs";
+import { join } from "node:path";
+import { config } from "../config.ts";
 import type { RegistryEntry } from "../models.ts";
 import type { StorageBackend } from "../storage/base.ts";
 
@@ -124,6 +127,13 @@ export class Registry {
       if (this.statusOf(e) !== "offline" || e.lastSeen >= beforeTs) continue;
       if (this.backend.pending(alias).length > 0) continue; // keep live mailboxes
       this.entries.delete(alias);
+      // The token authorizes nobody once the row is gone; delete the owner's
+      // token file too so the tokens dir doesn't outgrow the registry.
+      try {
+        unlinkSync(join(config.tokensDir, encodeURIComponent(alias)));
+      } catch {
+        // no token file (legacy/unregistered) — nothing to remove
+      }
       removed++;
     }
     if (removed > 0) this.snapshot();

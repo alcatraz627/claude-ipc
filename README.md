@@ -7,8 +7,8 @@ you manually copy-pasting context between them.
 
 > Status: **v0.2** — broker + MCP tools + CLI + proactive hooks + idle-proof tab
 > badge, plus a post-v0.1 hardening pass: capability-token identity, conversation
-> threading, retention/registry GC, and a single-binary deploy. All green (95
-> tests); proven by real cross-session handoffs.
+> threading, retention/registry GC, and a single-binary deploy. Full `bun test`
+> suite green; proven by real cross-session handoffs.
 
 ## Run it
 ```

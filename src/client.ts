@@ -248,12 +248,14 @@ export class Client {
   }
 
   /**
-   * Block until a correlated reply lands in `alias`'s inbox, or the timeout passes.
-   * By default waits for the FINAL (terminal) reply — interim acks/updates still
-   * land in the inbox but don't satisfy the wait. Pass untilTerminal=false to
-   * return as soon as any correlated reply (incl. an ack) arrives.
+   * Wait up to `timeoutMs` for a correlated reply, then resolve (null on timeout).
+   * Polls the inbox; it is a bounded wait, not an open-ended block. By default
+   * waits for the FINAL (terminal) reply — interim acks/updates still land in the
+   * inbox but don't satisfy the wait. Pass untilTerminal=false to return as soon
+   * as any correlated reply (incl. an ack) arrives. A reply that arrives after
+   * the timeout is not lost — it surfaces in the inbox at the caller's next turn.
    */
-  async awaitReply(alias: string, corrId: string, timeoutMs = 2000, untilTerminal = true, pollMs = 15): Promise<any> {
+  async awaitReply(alias: string, corrId: string, timeoutMs = 30_000, untilTerminal = true, pollMs = 50): Promise<any> {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
       const r = await this.call("await", { alias, corrId, untilTerminal }, alias);
