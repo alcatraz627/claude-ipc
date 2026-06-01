@@ -30,9 +30,12 @@ Each `claude` session registers an alias (`frontend`, `backend`, …) and gets a
 **capability token** — a `0600` file that proves ownership, so no other process
 can send as you or read your inbox. One session sends a message addressed to
 another; the recipient receives it **proactively** (no "check your messages"
-reminder needed) and can reply or act. Actions require explicit consent before
-they run. Every message is durably logged for audit and replay; the roster and
-log are garbage-collected so neither grows without bound.
+reminder needed) and can reply or act. A responder can **acknowledge on receipt,
+stream interim updates, then send the final** — all correlated to one request,
+so work-in-progress is visible without waiting for the whole task. Actions
+require explicit consent before they run. Every message is durably logged for
+audit and replay; the roster and log are garbage-collected so neither grows
+without bound.
 
 ## Why it's not trivial
 

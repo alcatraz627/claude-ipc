@@ -97,6 +97,27 @@ This is a **local, single-user** system. Calibrate accordingly.
 - **Protocol version**: the broker rejects a frame whose `v` ≠ `PROTOCOL_VERSION`
   with `bad_version`, so a stale client vs newer broker fails loudly.
 
+## Communication patterns
+
+**Incremental replies.** A responder need not finish before replying. It can
+acknowledge on receipt, stream interim updates, then send the final result —
+all correlated to the same `corrId`, each delivered as it lands:
+
+```
+alice ──query "design the cache?"──▶ bob
+bob ──ipc_ack──────────────────────▶ alice   "received — working on it"   (interim)
+bob ──ipc_update───────────────────▶ alice   "leaning LRU"                (interim)
+bob ──ipc_reply────────────────────▶ alice   "done: LRU, 1k cap"          (final/terminal)
+```
+
+`ipc_ack` / `ipc_update` are non-terminal replies (the `awaiting` stays open);
+`ipc_reply` is terminal and closes it. `ipc_await` blocks for the **terminal**
+reply by default (interim ones still surface in the inbox but don't satisfy the
+wait); pass `untilTerminal=false` to return on the first reply. CLI: `reply
+--partial`. This is the stateful primitive — no separate "threads/topics"
+abstraction; correlation by `corrId` plus the auto `conversationId` is enough.
+Follow-ups continue the exchange by reusing the `conversationId`.
+
 ## Deploy model — one binary
 
 The broker and CLI are the **same compiled artifact**. The launchd agent runs
