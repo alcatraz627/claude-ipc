@@ -12,6 +12,12 @@ CLI="claude-ipc"
 command -v "$CLI" >/dev/null 2>&1 || CLI="bun run $REPO/src/cli.ts"
 
 mkdir -p "$HOME/.claude-ipc/logs" "$HOME/Library/LaunchAgents"
+
+# The plist runs the compiled binary (dist/claude-ipc serve), so it must exist
+# and be current before we bootstrap. Build it (and the hooks) first.
+echo "→ building binaries (bun run build)"
+( cd "$REPO" && bun run build >/dev/null ) || { echo "build failed"; exit 1; }
+
 cp -f "$REPO/launchd/$LABEL.plist" "$PLIST"
 
 echo "→ stopping any existing broker (launchd + foreground)"

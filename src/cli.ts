@@ -167,6 +167,16 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
         out(await client.decline(as, msgId, flags.reason ? String(flags.reason) : undefined));
         return 0;
       }
+      case "serve": {
+        // Run the broker in-process so the compiled CLI binary IS the broker.
+        // launchd points here, eliminating the source-vs-dist drift where the
+        // broker ran from src/ while the CLI shipped from dist/. Blocks forever;
+        // main() installs the SIGTERM/SIGINT handlers that exit cleanly.
+        const { main } = await import("./broker/server.ts");
+        main();
+        await new Promise<void>(() => {});
+        return 0;
+      }
       case "daemon": {
         const sub = positional[0] ?? "status";
         if (sub === "status") {
@@ -187,9 +197,11 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
           } catch {
             // down → start it
           }
-          const proc = Bun.spawn(["bun", "run", `${import.meta.dir}/broker/server.ts`], {
-            stdio: ["ignore", "ignore", "ignore"],
-          });
+          // Relaunch ourselves as the broker: the compiled binary re-execs with
+          // `serve`; running from source falls back to bun on the broker entry.
+          const compiled = !/[\\/]bun$/.test(process.execPath);
+          const args = compiled ? [process.execPath, "serve"] : ["bun", "run", `${import.meta.dir}/broker/server.ts`];
+          const proc = Bun.spawn(args, { stdio: ["ignore", "ignore", "ignore"] });
           proc.unref();
           out(`broker starting (pid ${proc.pid})`);
           return 0;

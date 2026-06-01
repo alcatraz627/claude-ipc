@@ -9,7 +9,11 @@
   Uninstall: launchctl bootout gui/$(id -u)/com.alcatraz.claude-ipc
   (legacy `launchctl load/unload` is deprecated on current macOS — it fails with
    "Load failed: 5: Input/output error"; use bootstrap/bootout above.)
-  Adjust the two absolute paths below if bun or the repo move.
+
+  Runs the COMPILED binary (`dist/claude-ipc serve`), not bun-on-source, so the
+  broker and the CLI are the same artifact — `bun run build` updates both at once
+  and there's no source-vs-dist drift. Rebuild before restarting after a change.
+  Adjust the absolute path below if the repo moves.
 -->
 <plist version="1.0">
 <dict>
@@ -17,9 +21,8 @@
   <string>com.alcatraz.claude-ipc</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/opt/homebrew/bin/bun</string>
-    <string>run</string>
-    <string>/Users/alcatraz627/Code/Claude/claude-ipc/src/broker/server.ts</string>
+    <string>/Users/alcatraz627/Code/Claude/claude-ipc/dist/claude-ipc</string>
+    <string>serve</string>
   </array>
   <key>RunAtLoad</key>
   <true/>
