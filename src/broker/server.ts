@@ -12,6 +12,7 @@ import { mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { config } from "../config.ts";
 import { encodeFrame, FrameDecoder, type Request } from "../protocol.ts";
+import { brokerLog } from "./log.ts";
 import { Registry } from "./registry.ts";
 import { Router } from "./router.ts";
 import { tickSweeper } from "./sweeper.ts";
@@ -137,14 +138,14 @@ export function main(): void {
     } catch {
       // already gone
     }
+    brokerLog(config.logPath, "broker shutting down");
     process.exit(0);
   };
   process.on("SIGTERM", cleanup);
   process.on("SIGINT", cleanup);
-  console.log(
-    `[claude-ipc] broker up on ${config.socketPath} ` +
-      `(replayed ${inflight.deliveries.length} deliveries, ${inflight.awaiting.length} awaiting)`,
-  );
+  const bootLine = `broker up on ${config.socketPath} (replayed ${inflight.deliveries.length} deliveries, ${inflight.awaiting.length} awaiting)`;
+  brokerLog(config.logPath, bootLine); // rotated operational record
+  console.log(`[claude-ipc] ${bootLine}`); // launchd-visible liveness trace
 }
 
 if (import.meta.main) main();

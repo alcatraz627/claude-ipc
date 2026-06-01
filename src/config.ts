@@ -20,6 +20,7 @@ export const config = {
   socketPath: process.env.CLAUDE_IPC_SOCKET ?? join(home, "run", "ipc.sock"),
   dbPath: process.env.CLAUDE_IPC_DB ?? join(home, "data", "ipc.sqlite"),
   pidPath: join(home, "run", "broker.pid"),
+  logPath: join(home, "logs", "broker.log"), // broker's own size-rotated operational log
   tokensDir: join(home, "tokens"), // per-alias capability files (0600), owner-only
 
   defaultTtlS: 3600,
