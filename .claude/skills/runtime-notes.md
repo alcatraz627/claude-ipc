@@ -2,6 +2,22 @@
 
 Purpose: root-caused the empty-`tail` bug, then a full review → fixed Tiers A
 (robustness), B1 (identity), C (threading), D (ops). 93 tests, 0 fail; all live.
+Follow-up same day → roster GC + strict identity + housekeeping (v0.2.0, 95 tests).
+
+Insights (follow-up):
+- **Tokens authenticate; they don't curate the roster.** `tail` showed 35 peers,
+  mostly dead `/private/tmp` UUID sub-agents — because the global SessionStart
+  hook makes EVERY claude process (incl. Task sub-agents, headless runs) register,
+  and the registry only marks offline, never deletes. Fix is GC, not auth:
+  `registry.pruneOffline` in the sweeper + `claude-ipc prune` + a `tail` that
+  collapses the offline graveyard to a count. Don't conflate "who can act" (tokens)
+  with "who's worth showing" (roster hygiene).
+- **Strict identity closes the one real B1 hole cheaply.** The "send as an
+  unregistered alias" window shut by requiring `from` to be registered
+  (`CLAUDE_IPC_STRICT`, default on) — safe because real sessions register via the
+  hook before they send, and legacy null-token aliases are still *registered* so
+  they pass. Degraded-mode strict refuses to act on an alias with no local token
+  (honest soft check, not a hard boundary — documented).
 
 Insights:
 - **The empty `tail` was unhandled socket back-pressure.** `socket.write()`
