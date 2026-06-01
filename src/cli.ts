@@ -22,6 +22,10 @@ function parseDuration(s: string): number | null {
   return n * { s: 1, m: 60, h: 3600, d: 86400, "": 1 }[m[2] ?? ""]!;
 }
 
+// Presence-only flags: never consume the following token as a value, so they can
+// sit anywhere on the line (e.g. `reply <id> --from x --partial <body...>`).
+const BOOLEAN_FLAGS = new Set(["partial", "consume"]);
+
 function parse(argv: string[]): { cmd: string; positional: string[]; flags: Record<string, FlagValue> } {
   const cmd = argv[0] ?? "help";
   const positional: string[] = [];
@@ -31,7 +35,7 @@ function parse(argv: string[]): { cmd: string; positional: string[]; flags: Reco
     if (t.startsWith("--")) {
       const key = t.slice(2);
       const next = argv[i + 1];
-      if (next !== undefined && !next.startsWith("--")) {
+      if (!BOOLEAN_FLAGS.has(key) && next !== undefined && !next.startsWith("--")) {
         flags[key] = next;
         i++;
       } else {

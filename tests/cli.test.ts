@@ -54,4 +54,17 @@ describe("CLI", () => {
     expect(await run(["inbox", "bob"], { socketPath: sock })).toBe(0);
     expect(lines.join("\n")).toContain("hi there");
   });
+
+  // Regression: --partial is a boolean flag and must NOT swallow the body that
+  // follows it (it once consumed the first body word, leaving interim replies empty).
+  test("reply --partial keeps the full body and is non-terminal", async () => {
+    const c = new Client(sock);
+    await c.register("alice", { sessionId: "sA", cwd: "/a" });
+    await c.register("bob", { sessionId: "sB", cwd: "/b" });
+    const q = await c.send({ from: "alice", to: "bob", kind: "query", body: "?" });
+    await run(["reply", q.msgId, "--from", "bob", "--partial", "still", "working", "on", "it"], { socketPath: sock });
+    const r = (await c.check("alice")).messages.find((m: { corrId: string }) => m.corrId === q.msgId);
+    expect(r.terminal).toBe(false);
+    expect(r.body).toBe("still working on it");
+  });
 });
