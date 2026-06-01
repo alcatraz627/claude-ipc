@@ -2,6 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { MemoryBackend } from "../src/storage/memoryBackend.ts";
 import { Registry } from "../src/broker/registry.ts";
 import { Router } from "../src/broker/router.ts";
+import { statSync } from "node:fs";
 import { startBroker, type BrokerHandle } from "../src/broker/server.ts";
 import { Client, request } from "../src/client.ts";
 import { FrameDecoder } from "../src/protocol.ts";
@@ -141,6 +142,11 @@ describe("broker end-to-end", () => {
     // broker still serves a normal request afterwards
     await client.register("alice", { sessionId: "sA", cwd: "/a" });
     expect((await client.list()).peers.map((p: { alias: string }) => p.alias)).toContain("alice");
+  });
+
+  // The socket is the cross-UID boundary the tokens assume — owner-only (0600).
+  test("the broker socket is created owner-only (0600)", () => {
+    expect(statSync(broker.socketPath).mode & 0o777).toBe(0o600);
   });
 
   // Registry GC: prune drops dead offline peers but keeps live ones and any

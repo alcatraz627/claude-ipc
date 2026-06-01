@@ -8,6 +8,7 @@
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { ttyForPid } from "../badge.ts";
 import { Client } from "../client.ts";
 import { config } from "../config.ts";
 import { aliasFor, deliverContext, emitContext, readHookInput } from "./shared.ts";
@@ -41,8 +42,10 @@ export async function main(): Promise<void> {
     await client.register(alias, {
       sessionId: input.session_id ?? `hook-${alias}`,
       cwd: input.cwd ?? process.cwd(),
-      pid: process.ppid, // the Claude process — broker derives the tty from it
-      tty: process.env.CLAUDE_IPC_TTY, // explicit override if the launcher set it
+      pid: process.ppid, // the Claude process
+      // Resolve the tty here (in this short-lived hook) rather than letting the
+      // broker spawn `ps` on its event loop. Explicit env override wins.
+      tty: process.env.CLAUDE_IPC_TTY ?? ttyForPid(process.ppid) ?? undefined,
     });
   } catch {
     // broker down at startup — we can't register, but the backlog drain below

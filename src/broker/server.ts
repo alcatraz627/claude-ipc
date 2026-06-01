@@ -8,7 +8,7 @@
  * is the testable core that takes a router and a socket path.
  */
 
-import { mkdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { config } from "../config.ts";
 import { encodeFrame, FrameDecoder, type Request } from "../protocol.ts";
@@ -102,17 +102,55 @@ export function startBroker(opts: { router: Router; socketPath: string }): Broke
       },
     },
   });
+  // Owner-only: another UNIX user can't even connect to the broker. This is the
+  // cross-UID boundary the capability tokens assume — a world-connectable socket
+  // would let another user list peers, read history, or flood the broker.
+  try {
+    chmodSync(opts.socketPath, 0o600);
+  } catch {
+    // best-effort; the socket dir is also locked down by main()
+  }
   return {
     stop: () => listener.stop(true),
     socketPath: opts.socketPath,
   };
 }
 
+/** Is a process with this pid alive? (signal 0 probes existence without signalling.) */
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 const nowS = (): number => Math.floor(Date.now() / 1000);
 
 export function main(): void {
-  mkdirSync(dirname(config.socketPath), { recursive: true });
-  mkdirSync(dirname(config.dbPath), { recursive: true });
+  // Refuse to start a second broker over a live one — otherwise startBroker would
+  // unlink the live socket out from under it, orphaning every connected peer.
+  try {
+    const existing = Number(readFileSync(config.pidPath, "utf8").trim());
+    if (existing && existing !== process.pid && isAlive(existing)) {
+      console.error(`[claude-ipc] broker already running (pid ${existing}); not starting a second`);
+      return;
+    }
+  } catch {
+    // no pidfile (or unreadable) → this is the first/only broker
+  }
+  mkdirSync(dirname(config.socketPath), { recursive: true, mode: 0o700 });
+  mkdirSync(dirname(config.dbPath), { recursive: true, mode: 0o700 });
+  // Tighten dirs that may already exist from a pre-0.2 install (mkdir mode is a
+  // no-op on an existing dir), so the cross-UID boundary holds after upgrade.
+  for (const d of [dirname(config.socketPath), dirname(config.dbPath)]) {
+    try {
+      chmodSync(d, 0o700);
+    } catch {
+      // best-effort
+    }
+  }
   const backend = new SqliteBackend(config.dbPath);
   const registry = new Registry(backend, nowS, config.liveness);
   const mkId = (): string => `msg-${crypto.randomUUID().slice(0, 8)}`;

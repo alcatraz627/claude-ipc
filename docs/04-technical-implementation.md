@@ -43,12 +43,11 @@ claude-ipc/
       sqliteBackend.ts          # default: bun:sqlite log + queue + registry snapshot
       honkerBackend.ts          # optional (alpha): honker queue/stream/scheduler
     broker/
-      server.ts                 # Bun.listen Unix-socket server; dispatch loop; main
-      router.ts                 # route, correlate, broadcast
-      registry.ts               # in-memory liveness; aging
-      sweeper.ts                # TTL/timeout → response{error}
-      dispatch.ts               # delivery-ladder selection
-    channelAdapter.ts           # optional --channels push (feature-detected)
+      server.ts                 # Bun.listen Unix-socket server; sweeper; main
+      router.ts                 # route, correlate, broadcast, consent, identity
+      registry.ts               # in-memory liveness + tokens; aging; roster GC
+      sweeper.ts                # TTL/timeout → response{error}; retention purge
+      log.ts                    # broker's size-rotated operational log
     mcpServer.ts                # stdio MCP server exposing ipc_* tools
     cli.ts                      # claude-ipc dispatcher (bin)
     hooks/
@@ -298,8 +297,11 @@ foreground run. Help text follows the gcc CLI-help convention.
   delivery use the same `pending` set (any `deliveries` row not yet `consumed`),
   so a running peer mis-marked `offline` after a broker restart still receives
   queued messages at its next turn — it does not need to "resume".
-- `dispatch.deliver(msg)` picks the highest available ladder rung; channel push
-  only if `channelAdapter.available()`.
+- Ladder-rung selection is **inlined at the callers**, not a separate
+  `dispatch`/`channelAdapter` module: hooks call the `deliver` op directly
+  (`userPromptSubmit` = turn-boundary, `sessionStart` = resume), `ipc_check` is
+  the on-demand pull, and the broker→TTY badge is the idle signal. A
+  `--channels` push rung would slot in here when the host gains the feature.
 
 ## 10. Launchd & lifecycle
 

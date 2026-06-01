@@ -31,8 +31,10 @@ Properties:
 - **Anti-hijack**: any token-bearing alias requires its token to re-register —
   even one shown `offline` (warm-started entries after a restart are offline yet
   still owned). Only a legacy null-token alias (pre-upgrade) is freely claimable.
-- **Cross-UID safe**: the `0600` token file is the boundary — another UNIX user
-  can't read it, so can't impersonate. Same-UID is the intentional trust line.
+- **Cross-UID safe at two layers**: the broker socket is `0600` and its run/data
+  dirs `0700`, so another UNIX user can't even *connect* (no listing peers, reading
+  history, or flooding); and the `0600` token file means even a connected process
+  can't impersonate a registered alias. Same-UID is the intentional trust line.
 
 ## Consent (unchanged, still load-bearing)
 
