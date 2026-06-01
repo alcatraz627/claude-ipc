@@ -5,27 +5,34 @@ Let the agent in your **frontend** terminal hand work to the agent in your
 **backend** terminal — ask a question, get an answer, request an action — without
 you manually copy-pasting context between them.
 
-> Status: **v0.1** — broker + MCP tools + CLI + proactive hooks + idle-proof tab
-> badge, all green. Runnable today; proven by real cross-session handoffs.
+> Status: **v0.2** — broker + MCP tools + CLI + proactive hooks + idle-proof tab
+> badge, plus a post-v0.1 hardening pass: capability-token identity, conversation
+> threading, retention/registry GC, and a single-binary deploy. All green (95
+> tests); proven by real cross-session handoffs.
 
 ## Run it
 ```
 bun install
-bun test                                  # the suite
-bun run src/cli.ts daemon start           # start the broker
-bun run src/cli.ts register backend       # claim a mailbox (or it auto-registers via hooks)
-bun run src/cli.ts send --from me --to backend --kind query "what's the API shape?"
-bun run src/cli.ts tail                    # watch the flow
+bun test                                   # the suite
+bun run build                              # compile CLI + hooks → dist/
+bash scripts/install-launchd.sh            # run the broker as an always-on agent
+claude-ipc register backend                # claim a mailbox (or it auto-registers via hooks)
+claude-ipc send --from me --to backend --kind query "what's the API shape?"
+claude-ipc tail                            # watch the flow (offline peers collapse to a count)
+claude-ipc prune --offline-for 30m         # drop dead peers from the roster
 ```
-Compile standalone binaries (CLI + hooks) with `bun run build:cli` / `build:hooks`.
+The broker runs as the compiled binary (`dist/claude-ipc serve` via launchd), so
+`bun run build` updates the broker and CLI together — no source/dist drift.
 
 ## The idea in one breath
 
-Each `claude` session registers an alias (`frontend`, `backend`, …). One session
-sends a message addressed to another; the recipient receives it **proactively**
-(no "check your messages" reminder needed) and can reply or act. Actions require
-explicit consent before they run. Every message is durably logged for audit and
-replay.
+Each `claude` session registers an alias (`frontend`, `backend`, …) and gets a
+**capability token** — a `0600` file that proves ownership, so no other process
+can send as you or read your inbox. One session sends a message addressed to
+another; the recipient receives it **proactively** (no "check your messages"
+reminder needed) and can reply or act. Actions require explicit consent before
+they run. Every message is durably logged for audit and replay; the roster and
+log are garbage-collected so neither grows without bound.
 
 ## Why it's not trivial
 

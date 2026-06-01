@@ -246,3 +246,7 @@ Detail in [`06-security-and-ops.md`](06-security-and-ops.md).
 - **Ops (D)** — retention GC (7-day default); rotating broker log; clean SIGTERM
   shutdown; single-binary deploy (`dist/claude-ipc serve` via launchd) to remove
   source/dist drift.
+- **Roster + strict (follow-up)** — registry GC + `claude-ipc prune` + collapsed
+  `tail` so dead ephemeral peers don't pile up; strict identity (default on) so a
+  send's `from` must be registered. Pruned dead `control`/`claim`/`release` stubs;
+  bumped to 0.2.0.

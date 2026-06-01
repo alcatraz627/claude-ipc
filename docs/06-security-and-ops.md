@@ -48,14 +48,17 @@ This is a **local, single-user** system. Calibrate accordingly.
 
 - **Closed**: cross-session impersonation of a *registered* alias, inbox draining,
   alias hijack (live or post-restart), token leakage, silent protocol mismatch.
-- **Accepted limit — unregistered-alias window**: you may send `from:"X"` for an
-  alias nobody has registered yet. An attacker could forge a message from
-  `"backend"` *before* the real backend session starts. It closes the moment the
-  victim registers (with a token). Fully closing it would require "must register
-  before sending," which would break legacy null-token sessions mid-upgrade.
-- **Accepted limit — degraded mode bypasses tokens**: when the broker is down,
-  clients read/write the SQLite log directly with no token check. Intentional:
-  broker-down is the local-trust fallback.
+- **Closed by default (strict mode)** — the **unregistered-alias window**: in
+  strict mode (`CLAUDE_IPC_STRICT`, on by default) a send's `from` must be a
+  registered alias, so you can't forge a message from an alias nobody has
+  registered yet. Set `CLAUDE_IPC_STRICT=0` to allow ad-hoc unregistered senders
+  (e.g. quick CLI tests); then this window reopens. Legacy null-token aliases
+  still work in strict mode — they're *registered*, just unprotected, so they
+  pass the "is registered" check and gain token protection on their next register.
+- **Degraded mode under strict** still refuses to act as an alias the client
+  holds no token for, so a forged `from` isn't persisted while the broker is down.
+  This is **not a hard boundary** — a process bypassing the client can write the
+  SQLite log directly; the broker is the real authority when it's up.
 - **Not a boundary against same-UID code**: any process running as you can read
   your token files. The tokens defend across UIDs, not against your own shell.
 
@@ -79,6 +82,13 @@ This is a **local, single-user** system. Calibrate accordingly.
 - **Retention**: the sweeper purges fully-settled messages (no actionable
   delivery, no open awaiting) older than `retentionS` (default 7 days,
   `CLAUDE_IPC_RETENTION_S`), so the log doesn't grow without bound.
+- **Roster GC**: the registry only marks peers offline, never deletes — so every
+  session that ever registered (including ephemeral sub-agents and headless runs)
+  would accumulate. The sweeper prunes peers offline longer than
+  `registryRetentionS` (default 1 day, `CLAUDE_IPC_REGISTRY_RETENTION_S`) that
+  have no pending mail; `claude-ipc prune [--offline-for 30m|2h|1d]` does it on
+  demand. `claude-ipc tail` collapses offline peers to a count so the roster stays
+  readable. A peer with queued messages is kept (it's a live mailbox).
 - **Logging**: the broker writes a size-rotated operational log at
   `~/.claude-ipc/logs/broker.log` (5 MB, one prior kept); launchd's stdout keeps
   a one-line-per-boot liveness trace.
