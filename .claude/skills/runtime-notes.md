@@ -2,7 +2,21 @@
 
 Purpose: root-caused the empty-`tail` bug, then a full review → fixed Tiers A
 (robustness), B1 (identity), C (threading), D (ops). 93 tests, 0 fail; all live.
-Follow-up same day → roster GC + strict identity + housekeeping (v0.2.0, 95 tests).
+Follow-up same day → roster GC + strict identity + housekeeping (v0.2.0, 95 tests),
+then incremental replies + worth-doing gaps (98 tests).
+
+Insights (incremental replies):
+- **The capability was already in the data model.** `reply` has a `terminal`
+  flag; a non-terminal reply leaves the awaiting open. So "ack → update → final"
+  needed only ergonomics (`ipc_ack`/`ipc_update` verbs) + fixing `await` to wait
+  for the terminal (it returned on the first reply). The user explicitly rejected
+  a threads/topics abstraction as premature — corrId + auto-conversationId is the
+  whole stateful primitive. Resisted the urge to build more.
+- **Dogfooding caught a bug 98 tests missed.** The live CLI `reply --from bob
+  --partial "on it"` produced an EMPTY interim — the arg parser treated `--partial`
+  as a value flag and ate the body. Tests passed (they call the client API, not
+  the CLI parser). Lesson reaffirmed: run the actual user-facing path once, don't
+  trust "tests pass." Fixed with a BOOLEAN_FLAGS set + a CLI regression test.
 
 Insights (follow-up):
 - **Tokens authenticate; they don't curate the roster.** `tail` showed 35 peers,
