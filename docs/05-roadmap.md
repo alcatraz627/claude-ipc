@@ -226,3 +226,23 @@
 A phase is done when its deliverables exist, its testing criteria pass, the
 **full** suite is green (from the first gate on), and no spec FR/NFR/SC it
 claims to satisfy is left unverified. Scope dropped silently is a gate failure.
+
+---
+
+## Post-v0.1 hardening (2026-06-01)
+
+A full review after v0.1 surfaced real gaps; all shipped, full suite green.
+Detail in [`06-security-and-ops.md`](06-security-and-ops.md).
+
+- **Robustness (A)** — fixed silent socket back-pressure truncation (broker +
+  client) that left `tail`/`history` empty; atomic delivery claim
+  (`UPDATE … RETURNING`); request deadline instead of indefinite hang;
+  malformed-frame guard + per-connection error/close handlers; wired degraded
+  mode into the always-on hook + MCP path (it was dead code in production).
+- **Identity (B)** — capability tokens: aliases can't be spoofed, drained, or
+  hijacked (incl. the post-restart window); protocol-version check.
+- **Threading (C)** — auto `conversationId` so query→reply chains form a real
+  thread; transcript pointer plumbed.
+- **Ops (D)** — retention GC (7-day default); rotating broker log; clean SIGTERM
+  shutdown; single-binary deploy (`dist/claude-ipc serve` via launchd) to remove
+  source/dist drift.

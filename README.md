@@ -41,6 +41,7 @@ replaying a queue on resume → an on-demand `ipc_check` tool. See the docs.
 3. [`docs/03-architecture.md`](docs/03-architecture.md) — components, data flow, decisions
 4. [`docs/04-technical-implementation.md`](docs/04-technical-implementation.md) — build-level detail
 5. [`docs/05-roadmap.md`](docs/05-roadmap.md) — phases, goals, testing criteria, cadence
+6. [`docs/06-security-and-ops.md`](docs/06-security-and-ops.md) — identity/token model, threat model, retention, deploy
 
 ## Design provenance
 
