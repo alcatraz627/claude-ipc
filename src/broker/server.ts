@@ -118,7 +118,7 @@ export function main(): void {
   const notifier = new BadgeNotifier(backend, registry, ttyBadgeSink, config.badge);
   const router = new Router(backend, registry, nowS, mkId, null, (alias) => notifier.update(alias), config.allowlist);
   const inflight = backend.replayInflight();
-  const sweeper = setInterval(() => tickSweeper(backend, nowS, mkId), config.sweepIntervalS * 1000);
+  const sweeper = setInterval(() => tickSweeper(backend, nowS, mkId, config.retentionS), config.sweepIntervalS * 1000);
   const broker = startBroker({ router, socketPath: config.socketPath });
   writeFileSync(config.pidPath, String(process.pid));
   // Shut down cleanly: stop the sweeper, release the socket, and close SQLite so

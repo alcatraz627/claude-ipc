@@ -69,6 +69,25 @@ function backendSuite(name: string, make: () => StorageBackend): void {
       expect(db.deliveriesFor("k1")[0]?.via).toBe("hook");
     });
 
+    test("purge removes old settled messages but keeps pending and awaited ones", () => {
+      db.append(m("old1", { ts: 10 })); // old + consumed → purgeable
+      db.enqueue("old1", "bob");
+      db.markConsumed("old1", "bob");
+      db.append(m("old2", { ts: 10 })); // old + still queued → kept (actionable)
+      db.enqueue("old2", "bob");
+      db.append(m("old3", { kind: "query", ts: 10 })); // old + open awaiting → kept
+      db.openAwaiting("old3", null);
+      db.append(m("recent", { ts: 100 })); // settled but too new → kept
+      db.enqueue("recent", "bob");
+      db.markConsumed("recent", "bob");
+
+      expect(db.purge(50)).toBe(1); // cutoff ts=50 → only old1 qualifies
+      expect(db.get("old1")).toBeNull();
+      expect(db.get("old2")).not.toBeNull();
+      expect(db.get("old3")).not.toBeNull();
+      expect(db.get("recent")).not.toBeNull();
+    });
+
     test("a request stays acceptable after being consumed (consume != consent)", () => {
       db.append(m("req1", { kind: "request", ts: 1 }));
       db.enqueue("req1", "bob");

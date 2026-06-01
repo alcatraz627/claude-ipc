@@ -1,17 +1,24 @@
 /**
- * Expires outstanding query/requests whose TTL has passed.
+ * Periodic housekeeping the broker runs on a timer.
  *
- * For each awaiting record past its deadline, closes it and routes a synthetic
- * response{error,timeout} back to the original sender. Only an active process can
- * turn "no answer" into a visible failure — which is why the broker owns this,
- * not the filesystem. Returns how many timeouts fired; pure given its injected
- * clock + id source.
+ * Two jobs: expire outstanding query/requests whose TTL has passed (closing each
+ * and routing a synthetic response{error,timeout} back to the sender — only an
+ * active process can turn "no answer" into a visible failure), and, when a
+ * retention window is given, purge fully-settled messages older than it so the
+ * durable log doesn't grow forever. Returns how many timeouts fired; pure given
+ * its injected clock + id source.
  */
 
 import { makeMessage } from "../models.ts";
 import type { StorageBackend } from "../storage/base.ts";
 
-export function tickSweeper(backend: StorageBackend, now: () => number, newId: () => string): number {
+export function tickSweeper(
+  backend: StorageBackend,
+  now: () => number,
+  newId: () => string,
+  retentionS?: number,
+): number {
+  if (retentionS !== undefined) backend.purge(now() - retentionS);
   const expired = backend.awaitingPastTtl(now());
   for (const a of expired) {
     backend.closeAwaiting(a.originId, "timeout");

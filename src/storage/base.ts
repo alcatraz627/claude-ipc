@@ -42,6 +42,14 @@ export interface StorageBackend {
   // lifecycle — rebuild the broker's working set after a restart
   replayInflight(): { deliveries: Delivery[]; awaiting: Awaiting[] };
 
+  /**
+   * Delete messages older than `olderThanTs` that are fully settled — no
+   * actionable delivery left and no open awaiting on them — so the log doesn't
+   * grow without bound. Returns how many were removed. A still-pending or
+   * still-awaited message is kept regardless of age.
+   */
+  purge(olderThanTs: number): number;
+
   close(): void;
 }
 

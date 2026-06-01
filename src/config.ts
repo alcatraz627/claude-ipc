@@ -25,6 +25,8 @@ export const config = {
   defaultTtlS: 3600,
   requestTimeoutMs: 5000, // a single broker round-trip; exceeded → caller stops waiting
   sweepIntervalS: 5,
+  retentionS: Number(process.env.CLAUDE_IPC_RETENTION_S) || 7 * 24 * 3600, // purge settled msgs older than this
+
   liveness: { idleS: 300, offlineS: 1800 },
   badge: (process.env.CLAUDE_IPC_BADGE ?? "1") !== "0", // broker→peer-TTY tab badge
   allowlist: parseAllowlist(process.env.CLAUDE_IPC_ALLOWLIST), // {target: [allowed senders]}

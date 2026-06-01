@@ -336,6 +336,33 @@ export class SqliteBackend implements StorageBackend {
     return { deliveries, awaiting };
   }
 
+  purge(olderThanTs: number): number {
+    // A message is settled when nothing actionable remains: no delivery still in
+    // an inbox (queued/delivered/surfaced) and no open awaiting on it.
+    const ids = this.db
+      .query(
+        `SELECT id FROM messages m
+         WHERE m.ts < ?
+           AND NOT EXISTS (SELECT 1 FROM deliveries d
+                           WHERE d.msg_id = m.id AND d.state IN ('queued','delivered','surfaced'))
+           AND NOT EXISTS (SELECT 1 FROM awaiting a WHERE a.origin_id = m.id AND a.closed = 0)`,
+      )
+      .all(olderThanTs) as { id: string }[];
+    if (ids.length === 0) return 0;
+    const tx = this.db.transaction((rows: { id: string }[]) => {
+      const delDel = this.db.query(`DELETE FROM deliveries WHERE msg_id = ?`);
+      const delAwait = this.db.query(`DELETE FROM awaiting WHERE origin_id = ?`);
+      const delMsg = this.db.query(`DELETE FROM messages WHERE id = ?`);
+      for (const r of rows) {
+        delDel.run(r.id);
+        delAwait.run(r.id);
+        delMsg.run(r.id);
+      }
+    });
+    tx(ids);
+    return ids.length;
+  }
+
   close(): void {
     this.db.close();
   }
