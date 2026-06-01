@@ -6,10 +6,10 @@
  * That split is what lets one broadcast carry an independent state per recipient.
  */
 
-export type Kind = "inform" | "query" | "request" | "response" | "control";
+export type Kind = "inform" | "query" | "request" | "response";
 export type Status = "ok" | "error";
 export type ErrorCode = "timeout" | "no_peer" | "declined" | "internal";
-export type ControlOp = "register" | "heartbeat" | "leave" | "cancel" | "claim" | "release";
+export type ControlOp = "register" | "heartbeat" | "leave" | "cancel";
 export type DeliveredVia = "channel" | "hook" | "resume" | "pull" | null;
 
 /** Per-recipient delivery lifecycle. Lives on Delivery, never on Message. */
