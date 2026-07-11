@@ -19,6 +19,7 @@ export type Op =
   | "reply"
   | "accept"
   | "decline"
+  | "snooze"
   | "cancel"
   | "await"
   | "list"

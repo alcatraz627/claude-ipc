@@ -19,6 +19,8 @@ export interface StorageBackend {
   pending(alias: string, opts?: { consume?: boolean }): Message[];
   markDelivered(msgId: string, alias: string, via: Delivery["via"]): void;
   markConsumed(msgId: string, alias: string): void;
+  /** Defer without losing: seen-and-deferred, still pending. No-op unless queued/delivered. */
+  markSurfaced(msgId: string, alias: string): void;
   /** Atomically take this alias's freshly-queued messages, marking them delivered. */
   claimForDelivery(alias: string, via: Delivery["via"]): Message[];
   setConsent(msgId: string, alias: string, accepted: boolean): void;
@@ -30,6 +32,7 @@ export interface StorageBackend {
   isAwaitingOpen(originId: string): boolean;
   getAwaiting(originId: string): Awaiting | null;
   awaitingPastTtl(now: number): Awaiting[]; // only records with a deadline that has passed
+  openAwaitings(): Awaiting[]; // every still-open ask, for the ghost sweep to inspect its recipient
   originOf(corrId: string): Message | null;
 
   // registry warm-restart snapshot

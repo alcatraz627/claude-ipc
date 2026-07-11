@@ -8,9 +8,17 @@
  */
 
 import { readFileSync } from "node:fs";
+import { readAliasForSession, writeAliasForSession } from "./aliasStore.ts";
 import { Client } from "./client.ts";
 import { config } from "./config.ts";
 import { monitorSnapshot } from "./monitor.ts";
+
+/** This session's own ipc alias, from the side-file the SessionStart hook writes
+ *  (keyed by CLAUDE_CODE_SESSION_ID). Undefined if the session never registered.
+ *  Lets `send`/`reply` infer --from so a session never has to name itself. */
+function resolveSelfAlias(): string | undefined {
+  return readAliasForSession(process.env.CLAUDE_CODE_SESSION_ID);
+}
 
 type FlagValue = string | boolean;
 
@@ -51,9 +59,10 @@ function parse(argv: string[]): { cmd: string; positional: string[]; flags: Reco
 const USAGE = `claude-ipc — cross-session messaging
 
   register <alias>           (claim a mailbox from the shell)
-  send   --from <a> --to <b> --kind <inform|query|request> [--ttl N] <body...>
-  reply  <corr-id> --from <alias> [--status error] [--partial] <body...>
-                             (--partial = interim ack/update; omit for the final reply)
+  send   --to <b> [--from <a>] [--kind inform|query|request] [--ttl N] <body...>
+                             (--from auto-inferred from THIS session's alias; --kind defaults to inform)
+  reply  <corr-id> [--from <alias>] [--status error] [--partial] <body...>
+                             (--from auto-inferred; --partial = interim ack/update, omit for the final reply)
   inbox  <alias> [--consume]
   peers
   count  <alias>             (pending count — cheap, for tab-title segments)
@@ -61,8 +70,9 @@ const USAGE = `claude-ipc — cross-session messaging
   status <msg-id>            (a message's delivery + response lifecycle)
   accept <msg-id> --as <alias>
   decline <msg-id> --as <alias> [--reason <r>]
+  snooze <msg-id> --as <alias>  (defer without consuming — stays pending + owed)
   compose                    (interactive: pick a live peer + notes, then send)
-  tail                       (live monitor)
+  tail                       (live monitor, full-screen redraw — for a human)
   prune  [--offline-for <30m|2h|1d>]   (drop peers offline past the window; default 1d)
   daemon status|start|stop`;
 
@@ -79,39 +89,94 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
           console.error("register <alias> [--tty /dev/ttysNNN]");
           return 2;
         }
-        out(
-          await client.register(alias, {
-            sessionId: `cli-${alias}`,
-            cwd: process.cwd(),
-            pid: process.ppid, // broker derives the tty from the parent shell/session
-            tty: flags.tty ? String(flags.tty) : undefined,
-          }),
-        );
+        // register rebinds THE CURRENT session's alias — it is not a standalone
+        // mailbox claim. The harness exports CLAUDE_CODE_SESSION_ID to Bash; that
+        // is the session we rewrite. Without it we can't know which session to
+        // rebind, and minting a synthetic cli-<alias> row (the old behavior) would
+        // create a third mailbox the hooks never poll — the exact orphan-queue bug
+        // this whole change removes. Refuse rather than orphan.
+        const sid = process.env.CLAUDE_CODE_SESSION_ID;
+        if (!sid) {
+          console.error(
+            "register must run inside a Claude Code session (CLAUDE_CODE_SESSION_ID is unset).\n" +
+              "It rebinds the current session's ipc alias; run it from that session's shell,\n" +
+              "or set CLAUDE_IPC_ALIAS in that session's environment instead.",
+          );
+          return 2;
+        }
+        // Bind the alias to the real session, then record the side-file so the
+        // per-turn hooks resolve to it immediately. (Mail already queued to the
+        // session's previous alias is not chased — see the register-rebind note in
+        // docs; a boundary rename converges it.)
+        const res = await client.register(alias, {
+          sessionId: sid,
+          cwd: process.cwd(),
+          pid: process.ppid,
+          tty: flags.tty ? String(flags.tty) : undefined,
+        });
+        writeAliasForSession(sid, alias);
+        out(res);
         return 0;
       }
       case "send": {
         const to = String(flags.to ?? "");
         if (!to) {
-          console.error("send needs --to <alias>");
+          console.error("send needs a recipient. Add --to <alias>. See who's reachable: claude-ipc peers");
+          return 2;
+        }
+        // --from is the current session by default: a session shouldn't have to
+        // name itself. Resolve it from this session's registered alias; only ask
+        // for --from when we genuinely can't tell who this is.
+        const from = flags.from ? String(flags.from) : resolveSelfAlias();
+        if (!from) {
+          console.error(
+            `couldn't tell who's sending — this session has no registered ipc alias.\n` +
+              `  Fix:  claude-ipc register <your-name>    (then re-run your send)\n` +
+              `  Or:   claude-ipc send --from <your-name> --to ${to} "<message>"`,
+          );
           return 2;
         }
         const kind = String(flags.kind ?? "inform") as "inform" | "query" | "request";
-        out(
-          await client.send({
-            from: String(flags.from ?? "cli"),
-            to,
-            kind,
-            body: positional.join(" "),
-            ttlS: flags.ttl ? Number(flags.ttl) : undefined,
-          }),
-        );
+        const res = await client.send({
+          from,
+          to,
+          kind,
+          body: positional.join(" "),
+          ttlS: flags.ttl ? Number(flags.ttl) : undefined,
+        });
+        // The broker accepts a send to any known alias (even offline — the mail
+        // waits for it), and rejects only a name nobody ever registered. Turn that
+        // bare no_peer into a discovery answer: name who's reachable now and who's
+        // known-but-offline, so a typo'd or half-remembered recipient is easy to fix.
+        const err = (res as { error?: { code?: string } }).error;
+        if (err?.code === "no_peer") {
+          const all = ((await client.list()).peers ?? []) as { alias: string; status: string }[];
+          const live = all.filter((p) => p.status !== "offline").map((p) => p.alias);
+          const offline = all.filter((p) => p.status === "offline").map((p) => p.alias);
+          const lines = [`no peer named "${to}" is registered.`];
+          if (live.length) lines.push(`  reachable now:  ${live.join(", ")}`);
+          if (offline.length) {
+            const shown = offline.slice(0, 8).join(", ");
+            lines.push(`  known but offline (mail still reaches them):  ${shown}${offline.length > 8 ? ", …" : ""}`);
+          }
+          if (!live.length && !offline.length) lines.push(`  no peers are registered yet.`);
+          lines.push(`  full roster:  claude-ipc peers`);
+          console.error(lines.join("\n"));
+          return 2;
+        }
+        out(res);
         return 0;
       }
       case "reply": {
         const corrId = positional[0] ?? String(flags.corr ?? "");
-        const from = String(flags.from ?? "");
+        const from = flags.from ? String(flags.from) : resolveSelfAlias();
         if (!corrId || !from) {
-          console.error("reply <corr-id> --from <alias> [--status error] <body...>");
+          console.error(
+            `reply needs a message id and a sender.\n` +
+              `  Usage: claude-ipc reply <corr-id> [--from <alias>] "<body>"\n` +
+              (!corrId ? `  (missing the <corr-id> — it's the msg-… id you're answering)\n` : "") +
+              (!from ? `  (couldn't infer --from: register this session, or pass --from <alias>)` : ""),
+          );
           return 2;
         }
         out(
@@ -189,6 +254,16 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
           return 2;
         }
         out(await client.decline(as, msgId, flags.reason ? String(flags.reason) : undefined));
+        return 0;
+      }
+      case "snooze": {
+        const msgId = positional[0] ?? "";
+        const as = String(flags.as ?? "");
+        if (!msgId || !as) {
+          console.error("snooze <msg-id> --as <alias>");
+          return 2;
+        }
+        out(await client.snooze(as, msgId));
         return 0;
       }
       case "serve": {

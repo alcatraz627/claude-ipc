@@ -211,6 +211,14 @@ export class SqliteBackend implements StorageBackend {
     this.db.query(`UPDATE deliveries SET state='consumed' WHERE msg_id=? AND to_alias=?`).run(msgId, alias);
   }
 
+  markSurfaced(msgId: string, alias: string): void {
+    // Only a still-live delivery can be deferred — never resurrect a consumed,
+    // accepted, or declined one back into the pending set.
+    this.db
+      .query(`UPDATE deliveries SET state='surfaced' WHERE msg_id=? AND to_alias=? AND state IN ('queued','delivered')`)
+      .run(msgId, alias);
+  }
+
   claimForDelivery(alias: string, via: Delivery["via"]): Message[] {
     // Claim and read in one atomic statement. SQLite serializes writers, so the
     // WHERE re-evaluates against committed state — if a second deliverer (the
@@ -272,6 +280,11 @@ export class SqliteBackend implements StorageBackend {
     const rows = this.db
       .query("SELECT * FROM awaiting WHERE closed=0 AND expires_at IS NOT NULL AND expires_at <= ?")
       .all(now) as AwaitRow[];
+    return rows.map(toAwaiting);
+  }
+
+  openAwaitings(): Awaiting[] {
+    const rows = this.db.query("SELECT * FROM awaiting WHERE closed=0").all() as AwaitRow[];
     return rows.map(toAwaiting);
   }
 

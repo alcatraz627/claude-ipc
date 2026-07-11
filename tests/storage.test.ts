@@ -48,6 +48,19 @@ function backendSuite(name: string, make: () => StorageBackend): void {
       expect(db.pending("bob")).toEqual([]);
     });
 
+    test("markSurfaced defers without losing: still pending, never resurrects settled", () => {
+      db.append(m("s1", { ts: 1 }));
+      db.enqueue("s1", "bob");
+      db.markDelivered("s1", "bob", "hook");
+      db.markSurfaced("s1", "bob");
+      expect(db.deliveriesFor("s1")[0]?.state).toBe("surfaced");
+      expect(db.pending("bob").map((x) => x.id)).toEqual(["s1"]); // still owed
+      expect(db.pending("bob", { consume: true }).map((x) => x.id)).toEqual(["s1"]); // consumable later
+      expect(db.pending("bob")).toEqual([]);
+      db.markSurfaced("s1", "bob"); // snooze after consume must not resurrect
+      expect(db.deliveriesFor("s1")[0]?.state).toBe("consumed");
+    });
+
     test("markDelivered records the rung but stays actionable", () => {
       db.append(m("d1", { ts: 1 }));
       db.enqueue("d1", "bob");

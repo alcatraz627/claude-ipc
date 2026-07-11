@@ -28,8 +28,14 @@ the entry points, not in `config.ts`:
 - `src/mcpServer.ts` `resolveIdentity()` — `CLAUDE_IPC_ALIAS` / `CLAUDE_IPC_SESSION`
   / `CLAUDE_IPC_TRANSCRIPT`, combined with `process.cwd()`.
 - `src/hooks/shared.ts` `aliasFor()` — `CLAUDE_IPC_ALIAS` vs the hook's
-  `session_id`.
+  `session_id` / `session_title`, plus the recorded side-file alias.
 - `src/hooks/sessionStart.ts` — `CLAUDE_IPC_TTY` passed straight to register.
+- `src/cli.ts` `register` — `CLAUDE_CODE_SESSION_ID` names which session to
+  rebind (the harness exports it to the session's Bash). Per-invocation identity,
+  not global config.
+- `src/cli.ts` `resolveSelfAlias()` — `CLAUDE_CODE_SESSION_ID` → this session's
+  recorded alias, so `send`/`reply` infer `--from` without a session naming
+  itself. Same per-invocation identity read as `register`, at the boundary.
 
 These are per-invocation identity, not shared configuration, so they stay at the
 boundary. Everything else routes through `config.ts`.

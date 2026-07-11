@@ -8,7 +8,7 @@
 
 export type Kind = "inform" | "query" | "request" | "response";
 export type Status = "ok" | "error";
-export type ErrorCode = "timeout" | "no_peer" | "declined" | "internal";
+export type ErrorCode = "timeout" | "no_peer" | "declined" | "ghosted" | "internal";
 export type ControlOp = "register" | "heartbeat" | "leave" | "cancel";
 export type DeliveredVia = "channel" | "hook" | "resume" | "pull" | null;
 
@@ -58,7 +58,13 @@ export interface Awaiting {
   originId: string; // the query/request id (== corrId of its responses)
   expiresAt: number | null; // null = no deadline (the default — never auto-times-out)
   closed: boolean;
-  closedReason: "responded" | "timeout" | "cancelled" | null;
+  // "parked" = the recipient hasn't attended to the ask yet (TTL passed, or they
+  // went offline holding it). The sender was told it's PARKED — not failed: the
+  // message stays deliverable on the recipient's next turn/open, and a genuine
+  // late reply still reaches the sender (reply drops only on "cancelled"). Parking
+  // replaces the old terminal "timeout"/"ghosted" ERROR — the silent-failure the
+  // data showed (64% of asks). Those reasons are retained for back-compat reads.
+  closedReason: "responded" | "timeout" | "cancelled" | "ghosted" | "parked" | null;
 }
 
 export interface RegistryEntry {

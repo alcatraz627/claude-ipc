@@ -57,6 +57,8 @@ export class Router {
           return this.accept(req);
         case "decline":
           return this.decline(req);
+        case "snooze":
+          return this.snooze(req);
         case "cancel":
           return this.cancel(req);
         case "await":
@@ -264,8 +266,23 @@ export class Router {
     this.backend.append(resp);
     this.backend.enqueue(resp.id, origin.fromAlias);
     if (terminal && (aw === null || !aw.closed)) this.backend.closeAwaiting(a.corrId, "responded");
+    // Answering a message consumes it: the replier has clearly acted on the ask,
+    // so their own still-queued delivery of the origin must stop counting as
+    // pending — otherwise the turn-end push keeps reminding about an
+    // already-answered request until the next inbox drain (found live 2026-07-10).
+    this.backend.markConsumed(a.corrId, a.from);
     this.notify(origin.fromAlias);
     return ok({ msgId: resp.id, terminal, late });
+  }
+
+  /** Defer a message without losing it: marked seen-and-deferred, still pending + owed. */
+  private snooze(req: Request): Response {
+    const a = req.args as { alias?: string; msgId?: string };
+    if (!a.alias || !a.msgId) return fail("bad_args", "snooze needs alias + msgId");
+    const denied = this.requireOwner(req, a.alias); // only the recipient defers
+    if (denied) return denied;
+    this.backend.markSurfaced(a.msgId, a.alias);
+    return ok({ surfaced: true });
   }
 
   /** Consent to act on a request. Marks the delivery accepted; the work + reply follow. */

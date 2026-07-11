@@ -243,6 +243,9 @@ export class Client {
   decline(from: string, msgId: string, reason?: string): Promise<any> {
     return this.call("decline", { from, msgId, reason }, from);
   }
+  snooze(alias: string, msgId: string): Promise<any> {
+    return this.call("snooze", { alias, msgId }, alias);
+  }
   cancel(corrId: string, as?: string): Promise<any> {
     return this.call("cancel", { corrId }, as);
   }

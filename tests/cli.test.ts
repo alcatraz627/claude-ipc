@@ -55,6 +55,26 @@ describe("CLI", () => {
     expect(lines.join("\n")).toContain("hi there");
   });
 
+  // b2b — a send to a name nobody registered is a discovery miss, not a silent
+  // queue: exit 2, and the error names who IS reachable so a typo is easy to fix.
+  test("send to an unregistered alias reports who's reachable (exit 2)", async () => {
+    const c = new Client(sock);
+    await c.register("bob", { sessionId: "sB", cwd: "/b" });
+    await c.register("carol", { sessionId: "sC", cwd: "/c" });
+    const origErr = console.error;
+    const errs: string[] = [];
+    console.error = (...a: unknown[]): void => void errs.push(a.map(String).join(" "));
+    try {
+      expect(await run(["send", "--from", "alice", "--to", "ghost", "hello"], { socketPath: sock })).toBe(2);
+    } finally {
+      console.error = origErr;
+    }
+    const out = errs.join("\n");
+    expect(out).toContain('no peer named "ghost"');
+    expect(out).toContain("bob");
+    expect(out).toContain("carol");
+  });
+
   // Regression: --partial is a boolean flag and must NOT swallow the body that
   // follows it (it once consumed the first body word, leaving interim replies empty).
   test("reply --partial keeps the full body and is non-terminal", async () => {

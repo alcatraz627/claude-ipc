@@ -15,7 +15,7 @@ import { encodeFrame, FrameDecoder, type Request } from "../protocol.ts";
 import { brokerLog } from "./log.ts";
 import { Registry } from "./registry.ts";
 import { Router } from "./router.ts";
-import { tickSweeper } from "./sweeper.ts";
+import { sweepGhosts, tickSweeper } from "./sweeper.ts";
 import { BadgeNotifier, ttyBadgeSink } from "../badge.ts";
 import { SqliteBackend } from "../storage/sqliteBackend.ts";
 
@@ -172,8 +172,15 @@ export function main(): void {
   // 'delivered' and not retried — at-most-once after claim, inherent to the
   // fire-and-forget injection model, not fixable without an agent-side ack.)
   const inflight = backend.replayInflight();
+  // A recipient reads dark when the registry has no live entry for it (offline, or
+  // pruned away entirely) — the signal the ghost sweep escalates on.
+  const isDark = (alias: string): boolean => {
+    const e = registry.get(alias);
+    return !e || e.status === "offline";
+  };
   const sweeper = setInterval(() => {
     tickSweeper(backend, nowS, mkId, config.retentionS); // purge settled messages
+    sweepGhosts(backend, isDark, nowS, mkId, config.ghost.afterS); // notify senders of dark recipients
     registry.pruneOffline(nowS() - config.registryRetentionS); // drop long-dead peers
   }, config.sweepIntervalS * 1000);
   const broker = startBroker({ router, socketPath: config.socketPath });

@@ -168,4 +168,17 @@ describe("broker end-to-end", () => {
     expect(aliases).toEqual(["alice", "bob"]); // ghost gone; bob kept (pending), alice kept (live)
     expect(existsSync(ghostToken)).toBe(false); // and its orphan token file is cleaned up
   });
+
+  test("replying to an ask consumes the replier's own pending delivery of it", async () => {
+    await client.register("alice", { sessionId: "sA", cwd: "/a" });
+    await client.register("bob", { sessionId: "sB", cwd: "/b" });
+    const sent = await client.send({ from: "alice", to: "bob", kind: "request", body: "run the deploy" });
+    // Bob answers WITHOUT ever draining his inbox (the CLI-reply flow).
+    await client.reply({ from: "bob", corrId: sent.msgId, body: "done" });
+    // The answered request must no longer count as pending for bob — a stale
+    // pending row here makes the turn-end push remind about an answered ask.
+    const inbox = await client.check("bob");
+    expect(inbox.messages.map((m: { id: string }) => m.id)).not.toContain(sent.msgId);
+  });
+
 });

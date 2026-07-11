@@ -118,27 +118,29 @@ describe("correlation, consent, timeouts", () => {
     expect(r.errorCode).toBe("declined");
   });
 
-  test("sweeper times out an unanswered query and closes the awaiting", async () => {
-    const q = await client.send({ from: "alice", to: "bob", kind: "query", body: "?" }); // expires at 1060
+  test("sweeper PARKS an unanswered query (informational, not an error) and closes the awaiting", async () => {
+    const q = await client.send({ from: "alice", to: "bob", kind: "query", body: "?" }); // ttl expires at 1060
     expect(backend.isAwaitingOpen(q.msgId)).toBe(true);
     clock = 1100;
     expect(tickSweeper(backend, () => clock, mkId)).toBe(1);
     expect(backend.isAwaitingOpen(q.msgId)).toBe(false);
     const r = (await client.check("alice")).messages[0];
-    expect(r.status).toBe("error");
-    expect(r.errorCode).toBe("timeout");
+    expect(r.status).toBe("ok"); // parked resolves the await without signalling failure
+    expect(r.errorCode).toBeNull();
+    expect(r.body).toContain("parked");
     expect(r.corrId).toBe(q.msgId);
+    expect(backend.getAwaiting(q.msgId)?.closedReason).toBe("parked");
   });
 
-  test("a late reply (after a timeout fired) still delivers — the real answer wins", async () => {
+  test("a late reply (after a park notice fired) still delivers — the real answer wins", async () => {
     const q = await client.send({ from: "alice", to: "bob", kind: "query", body: "?", ttlS: 60 });
     clock = 1100;
-    tickSweeper(backend, () => clock, mkId); // timeout synthesized at +60
+    tickSweeper(backend, () => clock, mkId); // park notice synthesized at +60
     const late = await client.reply({ from: "bob", corrId: q.msgId, body: "actually, here it is" });
     expect(late.dropped).toBeUndefined();
     expect(late.late).toBe(true);
     const inbox = await client.check("alice");
-    // both the provisional timeout AND the real late answer are present
+    // both the park notice AND the real late answer are present
     expect(inbox.messages.length).toBe(2);
     expect(inbox.messages.some((m: { body: string }) => m.body === "actually, here it is")).toBe(true);
   });
