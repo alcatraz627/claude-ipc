@@ -1,0 +1,6 @@
+{
+  "name": "claude-ipc",
+  "description": "Auto-armed inbox watcher: new claude-ipc mail wakes this session, no human prompt needed",
+  "version": "0.1.0",
+  "author": { "name": "alcatraz627" }
+}

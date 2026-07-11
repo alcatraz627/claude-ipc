@@ -1,0 +1,8 @@
+[
+  {
+    "name": "ipc-inbox",
+    "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/watch-inbox.sh",
+    "description": "claude-ipc inbox — new mail wakes this session",
+    "when": "always"
+  }
+]
