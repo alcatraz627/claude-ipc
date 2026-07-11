@@ -74,7 +74,7 @@ export async function main(): Promise<void> {
   // Skipped when the alias is owned by another session — never drain their mailbox.
   let backlog: string | null = null;
   try {
-    if (owned) backlog = await deliverContext(client, alias, "resume");
+    if (owned) backlog = await deliverContext(client, alias, "resume", input.cwd ?? process.cwd());
   } catch (e) {
     // Don't block startup — but log to stderr so a buggy drain (broker up) is
     // visible in the hook debug log rather than silently dropping the backlog.
@@ -91,7 +91,25 @@ export async function main(): Promise<void> {
     // broker down — skip the roster, the backlog drain above still works
   }
 
-  const parts = [backlog, roster].filter((p): p is string => p !== null);
+  // Successor discoverability: dead sessions of THIS project may still hold
+  // mail. Surface their existence — the user usually points a new session at
+  // old work, and that mail is part of the work.
+  let orphanNote: string | null = null;
+  try {
+    const cwd = input.cwd ?? process.cwd();
+    const list = ((await client.orphans(cwd)).orphans ?? []) as { alias: string; pending: number }[];
+    if (list.length) {
+      const shown = list.slice(0, 5).map((o) => `${o.alias} (${o.pending})`);
+      const more = list.length > shown.length ? ` … +${list.length - shown.length} more` : "";
+      orphanNote =
+        `claude-ipc: dead sessions of this project still hold unread mail: ${shown.join(", ")}${more}` +
+        ` — peek with: claude-ipc inbox <alias> (list: claude-ipc orphans --project)`;
+    }
+  } catch {
+    // broker down — orphan surfacing is best-effort
+  }
+
+  const parts = [backlog, roster, orphanNote].filter((p): p is string => p !== null);
   if (parts.length) emitContext("SessionStart", parts.join("\n\n"));
 }
 

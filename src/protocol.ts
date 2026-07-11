@@ -23,6 +23,8 @@ export type Op =
   | "cancel"
   | "await"
   | "list"
+  | "projects"
+  | "orphans"
   | "history"
   | "status"
   | "count"

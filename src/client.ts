@@ -219,6 +219,23 @@ export class Client {
   deliver(alias: string, via: "hook" | "resume" | "channel"): Promise<any> {
     return this.call("deliver", { alias, via }, alias);
   }
+  // Project-mailbox reads: `asAlias` is the caller's own session alias — its
+  // token is what proves project membership for consuming/claiming.
+  checkProject(dir: string, consume = false, asAlias?: string): Promise<any> {
+    return this.call("check", { project: dir, consume }, asAlias);
+  }
+  deliverProject(dir: string, via: "hook" | "resume" | "channel", asAlias: string): Promise<any> {
+    return this.call("deliver", { project: dir, via }, asAlias);
+  }
+  countProject(dir: string): Promise<any> {
+    return this.call("count", { project: dir });
+  }
+  projects(): Promise<any> {
+    return this.call("projects", {});
+  }
+  orphans(dir?: string): Promise<any> {
+    return this.call("orphans", dir ? { project: dir } : {});
+  }
   list(): Promise<any> {
     return this.call("list", {});
   }

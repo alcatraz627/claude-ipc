@@ -22,6 +22,39 @@ function resolveSelfAlias(): string | undefined {
 
 type FlagValue = string | boolean;
 
+/**
+ * Turn a --project / --to-project value into an absolute directory.
+ * `true` (bare flag) means "this directory". A name is matched against known
+ * project mailboxes and registered peers' cwds by basename; ambiguity is an
+ * error listing the candidates — never a guess.
+ */
+async function resolveProjectDir(raw: FlagValue, client: Client): Promise<string | null> {
+  if (raw === true) return process.cwd();
+  const s = String(raw).trim();
+  if (s === "." || s === "") return process.cwd();
+  if (s.startsWith("/")) return s.replace(/\/+$/, "") || "/";
+  const candidates = new Set<string>();
+  try {
+    const boxes = (await client.projects()).projects as { path: string }[];
+    for (const b of boxes) if (b.path.split("/").pop() === s) candidates.add(b.path);
+  } catch {
+    // broker down — registry lookup below will also fail; fall through to the error
+  }
+  try {
+    const peers = (await client.list()).peers as { cwd: string }[];
+    for (const p of peers) if (p.cwd && p.cwd.split("/").pop() === s) candidates.add(p.cwd.replace(/\/+$/, ""));
+  } catch {
+    // same — an unreachable broker ends in the "unknown project" error
+  }
+  if (candidates.size === 1) return [...candidates][0]!;
+  if (candidates.size === 0) {
+    console.error(`unknown project "${s}" — use an absolute path, or see: claude-ipc projects`);
+    return null;
+  }
+  console.error(`"${s}" is ambiguous:\n  ${[...candidates].join("\n  ")}\nuse the full path.`);
+  return null;
+}
+
 /** Parse a duration like "30m", "2h", "1d" (or bare seconds) to seconds; null if malformed. */
 function parseDuration(s: string): number | null {
   const m = /^(\d+)\s*([smhd]?)$/.exec(s.trim());
@@ -59,12 +92,15 @@ function parse(argv: string[]): { cmd: string; positional: string[]; flags: Reco
 const USAGE = `claude-ipc — cross-session messaging
 
   register <alias>           (claim a mailbox from the shell)
-  send   --to <b> [--from <a>] [--kind inform|query|request] [--ttl N] <body...>
-                             (--from auto-inferred from THIS session's alias; --kind defaults to inform)
+  send   --to <b> | --to-project <dir|name> [--from <a>] [--kind inform|query|request] [--ttl N] <body...>
+                             (--from auto-inferred from THIS session's alias; --kind defaults to inform;
+                              project mail waits for ANY session working in that directory tree)
   reply  <corr-id> [--from <alias>] [--status error] [--partial] <body...>
                              (--from auto-inferred; --partial = interim ack/update, omit for the final reply)
-  inbox  <alias> [--consume]
+  inbox  <alias> [--consume] | --project [dir]   (project peek is open; consume needs membership)
   peers
+  projects                   (project mailboxes with pending mail)
+  orphans [--project [dir]]  (dead sessions' waiting mail — successors peek with: inbox <alias>)
   count  <alias>             (pending count — cheap, for tab-title segments)
   log    [--peer <a>] [--since <epoch>]
   status <msg-id>            (a message's delivery + response lifecycle)
@@ -119,9 +155,16 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
         return 0;
       }
       case "send": {
-        const to = String(flags.to ?? "");
+        let to = String(flags.to ?? "");
+        if (flags["to-project"]) {
+          const dir = await resolveProjectDir(flags["to-project"], client);
+          if (typeof dir !== "string") return 2; // resolveProjectDir already explained
+          to = `proj:${dir}`;
+        }
         if (!to) {
-          console.error("send needs a recipient. Add --to <alias>. See who's reachable: claude-ipc peers");
+          console.error(
+            "send needs a recipient. Add --to <alias> or --to-project <dir>. See who's reachable: claude-ipc peers",
+          );
           return 2;
         }
         // --from is the current session by default: a session shouldn't have to
@@ -191,24 +234,50 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
         return 0;
       }
       case "inbox": {
+        const consume = flags.consume === true || flags.consume === "true";
+        if (flags.project) {
+          const dir = await resolveProjectDir(flags.project, client);
+          if (typeof dir !== "string") return 2;
+          out(await client.checkProject(dir, consume, resolveSelfAlias()));
+          return 0;
+        }
         const alias = positional[0] ?? String(flags.alias ?? "");
         if (!alias) {
-          console.error("inbox needs an alias");
+          console.error("inbox needs an alias (or --project [dir])");
           return 2;
         }
-        out(await client.check(alias, flags.consume === true || flags.consume === "true"));
+        out(await client.check(alias, consume));
         return 0;
       }
       case "peers":
         out(await client.list());
         return 0;
       case "count": {
+        if (flags.project) {
+          const dir = await resolveProjectDir(flags.project, client);
+          if (typeof dir !== "string") return 2;
+          out(String((await client.countProject(dir)).count));
+          return 0;
+        }
         const alias = positional[0] ?? "";
         if (!alias) {
-          console.error("count <alias>");
+          console.error("count <alias> (or count --project [dir])");
           return 2;
         }
         out(String((await client.count(alias)).count));
+        return 0;
+      }
+      case "projects": {
+        out(await client.projects());
+        return 0;
+      }
+      case "orphans": {
+        let dir: string | null = null;
+        if (flags.project) {
+          dir = await resolveProjectDir(flags.project, client);
+          if (dir === null) return 2;
+        }
+        out(await client.orphans(dir ?? undefined));
         return 0;
       }
       case "prune": {

@@ -88,6 +88,14 @@ export async function main(): Promise<void> {
   // a dead broker must not wedge a session at its turn boundary.
   try {
     const pending = ((await client.check(alias)).messages ?? []) as Ask[];
+    // Project asks nag every member session the same way — whoever replies
+    // first consumes the ask for the whole project. Peek is non-consuming.
+    try {
+      const cwd = input.cwd ?? process.cwd();
+      pending.push(...(((await client.checkProject(cwd, false, alias)).messages ?? []) as Ask[]));
+    } catch {
+      // project peek is best-effort; session mail already covered above
+    }
     const d = decidePush(pending, alias, alreadyBlocked);
     if (d.kind === "block") {
       for (const id of d.mark) markBlocked(id);

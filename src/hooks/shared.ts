@@ -105,12 +105,38 @@ export function formatRoster(peers: Peer[], self: string): string | null {
   return ["claude-ipc peers (message one with claude-ipc send --to <alias>):", ...lines].join("\n");
 }
 
-/** Claim this alias's freshly-queued messages and render them, or null if none. */
+/**
+ * Claim this session's freshly-queued messages — its own mailbox plus, when a
+ * cwd is given, the project mailboxes for that directory tree — and render
+ * them, or null if none. Project drain is best-effort: an unregistered session
+ * (no membership token) or a degraded broker just skips it.
+ */
 export async function deliverContext(
   client: Client,
   alias: string,
   via: "hook" | "resume",
+  projectDir?: string,
 ): Promise<string | null> {
   const res = (await client.deliver(alias, via)) as { messages: InMsg[] };
-  return res.messages.length ? formatMessages(res.messages) : null;
+  let proj: InMsg[] = [];
+  if (projectDir) {
+    try {
+      proj = (((await client.deliverProject(projectDir, via, alias)) as { messages: InMsg[] }).messages ?? []);
+    } catch {
+      // not a member, or broker degraded — session mail above still delivered
+    }
+  }
+  const blocks: string[] = [];
+  if (res.messages.length) blocks.push(formatMessages(res.messages));
+  if (proj.length) blocks.push(formatProjectMessages(proj, projectDir!));
+  return blocks.length ? blocks.join("\n\n") : null;
+}
+
+/** Render project-addressed mail with its shared-ownership framing. */
+export function formatProjectMessages(messages: InMsg[], dir: string): string {
+  const body = formatMessages(messages).split("\n").slice(1); // reuse line rendering, swap the header
+  return [
+    `You have claude-ipc PROJECT mail for ${dir} (addressed to whoever works here — first to reply consumes it for the whole project):`,
+    ...body,
+  ].join("\n");
 }

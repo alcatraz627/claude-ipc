@@ -49,21 +49,32 @@ STATE="$(mktemp -d "${TMPDIR:-/tmp}/ipc-watch.XXXXXX")"
 trap 'rm -rf "$STATE" 2>/dev/null' EXIT
 : > "$STATE/seen"
 
-# One inbox snapshot as flat lines: id<TAB>kind<TAB>from<TAB>one-line body head.
-# Exits non-zero when the broker didn't answer with JSON (down, CLI missing), so
-# a dead broker is a skipped tick — never mistaken for an empty inbox. Double
-# quotes only inside the single-quoted program (backslash escapes there break
-# under bash single quotes).
+# One snapshot of BOTH mailboxes (this session's + the project's) as flat
+# lines: id<TAB>kind<TAB>from<TAB>origin<TAB>one-line body head. Exits non-zero
+# when the broker didn't answer with JSON (down, CLI missing), so a dead broker
+# is a skipped tick — never mistaken for an empty inbox. Double quotes only
+# inside the single-quoted program (backslash escapes there break under bash
+# single quotes).
 snapshot() {
-  "$CIPC" inbox "$ALIAS" 2>/dev/null | python3 -c '
+  {
+    "$CIPC" inbox "$ALIAS" 2>/dev/null
+    echo "---IPC-SPLIT---"
+    "$CIPC" inbox --project 2>/dev/null
+  } | python3 -c '
 import sys, json
-try:
-    msgs = json.load(sys.stdin).get("messages", [])
-except Exception:
+raw = sys.stdin.read().split("---IPC-SPLIT---")
+if len(raw) != 2:
     sys.exit(3)
-for m in msgs:
-    head = " ".join(str(m.get("body") or "").split())[:120]
-    print(str(m.get("id")) + "\t" + str(m.get("kind")) + "\t" + str(m.get("fromAlias")) + "\t" + head)
+for chunk, origin in ((raw[0], "session"), (raw[1], "project")):
+    try:
+        msgs = json.loads(chunk).get("messages", [])
+    except Exception:
+        if origin == "session":
+            sys.exit(3)  # own inbox unreadable = broker down; project peek is best-effort
+        continue
+    for m in msgs:
+        head = " ".join(str(m.get("body") or "").split())[:120]
+        print(str(m.get("id")) + "\t" + str(m.get("kind")) + "\t" + str(m.get("fromAlias")) + "\t" + origin + "\t" + head)
 '
 }
 
@@ -80,17 +91,22 @@ while :; do
         wake="$(printf '%s\n' "$cur" | python3 -c '
 import sys
 new_ids = set(sys.argv[1].split())
-items = []
+items, origins = [], set()
 for line in sys.stdin:
     parts = line.rstrip("\n").split("\t")
-    if len(parts) < 4 or parts[0] not in new_ids:
+    if len(parts) < 5 or parts[0] not in new_ids:
         continue
     if parts[1] in ("query", "request", "response"):
-        items.append(parts[1] + " from " + parts[2] + " (" + parts[0] + "): " + parts[3])
+        tag = ", project" if parts[3] == "project" else ""
+        origins.add(parts[3])
+        items.append(parts[1] + " from " + parts[2] + " (" + parts[0] + tag + "): " + parts[4])
 if items:
-    print(("ipc: " + str(len(items)) + " actionable — " + "; ".join(items))[:380])
-' "$new")"
-        [ -n "$wake" ] && printf '%s\n' "$wake — read: claude-ipc inbox $ALIAS"
+    reads = []
+    if "session" in origins: reads.append("claude-ipc inbox " + sys.argv[2])
+    if "project" in origins: reads.append("claude-ipc inbox --project")
+    print(("ipc: " + str(len(items)) + " actionable — " + "; ".join(items))[:380] + " — read: " + " · ".join(reads))
+' "$new" "$ALIAS")"
+        [ -n "$wake" ] && printf '%s\n' "$wake"
         cat "$STATE/cur_ids" "$STATE/seen" | sort -u > "$STATE/seen.next"
         mv -f "$STATE/seen.next" "$STATE/seen"
       fi

@@ -254,6 +254,23 @@ export class SqliteBackend implements StorageBackend {
     return rows.map(toDelivery);
   }
 
+  projectAddresses(): string[] {
+    const rows = this.db
+      .query(
+        `SELECT DISTINCT to_alias FROM deliveries
+         WHERE to_alias LIKE 'proj:%' AND state IN ('queued','delivered','surfaced')`,
+      )
+      .all() as { to_alias: string }[];
+    return rows.map((r) => r.to_alias);
+  }
+
+  pendingAddresses(): string[] {
+    const rows = this.db
+      .query(`SELECT DISTINCT to_alias FROM deliveries WHERE state IN ('queued','delivered','surfaced')`)
+      .all() as { to_alias: string }[];
+    return rows.map((r) => r.to_alias);
+  }
+
   openAwaiting(originId: string, expiresAt: number | null): void {
     this.db
       .query(`INSERT OR REPLACE INTO awaiting (origin_id, expires_at, closed, closed_reason) VALUES (?,?,0,NULL)`)

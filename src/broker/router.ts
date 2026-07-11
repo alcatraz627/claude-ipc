@@ -9,6 +9,7 @@
 
 import { ttyForPid } from "../badge.ts";
 import { makeMessage, type DeliveredVia, type ErrorCode, type Kind, type Status } from "../models.ts";
+import { isProjectAddress, normalizeProjectPath, projectAddress, projectPath, sameLineage } from "../projectAddress.ts";
 import { PROTOCOL_VERSION, type Request, type Response } from "../protocol.ts";
 import type { StorageBackend } from "../storage/base.ts";
 import type { Registry } from "./registry.ts";
@@ -73,6 +74,16 @@ export class Router {
           return this.prune(req);
         case "list":
           return ok({ peers: this.registry.list() });
+        case "projects": {
+          const boxes = this.backend.projectAddresses().map((addr) => ({
+            address: addr,
+            path: projectPath(addr),
+            pending: this.backend.pending(addr).length,
+          }));
+          return ok({ projects: boxes });
+        }
+        case "orphans":
+          return this.orphans(req);
         default:
           return fail("bad_op", `unsupported op: ${req.op}`);
       }
@@ -158,7 +169,11 @@ export class Router {
       return fail("bad_args", `kind must be inform|query|request, got ${String(a.kind)}`);
     }
 
-    if (a.to !== "*" && !this.registry.has(a.to)) {
+    // A project address needs no registered peer — the mailbox IS the address,
+    // and it may be created before anyone works there. Canonicalize so
+    // `proj:/x/` and `proj:/x` are one mailbox.
+    if (isProjectAddress(a.to)) a.to = projectAddress(projectPath(a.to));
+    else if (a.to !== "*" && !this.registry.has(a.to)) {
       return ok({ msgId: null, error: { code: "no_peer", livePeers: this.registry.liveAliases() } });
     }
 
@@ -192,6 +207,13 @@ export class Router {
 
     const targets = a.to === "*" ? this.registry.liveAliases(a.from) : [a.to];
     for (const t of targets) this.backend.enqueue(msg.id, t);
+    // Project mail can't notify its own address — nudge the live sessions
+    // working in that tree instead, so their channels/badges see it.
+    if (isProjectAddress(a.to)) {
+      for (const e of this.registry.list()) {
+        if (e.status !== "offline" && sameLineage(e.cwd, projectPath(a.to))) this.notify(e.alias);
+      }
+    }
 
     // A directed query/request is something the sender waits on — track it for
     // correlation. It auto-times-out only if an explicit ttl was given (or a
@@ -206,7 +228,19 @@ export class Router {
   }
 
   private check(req: Request): Response {
-    const a = req.args as { alias?: string; consume?: boolean };
+    const a = req.args as { alias?: string; consume?: boolean; project?: string };
+    if (a.project) {
+      // Anyone may peek a project mailbox (visibility is deliberately open —
+      // no new silos); only a member session may consume.
+      if (a.consume) {
+        const denied = this.requireProjectMember(req, a.project);
+        if (denied) return denied;
+      }
+      const messages = this.projectMailboxes(a.project).flatMap((addr) =>
+        this.backend.pending(addr, { consume: a.consume ?? false }),
+      );
+      return ok({ messages });
+    }
     if (!a.alias) return fail("bad_args", "check needs alias");
     const denied = this.requireOwner(req, a.alias); // only the owner reads its inbox
     if (denied) return denied;
@@ -217,13 +251,67 @@ export class Router {
 
   /** Hand a hook the alias's freshly-queued messages exactly once (idempotent inject). */
   private deliver(req: Request): Response {
-    const a = req.args as { alias?: string; via?: DeliveredVia };
+    const a = req.args as { alias?: string; via?: DeliveredVia; project?: string };
+    if (a.project) {
+      const denied = this.requireProjectMember(req, a.project); // claiming is member-only
+      if (denied) return denied;
+      const messages = this.projectMailboxes(a.project).flatMap((addr) =>
+        this.backend.claimForDelivery(addr, a.via ?? "hook"),
+      );
+      return ok({ messages });
+    }
     if (!a.alias) return fail("bad_args", "deliver needs alias");
     const denied = this.requireOwner(req, a.alias); // only the owner drains its queue
     if (denied) return denied;
     const messages = this.backend.claimForDelivery(a.alias, a.via ?? "hook");
     this.notify(a.alias);
     return ok({ messages });
+  }
+
+  /**
+   * Session mailboxes whose owner is gone but whose mail still waits — what a
+   * successor agent should know about when it picks the work back up. Scoped
+   * to a directory's lineage when `project` is given; a dead alias whose cwd
+   * is unknown (pruned from the registry) only shows in the global listing.
+   */
+  private orphans(req: Request): Response {
+    const a = req.args as { project?: string };
+    const dir = a.project ? normalizeProjectPath(a.project) : null;
+    const entries = new Map(this.registry.list().map((e) => [e.alias, e]));
+    const out: { alias: string; cwd: string | null; lastSeen: number | null; pending: number }[] = [];
+    for (const addr of this.backend.pendingAddresses()) {
+      if (isProjectAddress(addr)) continue; // project mail is not orphaned — it waits by design
+      const e = entries.get(addr);
+      if (e && e.status !== "offline") continue; // owner can still wake — not an orphan
+      if (dir && (!e?.cwd || !sameLineage(e.cwd, dir))) continue;
+      out.push({
+        alias: addr,
+        cwd: e?.cwd ?? null,
+        lastSeen: e?.lastSeen ?? null,
+        pending: this.backend.pending(addr).length,
+      });
+    }
+    out.sort((x, y) => y.pending - x.pending);
+    return ok({ orphans: out });
+  }
+
+  /** Project addresses whose path shares lineage with the given directory. */
+  private projectMailboxes(dir: string): string[] {
+    const d = normalizeProjectPath(dir);
+    return this.backend.projectAddresses().filter((addr) => sameLineage(projectPath(addr), d));
+  }
+
+  /**
+   * Gate a project-consuming op: the caller's token must belong to a
+   * registered session whose cwd shares lineage with the project path.
+   */
+  private requireProjectMember(req: Request, dir: string): Response | null {
+    if (!req.token) return fail("unauthorized", "consuming project mail needs a session token");
+    const d = normalizeProjectPath(dir);
+    for (const e of this.registry.list()) {
+      if (this.registry.tokenOf(e.alias) === req.token && sameLineage(e.cwd, d)) return null;
+    }
+    return fail("unauthorized", `no session you own works under ${d}`);
   }
 
   /** Answer a query/request. A reply after the origin closed (timeout/cancel) is dropped. */
@@ -271,6 +359,10 @@ export class Router {
     // pending — otherwise the turn-end push keeps reminding about an
     // already-answered request until the next inbox drain (found live 2026-07-10).
     this.backend.markConsumed(a.corrId, a.from);
+    // A project-addressed ask has its delivery row under the proj: address,
+    // not the replier's alias — consume that too, or every other member keeps
+    // seeing an already-answered ask as pending.
+    if (isProjectAddress(origin.toAlias)) this.backend.markConsumed(a.corrId, origin.toAlias);
     this.notify(origin.fromAlias);
     return ok({ msgId: resp.id, terminal, late });
   }
@@ -339,7 +431,12 @@ export class Router {
 
   /** Cheap pending-count for an alias — for a tab-title segment that runs every turn. */
   private count(req: Request): Response {
-    const a = req.args as { alias?: string };
+    const a = req.args as { alias?: string; project?: string };
+    if (a.project) {
+      // Ungated like a peek — a cheap number, and openness is the anti-silo stance.
+      const n = this.projectMailboxes(a.project).reduce((s, addr) => s + this.backend.pending(addr).length, 0);
+      return ok({ count: n });
+    }
     if (!a.alias) return fail("bad_args", "count needs alias");
     const denied = this.requireOwner(req, a.alias); // your own inbox size only
     if (denied) return denied;

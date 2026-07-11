@@ -25,6 +25,10 @@ export interface StorageBackend {
   claimForDelivery(alias: string, via: Delivery["via"]): Message[];
   setConsent(msgId: string, alias: string, accepted: boolean): void;
   deliveriesFor(msgId: string): Delivery[];
+  /** Every `proj:` address that still has pending mail — the live project-mailbox set. */
+  projectAddresses(): string[];
+  /** Every address (session or project) that still has pending mail. */
+  pendingAddresses(): string[];
 
   // sender's outstanding query/request
   openAwaiting(originId: string, expiresAt: number | null): void; // null = no deadline
