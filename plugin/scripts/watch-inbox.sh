@@ -4,10 +4,12 @@
 # (and again on every resume) and turns each line it prints into an event that
 # re-invokes the agent, so new ipc mail wakes an idle session with no human turn.
 #
-# Identity: the session's alias comes from the alias-by-sid side file the
-# SessionStart hook writes. A session that never registers (ephemeral /tmp cwd,
-# hook failure) gets no side file — the watcher exits quietly rather than watch
-# a mailbox nothing will ever fill.
+# Identity: the session's alias comes from the alias-by-sid side file, and it is
+# re-read on every tick because it MOVES. A session that renames itself (the usual
+# `claude-ipc register <name>` at startup) rewrites that file, and a watcher holding
+# the old name would poll an empty mailbox for the rest of the session, silently,
+# while its real mail piled up elsewhere. A session with no alias yet keeps waiting
+# rather than exiting, so a slow hook costs a few ticks instead of the wake surface.
 #
 # Wake discipline: only actionable mail (query / request / response) wakes the
 # agent; an inform waits for the next organic turn's drain. New mail is detected
@@ -27,27 +29,27 @@ SID="${CLAUDE_CODE_SESSION_ID:-}"
 IPC_HOME="${CLAUDE_IPC_HOME:-$HOME/.claude-ipc}"
 CIPC="${CLAUDE_IPC_BIN:-$(command -v claude-ipc || echo claude-ipc)}"
 INTERVAL="${IPC_WATCH_INTERVAL:-10}"
-GRACE_TRIES="${IPC_WATCH_GRACE_TRIES:-12}"
 
-# The SessionStart hook races this monitor: it writes the alias file moments
-# after the session (and this process) starts. Give it a grace window, then
-# treat a missing side file as "this session isn't an ipc participant".
-alias_file="$IPC_HOME/alias-by-sid/$SID"
-ALIAS=""
-i=0
-while [ "$i" -lt "$GRACE_TRIES" ]; do
-  if [ -s "$alias_file" ]; then
-    ALIAS="$(tr -d '[:space:]' < "$alias_file")"
-    break
-  fi
-  sleep 5
-  i=$((i + 1))
-done
-[ -n "$ALIAS" ] || exit 0
+# Which mailbox to watch is decided fresh on every tick, never cached. A session
+# renames itself mid-flight — `claude-ipc register <name>` rewrites this very file,
+# and the SessionStart hook writes it moments after this process starts — so an
+# alias read once at startup goes stale and leaves the watcher polling a mailbox
+# nobody sends to. That failure is silent and total: mail lands under the new name
+# and no wake ever fires again. A missing file is likewise a wait, not an exit.
+ALIAS_FILE="$IPC_HOME/alias-by-sid/$SID"
+current_alias() { [ -s "$ALIAS_FILE" ] && tr -d '[:space:]' < "$ALIAS_FILE"; }
 
 STATE="$(mktemp -d "${TMPDIR:-/tmp}/ipc-watch.XXXXXX")"
 trap 'rm -rf "$STATE" 2>/dev/null' EXIT
 : > "$STATE/seen"
+
+# Diagnostics go to a file, never to stdout: every stdout line here IS a wake, so a
+# debug print would spend a whole agent turn saying nothing. This log is the only
+# place to see which mailbox a watcher settled on and why it went quiet.
+LOG="$IPC_HOME/logs/watch-inbox-$SID.log"
+mkdir -p "$IPC_HOME/logs" 2>/dev/null || true
+log() { printf '%s %s\n' "$(date '+%H:%M:%S')" "$*" >> "$LOG" 2>/dev/null || true; }
+log "watcher up (sid=$SID interval=${INTERVAL}s)"
 
 # One snapshot of BOTH mailboxes (this session's + the project's) as flat
 # lines: id<TAB>kind<TAB>from<TAB>origin<TAB>one-line body head. Exits non-zero
@@ -57,7 +59,7 @@ trap 'rm -rf "$STATE" 2>/dev/null' EXIT
 # single quotes).
 snapshot() {
   {
-    "$CIPC" inbox "$ALIAS" 2>/dev/null
+    "$CIPC" inbox "$1" 2>/dev/null
     echo "---IPC-SPLIT---"
     "$CIPC" inbox --project 2>/dev/null
   } | python3 -c '
@@ -78,13 +80,37 @@ for chunk, origin in ((raw[0], "session"), (raw[1], "project")):
 '
 }
 
+ALIAS=""
 baselined=""
+broker_ok=""
 while :; do
-  if cur="$(snapshot)"; then
+  now_alias="$(current_alias || true)"
+
+  # No alias yet (SessionStart hasn't written it, or this session never joined):
+  # keep waiting. Exiting here is what used to strand a session with no wake
+  # surface and no error to show for it.
+  if [ -z "$now_alias" ]; then
+    sleep "$INTERVAL"
+    continue
+  fi
+
+  # The session adopted a new name. Re-baseline against the new mailbox: whatever
+  # already sits there has been surfaced by the turn-boundary hooks (a rename
+  # happens mid-turn), so it is history, not a wake. Only arrivals after this
+  # point are.
+  if [ "$now_alias" != "$ALIAS" ]; then
+    log "watching mailbox: $now_alias${ALIAS:+ (renamed from $ALIAS)}"
+    ALIAS="$now_alias"
+    baselined=""
+  fi
+
+  if cur="$(snapshot "$ALIAS")"; then
+    [ -n "$broker_ok" ] || { log "broker answering"; broker_ok=1; }
     printf '%s\n' "$cur" | cut -f1 | rg -v '^$' | sort -u > "$STATE/cur_ids" || true
     if [ -z "$baselined" ]; then
       cp -f "$STATE/cur_ids" "$STATE/seen"
       baselined=1
+      log "baseline: $(wc -l < "$STATE/cur_ids" | tr -d ' ') already-known message(s)"
     else
       new="$(comm -13 "$STATE/seen" "$STATE/cur_ids")"
       if [ -n "$new" ]; then
@@ -106,11 +132,16 @@ if items:
     if "project" in origins: reads.append("claude-ipc inbox --project")
     print(("ipc: " + str(len(items)) + " actionable — " + "; ".join(items))[:380] + " — read: " + " · ".join(reads))
 ' "$new" "$ALIAS")"
-        [ -n "$wake" ] && printf '%s\n' "$wake"
+        if [ -n "$wake" ]; then
+          printf '%s\n' "$wake"
+          log "WAKE: $wake"
+        fi
         cat "$STATE/cur_ids" "$STATE/seen" | sort -u > "$STATE/seen.next"
         mv -f "$STATE/seen.next" "$STATE/seen"
       fi
     fi
+  else
+    [ -z "$broker_ok" ] || { log "broker not answering; ticks skipped until it returns"; broker_ok=""; }
   fi
   sleep "$INTERVAL"
 done
