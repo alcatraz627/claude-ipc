@@ -107,7 +107,10 @@ while :; do
 
   if cur="$(snapshot "$ALIAS")"; then
     [ -n "$broker_ok" ] || { log "broker answering"; broker_ok=1; }
-    printf '%s\n' "$cur" | cut -f1 | rg -v '^$' | sort -u > "$STATE/cur_ids" || true
+    # awk, not rg: this loop is the wake surface, and a missing binary here fails
+    # silently (the pipeline's error is swallowed, cur_ids comes out empty, and the
+    # watcher simply never wakes again). Depend only on what POSIX guarantees.
+    printf '%s\n' "$cur" | cut -f1 | awk 'NF' | sort -u > "$STATE/cur_ids" || true
     # The one baseline, taken at startup only: whatever is already in the mailbox
     # when the session opens was handed over by the SessionStart drain, so it is
     # history rather than a wake. Every later tick — including after a rename —

@@ -27,9 +27,15 @@ export class Registry {
     private now: () => number,
     private liveness: Liveness,
   ) {
-    // Warm-start from the snapshot, but trust no liveness until a fresh heartbeat.
+    // Warm-start from the snapshot and let each peer's status fall out of when we
+    // last heard from it. Booting everyone as "offline" looks cautious and is the
+    // opposite: only a *turn* clears that flag, so every session sitting idle at
+    // its prompt — alive, watched, wakeable — stayed permanently dead to us, its
+    // senders were told it "went offline", and a broadcast skipped it entirely.
+    // We don't know less after a restart than the snapshot says; assert exactly
+    // that much and no more.
     for (const e of backend.loadRegistry()) {
-      this.entries.set(e.alias, { ...e, status: "offline" });
+      this.entries.set(e.alias, { ...e });
     }
   }
 
@@ -95,6 +101,7 @@ export class Registry {
     const e = this.entries.get(alias);
     if (e) {
       e.status = "offline";
+      e.lastSeen = 0; // backdated so the leave survives a broker restart on its own
       this.snapshot();
     }
   }
@@ -146,8 +153,11 @@ export class Registry {
       .map((e) => e.alias);
   }
 
+  // Status is derived from age alone. An explicit `leave` persists by backdating
+  // lastSeen rather than by a sticky flag: the flag was indistinguishable from the
+  // warm-start default above, so "we haven't heard from you yet" and "you told us
+  // you were going" collapsed into the same permanent verdict.
   private statusOf(e: RegistryEntry): RegistryEntry["status"] {
-    if (e.status === "offline") return "offline"; // an explicit leave sticks
     const age = this.now() - e.lastSeen;
     if (age > this.liveness.offlineS) return "offline";
     if (age > this.liveness.idleS) return "idle";
