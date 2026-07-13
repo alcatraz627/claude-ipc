@@ -135,7 +135,7 @@ describe("P1 · delivery reaches the per-turn hook (V3 — the core defect)", ()
     // The per-turn hook only knows the raw session id; aliasFor bridges to "backend".
     const ctx = await deliverContext(client, aliasFor({ session_id: sid }), "hook");
     expect(ctx).toContain("base url?");
-    expect(ctx).toContain("ipc_reply");
+    expect(ctx).toContain("claude-ipc reply");
     // idempotent: a second turn does not re-inject the consumed delivery
     expect(await deliverContext(client, aliasFor({ session_id: sid }), "hook")).toBeNull();
   });
