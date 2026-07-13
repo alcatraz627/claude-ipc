@@ -94,19 +94,25 @@ while :; do
     continue
   fi
 
-  # The session adopted a new name. Re-baseline against the new mailbox: whatever
-  # already sits there has been surfaced by the turn-boundary hooks (a rename
-  # happens mid-turn), so it is history, not a wake. Only arrivals after this
-  # point are.
+  # The session adopted a new name. Follow it, but KEEP the seen-set: message ids
+  # are globally unique, so nothing is confused by the switch, and mail already
+  # waiting in the adopted mailbox is mail nobody has handed us yet — a successor
+  # session inheriting a dead peer's alias (see `claude-ipc orphans`) must be woken
+  # for it, not silently robbed of it. Re-baselining here would mark that unread
+  # backlog as history and drop it for good.
   if [ "$now_alias" != "$ALIAS" ]; then
     log "watching mailbox: $now_alias${ALIAS:+ (renamed from $ALIAS)}"
     ALIAS="$now_alias"
-    baselined=""
   fi
 
   if cur="$(snapshot "$ALIAS")"; then
     [ -n "$broker_ok" ] || { log "broker answering"; broker_ok=1; }
     printf '%s\n' "$cur" | cut -f1 | rg -v '^$' | sort -u > "$STATE/cur_ids" || true
+    # The one baseline, taken at startup only: whatever is already in the mailbox
+    # when the session opens was handed over by the SessionStart drain, so it is
+    # history rather than a wake. Every later tick — including after a rename —
+    # diffs against the seen-set instead, so nothing that arrives afterwards can
+    # be mistaken for backlog.
     if [ -z "$baselined" ]; then
       cp -f "$STATE/cur_ids" "$STATE/seen"
       baselined=1
