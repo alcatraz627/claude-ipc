@@ -119,6 +119,7 @@ export interface SendArgs {
   body?: string;
   conversationId?: string;
   ttlS?: number;
+  replyByS?: number | null; // how long before the ask gets chased; null = never, undefined = broker default
   contextPtr?: { sessionId: string; transcriptPath: string; cwd: string };
 }
 

@@ -29,6 +29,8 @@ export class Router {
     private notify: (alias: string) => void = () => {}, // fired when a peer's inbox changes
     private allowlist: Record<string, string[]> = {}, // {target: [allowed senders]}; empty = open
     private strict = false, // require a send's `from` to be registered (closes the forge-before-register window)
+    private defaultReplyByS: number | null = null, // how long a sender waits before the ask gets chased; null = never
+    private finalGraceS = 600, // ...and how much longer before the sender is released to act
   ) {}
 
   handle(req: Request): Response {
@@ -155,6 +157,7 @@ export class Router {
       body?: string;
       conversationId?: string;
       ttlS?: number;
+      replyByS?: number | null; // null = opted out; undefined = use the default
       contextPtr?: { sessionId: string; transcriptPath: string; cwd: string };
     };
     if (!a.from || !a.to) return fail("bad_args", "send needs from + to");
@@ -218,13 +221,29 @@ export class Router {
     // A directed query/request is something the sender waits on — track it for
     // correlation. It auto-times-out only if an explicit ttl was given (or a
     // default configured); by default it stays open until answered.
+    //
+    // The reply-by deadline is resolved HERE rather than in the CLI, so an ask sent
+    // over MCP — or by a stale compiled binary that predates the flag — still gets
+    // chased. `replyByS: null` is the sender explicitly opting out (a last message in
+    // a chain); undefined just means they didn't say, so they get the default.
+    let replyBy: number | null = null;
     if (a.to !== "*" && (a.kind === "query" || a.kind === "request")) {
       const ttl = a.ttlS ?? this.defaultTtlS;
-      this.backend.openAwaiting(msg.id, ttl !== null ? this.now() + ttl : null);
+      replyBy = a.replyByS === undefined ? this.defaultReplyByS : a.replyByS;
+      this.backend.openAwaiting(msg.id, ttl !== null ? this.now() + ttl : null, replyBy, this.now());
     }
 
     for (const t of targets) this.notify(t);
-    return ok({ msgId: msg.id, recipients: targets, conversationId });
+    // Hand the deadline back rather than letting the caller assume one: the broker is
+    // the only party that knows what it will actually honour, and a CLI that guesses
+    // would be telling the sender a number nothing enforces.
+    return ok({
+      msgId: msg.id,
+      recipients: targets,
+      conversationId,
+      replyByS: replyBy,
+      releaseAfterS: replyBy === null ? null : replyBy + this.finalGraceS,
+    });
   }
 
   private check(req: Request): Response {
@@ -354,6 +373,10 @@ export class Router {
     this.backend.append(resp);
     this.backend.enqueue(resp.id, origin.fromAlias);
     if (terminal && (aw === null || !aw.closed)) this.backend.closeAwaiting(a.corrId, "responded");
+    // A partial ("on it, 20 min") leaves the ask open on purpose. It is still an
+    // answer, so the recipient stops being chased — nudging someone who just told you
+    // they're working on it is a claim about their state that their own reply refutes.
+    if (!terminal) this.backend.deferNudge(a.corrId, this.now());
     // Answering a message consumes it: the replier has clearly acted on the ask,
     // so their own still-queued delivery of the origin must stop counting as
     // pending — otherwise the turn-end push keeps reminding about an
@@ -374,6 +397,10 @@ export class Router {
     const denied = this.requireOwner(req, a.alias); // only the recipient defers
     if (denied) return denied;
     this.backend.markSurfaced(a.msgId, a.alias);
+    // Deliberately deferring an ask is a kind of answer: stop nudging them about it.
+    // The SENDER's deadline is untouched — when to stop waiting is their call, and a
+    // recipient must not be able to extend it by snoozing.
+    this.backend.deferNudge(a.msgId, this.now());
     return ok({ surfaced: true });
   }
 

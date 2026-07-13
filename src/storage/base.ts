@@ -31,8 +31,11 @@ export interface StorageBackend {
   pendingAddresses(): string[];
 
   // sender's outstanding query/request
-  openAwaiting(originId: string, expiresAt: number | null): void; // null = no deadline
+  openAwaiting(originId: string, expiresAt: number | null, replyByS?: number | null, nudgeFrom?: number): void; // expiresAt null = no deadline
   closeAwaiting(originId: string, reason: Awaiting["closedReason"]): void;
+  markNudged(originId: string, stage: 1 | 2): void;
+  /** Push the recipient's nudge clock out (they snoozed, or acked with a partial). */
+  deferNudge(originId: string, from: number): void;
   isAwaitingOpen(originId: string): boolean;
   getAwaiting(originId: string): Awaiting | null;
   awaitingPastTtl(now: number): Awaiting[]; // only records with a deadline that has passed

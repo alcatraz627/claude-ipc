@@ -63,12 +63,15 @@ export const config = {
     offlineS: envNum("CLAUDE_IPC_OFFLINE_S", 1800),
   },
 
-  // Ghost escalation: a directed query/request whose recipient has gone offline
-  // while the ask is still open, and which was sent at least this long ago, gets a
-  // "your recipient went dark" notice routed back to the sender. The grace is
-  // measured from send time so a briefly-offline peer isn't reported prematurely
-  // and offline-queued mail still gets a window to be picked up on resume.
-  ghost: { afterS: envNum("CLAUDE_IPC_GHOST_AFTER_S", 300) },
+  // How long a sender waits before the broker chases their unanswered ask. At
+  // reply-by the recipient's mailbox gets a nudge; finalGraceS later they get a last
+  // call and the SENDER is released to act without an answer. Per-send override with
+  // `--reply-by 90s` / `--reply-by none`. Nothing here asks whether the recipient is
+  // alive, and no notice ever claims they are gone: docs/notes/no-liveness-claims.md
+  reply: {
+    byS: envNum("CLAUDE_IPC_REPLY_BY_S", 300),
+    finalGraceS: envNum("CLAUDE_IPC_REPLY_FINAL_GRACE_S", 600),
+  },
 
   badge: (process.env.CLAUDE_IPC_BADGE ?? "1") !== "0", // broker→peer-TTY tab badge
   allowlist: parseAllowlist(process.env.CLAUDE_IPC_ALLOWLIST), // {target: [allowed senders]}

@@ -58,6 +58,18 @@ export interface Awaiting {
   originId: string; // the query/request id (== corrId of its responses)
   expiresAt: number | null; // null = no deadline (the default — never auto-times-out)
   closed: boolean;
+  // How long the sender is willing to wait before being told nobody has answered.
+  // null = they opted out (`--reply-by none`), so nothing is ever emitted for it.
+  replyByS: number | null;
+  // Which reply nudges have fired: 0 none, 1 the reminder, 2 the last call. Kept
+  // here rather than in memory so a broker restart can neither repeat a nudge nor
+  // silently skip one.
+  nudgedStage: 0 | 1 | 2;
+  // When the RECIPIENT's nudge clock starts — normally the send, but a snooze or a
+  // partial ("on it, 20 min") pushes it out: they answered, so nagging them would be
+  // a lie about the state. The sender's own deadline never moves; it is their call
+  // to make, not the recipient's.
+  nudgeFrom: number;
   // "parked" = the recipient hasn't attended to the ask yet (TTL passed, or they
   // went offline holding it). The sender was told it's PARKED — not failed: the
   // message stays deliverable on the recipient's next turn/open, and a genuine

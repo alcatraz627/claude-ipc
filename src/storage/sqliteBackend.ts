@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS deliveries (
 CREATE INDEX IF NOT EXISTS ix_del_inbox ON deliveries(to_alias, state);
 
 CREATE TABLE IF NOT EXISTS awaiting (
-  origin_id TEXT PRIMARY KEY, expires_at REAL, closed INTEGER, closed_reason TEXT);
+  origin_id TEXT PRIMARY KEY, expires_at REAL, closed INTEGER, closed_reason TEXT,
+  reply_by_s REAL, nudged_stage INTEGER DEFAULT 0, nudge_from REAL);
 CREATE INDEX IF NOT EXISTS ix_await_open ON awaiting(closed, expires_at);
 
 CREATE TABLE IF NOT EXISTS registry_snapshot (
@@ -74,6 +75,9 @@ interface AwaitRow {
   expires_at: number | null;
   closed: number;
   closed_reason: string | null;
+  reply_by_s: number | null;
+  nudged_stage: number | null;
+  nudge_from: number | null;
 }
 
 interface RegRow {
@@ -123,6 +127,12 @@ function toAwaiting(r: AwaitRow): Awaiting {
     expiresAt: r.expires_at,
     closed: r.closed !== 0,
     closedReason: r.closed_reason as Awaiting["closedReason"],
+    replyByS: r.reply_by_s,
+    nudgedStage: ((r.nudged_stage ?? 0) as Awaiting["nudgedStage"]) ?? 0,
+    // Rows written before reply-nudges existed have no clock; fall back to their
+    // deadline, or to zero, so an old row can never look like it is owed a nudge
+    // "in the future".
+    nudgeFrom: r.nudge_from ?? 0,
   };
 }
 
@@ -144,6 +154,13 @@ export class SqliteBackend implements StorageBackend {
       this.db.run("ALTER TABLE registry_snapshot ADD COLUMN token TEXT");
     } catch {
       // column already present on an existing DB — fine
+    }
+    for (const col of ["reply_by_s REAL", "nudged_stage INTEGER DEFAULT 0", "nudge_from REAL"]) {
+      try {
+        this.db.run(`ALTER TABLE awaiting ADD COLUMN ${col}`);
+      } catch {
+        // column already present on an existing DB — fine
+      }
     }
   }
 
@@ -271,14 +288,30 @@ export class SqliteBackend implements StorageBackend {
     return rows.map((r) => r.to_alias);
   }
 
-  openAwaiting(originId: string, expiresAt: number | null): void {
+  openAwaiting(originId: string, expiresAt: number | null, replyByS: number | null = null, nudgeFrom = 0): void {
     this.db
-      .query(`INSERT OR REPLACE INTO awaiting (origin_id, expires_at, closed, closed_reason) VALUES (?,?,0,NULL)`)
-      .run(originId, expiresAt);
+      .query(
+        `INSERT OR REPLACE INTO awaiting
+         (origin_id, expires_at, closed, closed_reason, reply_by_s, nudged_stage, nudge_from)
+         VALUES (?,?,0,NULL,?,0,?)`,
+      )
+      .run(originId, expiresAt, replyByS, nudgeFrom);
   }
 
   closeAwaiting(originId: string, reason: Awaiting["closedReason"]): void {
     this.db.query(`UPDATE awaiting SET closed=1, closed_reason=? WHERE origin_id=? AND closed=0`).run(reason, originId);
+  }
+
+  markNudged(originId: string, stage: 1 | 2): void {
+    // Only ever move forward. A stage that already fired must not fire again, even
+    // if the broker restarted between the emit and the write.
+    this.db
+      .query(`UPDATE awaiting SET nudged_stage=? WHERE origin_id=? AND nudged_stage < ?`)
+      .run(stage, originId, stage);
+  }
+
+  deferNudge(originId: string, from: number): void {
+    this.db.query(`UPDATE awaiting SET nudge_from=?, nudged_stage=0 WHERE origin_id=?`).run(from, originId);
   }
 
   isAwaitingOpen(originId: string): boolean {

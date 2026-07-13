@@ -23,6 +23,43 @@ function resolveSelfAlias(): string | undefined {
 type FlagValue = string | boolean;
 
 /**
+ * How long the sender is willing to wait: `5m`, `90s`, a bare number of seconds, or
+ * `none` to opt out (the last message in a chain, where no answer is expected).
+ *
+ * `undefined` means they didn't say, and the broker applies its default — the flag is
+ * resolved there, not here, so an ask sent over MCP or by a stale binary is chased too.
+ */
+function parseReplyBy(raw: FlagValue | undefined, optedOut: boolean): number | null | undefined | "bad" {
+  if (optedOut) return null;
+  if (raw === undefined || raw === true) return undefined;
+  const s = String(raw).trim().toLowerCase();
+  if (s === "none" || s === "never" || s === "0") return null;
+  const m = /^(\d+(?:\.\d+)?)(s|m|h)?$/.exec(s);
+  if (!m) return "bad";
+  const n = Number(m[1]);
+  const mult = m[2] === "h" ? 3600 : m[2] === "m" ? 60 : 1;
+  return n * mult;
+}
+
+/**
+ * Say back what the sender just bought, so they know when they may stop waiting.
+ *
+ * The numbers come from the broker's own answer, never from a guess here — it is the
+ * only party that knows what deadline it will actually honour.
+ */
+function replyByContract(msgId: string, to: string, replyByS: number | null, releaseAfterS: number | null): string {
+  if (replyByS === null || releaseAfterS === null) {
+    return `sent ${msgId} to ${to}. No reply expected — nobody will be chased for one.`;
+  }
+  const dur = (x: number): string => (x >= 60 && x % 60 === 0 ? `${x / 60}m` : `${x}s`);
+  return (
+    `sent ${msgId} to ${to}. They get nudged at ${dur(replyByS)}; at ${dur(releaseAfterS)} you'll be told nobody has ` +
+    `answered and may proceed without one — the ask stays open, and a late reply still reaches you. ` +
+    `Opt out on a final message: --no-reply-expected`
+  );
+}
+
+/**
  * Turn a --project / --to-project value into an absolute directory.
  * `true` (bare flag) means "this directory". A name is matched against known
  * project mailboxes and registered peers' cwds by basename; ambiguity is an
@@ -65,7 +102,7 @@ function parseDuration(s: string): number | null {
 
 // Presence-only flags: never consume the following token as a value, so they can
 // sit anywhere on the line (e.g. `reply <id> --from x --partial <body...>`).
-const BOOLEAN_FLAGS = new Set(["partial", "consume"]);
+const BOOLEAN_FLAGS = new Set(["partial", "consume", "no-reply-expected"]);
 
 function parse(argv: string[]): { cmd: string; positional: string[]; flags: Record<string, FlagValue> } {
   const cmd = argv[0] ?? "help";
@@ -92,7 +129,12 @@ function parse(argv: string[]): { cmd: string; positional: string[]; flags: Reco
 const USAGE = `claude-ipc — cross-session messaging
 
   register <alias>           (claim a mailbox from the shell)
-  send   --to <b> | --to-project <dir|name> [--from <a>] [--kind inform|query|request] [--ttl N] <body...>
+  send   --to <b> | --to-project <dir|name> [--from <a>] [--kind inform|query|request] [--ttl N]
+         [--reply-by 5m|90s|none] [--no-reply-expected] <body...>
+                             (--reply-by: how long you'll wait before the ask is chased for you.
+                              They get nudged at that mark; 10m later you're told nobody answered and
+                              may act without one — the ask stays open and a late reply still reaches
+                              you. Default 5m. Sending the LAST message in a chain? --no-reply-expected)
                              (--from auto-inferred from THIS session's alias; --kind defaults to inform;
                               project mail waits for ANY session working in that directory tree)
   reply  <corr-id> [--from <alias>] [--status error] [--partial] <body...>
@@ -180,12 +222,18 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
           return 2;
         }
         const kind = String(flags.kind ?? "inform") as "inform" | "query" | "request";
+        const replyBy = parseReplyBy(flags["reply-by"], flags["no-reply-expected"] === true);
+        if (replyBy === "bad") {
+          console.error(`--reply-by wants a duration like 5m / 90s, or "none". Got: ${String(flags["reply-by"])}`);
+          return 2;
+        }
         const res = await client.send({
           from,
           to,
           kind,
           body: positional.join(" "),
           ttlS: flags.ttl ? Number(flags.ttl) : undefined,
+          replyByS: replyBy,
         });
         // The broker accepts a send to any known alias (even offline — the mail
         // waits for it), and rejects only a name nobody ever registered. Turn that
@@ -208,6 +256,12 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
           return 2;
         }
         out(res);
+        // An ask now carries a deadline, so say what it bought. A sender that knows
+        // when it will be released can plan around silence instead of guessing at it.
+        const sent = res as { msgId?: string; replyByS?: number | null; releaseAfterS?: number | null };
+        if (sent.msgId && (kind === "query" || kind === "request")) {
+          console.error(replyByContract(sent.msgId, to, sent.replyByS ?? null, sent.releaseAfterS ?? null));
+        }
         return 0;
       }
       case "reply": {
