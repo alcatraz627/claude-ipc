@@ -412,6 +412,13 @@ export class Router {
       this.backend.append(resp);
       this.backend.enqueue(resp.id, origin.fromAlias);
       this.backend.closeAwaiting(a.msgId, "responded");
+      // The decliner's own row is already settled by setConsent above, which records
+      // the stronger fact (refused, not merely read). A PROJECT ask has no such row:
+      // it was delivered to the proj: address, so declining it left it pending for
+      // every other member of the directory forever — nobody could clear what
+      // somebody else had already refused.
+      if (isProjectAddress(origin.toAlias)) this.backend.markConsumed(a.msgId, origin.toAlias);
+      this.notify(origin.fromAlias);
     }
     return ok({ declined: true });
   }

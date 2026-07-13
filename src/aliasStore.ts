@@ -9,7 +9,7 @@
  * all three hooks poll the one mailbox peers actually address.
  */
 
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { config } from "./config.ts";
 
@@ -32,13 +32,28 @@ export function readAliasForSession(sessionId: string | undefined): string | und
   }
 }
 
-/** Bind this session id to a friendly alias for later hooks to read. Best-effort. */
+/**
+ * Bind this session id to a friendly alias for later hooks to read. Best-effort.
+ *
+ * Written by rename so no reader can catch it half-updated. The inbox watcher polls
+ * this file every few seconds and adopts whatever it finds as the mailbox to watch;
+ * a truncated read ("ipc-doc") is a name it would poll happily and forever, hearing
+ * nothing. Replace the file whole or not at all.
+ */
 export function writeAliasForSession(sessionId: string, alias: string): void {
+  const target = aliasFile(sessionId);
+  const tmp = `${target}.${process.pid}.tmp`;
   try {
     mkdirSync(config.aliasDir, { recursive: true });
-    writeFileSync(aliasFile(sessionId), alias);
+    writeFileSync(tmp, alias);
+    renameSync(tmp, target);
   } catch {
     // best-effort side channel; a missing mapping just falls back to the raw id
+    try {
+      rmSync(tmp, { force: true });
+    } catch {
+      // nothing to clean up
+    }
   }
 }
 
