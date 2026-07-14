@@ -254,7 +254,14 @@ export class Client {
   prune(offlineForS?: number): Promise<any> {
     return this.call("prune", { offlineForS });
   }
-  reply(args: { from: string; corrId: string; body?: string; terminal?: boolean; status?: "ok" | "error" }): Promise<any> {
+  reply(args: {
+    from: string;
+    corrId: string;
+    body?: string;
+    terminal?: boolean;
+    status?: "ok" | "error";
+    errorCode?: string;
+  }): Promise<any> {
     return this.call("reply", { ...args }, args.from);
   }
   accept(alias: string, msgId: string): Promise<any> {

@@ -289,11 +289,23 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
           );
           return 2;
         }
+        const replyBody = positional.slice(1).join(" ");
+        // The body is positional; a --body flag is a natural guess that silently drops
+        // the answer. Catch it here, before the send, with the fix spelled out.
+        if (!replyBody.trim() && flags.status !== "error") {
+          console.error(
+            flags.body
+              ? `the reply body is positional, not a flag — put it after --from:\n` +
+                  `  claude-ipc reply ${corrId} --from ${from} "${String(flags.body)}"`
+              : `reply needs a body:\n  claude-ipc reply ${corrId} --from ${from} "<your answer>"`,
+          );
+          return 2;
+        }
         out(
           await client.reply({
             from,
             corrId,
-            body: positional.slice(1).join(" "),
+            body: replyBody,
             status: flags.status === "error" ? "error" : "ok",
             terminal: !flags.partial, // --partial → interim ack/update; default is the final reply
           }),

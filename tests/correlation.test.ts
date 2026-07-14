@@ -81,6 +81,25 @@ describe("correlation, consent, timeouts", () => {
     expect(r.body).toBe("http://api.localhost:3000");
   });
 
+  test("an empty reply is refused, not acked as delivered", async () => {
+    // A live peer passed its answer as --body (silently dropped, the body is positional)
+    // and the broker returned terminal:true with zero bytes — the sender was told it had
+    // been answered while nothing arrived. An answer with no words is not an answer.
+    const q = await client.send({ from: "alice", to: "bob", kind: "query", body: "base url?" });
+    await expect(client.reply({ from: "bob", corrId: q.msgId, body: "" })).rejects.toThrow(/empty_reply/);
+    await expect(client.reply({ from: "bob", corrId: q.msgId, body: "   " })).rejects.toThrow(/empty_reply/);
+
+    // The ask is still open — a refused empty reply must not consume the query.
+    const inbox = await client.check("alice");
+    expect(inbox.messages.length).toBe(0);
+  });
+
+  test("an ERROR reply may be body-less — its code carries the meaning", async () => {
+    const q = await client.send({ from: "alice", to: "bob", kind: "query", body: "?" });
+    const r = await client.reply({ from: "bob", corrId: q.msgId, body: "", status: "error", errorCode: "declined" });
+    expect(r).toBeTruthy(); // not rejected
+  });
+
   test("awaitReply resolves with the correlated response", async () => {
     const q = await client.send({ from: "alice", to: "bob", kind: "query", body: "?" });
     await client.reply({ from: "bob", corrId: q.msgId, body: "answer" });

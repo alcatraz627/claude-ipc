@@ -412,6 +412,13 @@ export class Router {
       errorCode?: ErrorCode;
     };
     if (!a.from || !a.corrId) return fail("bad_args", "reply needs from + corrId");
+    // An answer with no words is not an answer. Acking an empty reply as `terminal:true`
+    // told the sender they'd been answered while delivering zero bytes — the caller had
+    // its body dropped (e.g. passed as an unread flag) and never learned. An error reply
+    // is the one exception: its errorCode carries the meaning, so it may be body-less.
+    if (a.status !== "error" && !(a.body ?? "").trim()) {
+      return fail("empty_reply", "a reply needs a body — nothing was delivered. (The body is positional: reply <id> --from <you> \"<answer>\")");
+    }
     const denied = this.requireOwner(req, a.from); // you may only reply AS yourself
     if (denied) return denied;
     const origin = this.backend.originOf(a.corrId);
