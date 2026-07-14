@@ -50,7 +50,7 @@ describe("decline settles the ask", () => {
     expect(backend.pending("doer").map((m) => m.id)).not.toContain(msgId);
   });
 
-  test("a declined PROJECT ask stops pending for every member, not just the decliner", () => {
+  test("declining PROJECT mail is 'not me', so it stays open for the other members", () => {
     const { reg, call, backend } = harness();
     reg("asker", "s1");
     reg("member-a", "s2");
@@ -67,9 +67,14 @@ describe("decline settles the ask", () => {
 
     call("decline", { from: "member-a", msgId, reason: "busy" }, "member-a");
 
-    // The ask lives under the proj: address. Leave that delivery unconsumed and
-    // member-b — and every future session in /proj — inherits a dead ask forever.
-    expect(backend.pending(proj).map((m) => m.id)).not.toContain(msgId);
+    // An earlier version of this test asserted the opposite, and it was wrong: one
+    // member stepping back cannot speak for a directory. The ask is still open, still
+    // answerable, and member-b can still take it. Who no longer owes it is per-member
+    // state now (see projectClaim.test.ts), not a consumed row.
+    expect(backend.pending(proj).map((m) => m.id)).toContain(msgId);
+    expect(backend.isAwaitingOpen(msgId)).toBe(true);
+    expect(backend.projectStanding(msgId, "member-a")).toBe("passed");
+    expect(backend.projectStanding(msgId, "member-b")).toBeNull();
   });
 
   test("the sender still gets the declined response", () => {

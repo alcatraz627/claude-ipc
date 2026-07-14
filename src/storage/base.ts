@@ -36,6 +36,19 @@ export interface StorageBackend {
   markNudged(originId: string, stage: 1 | 2): void;
   /** Push the recipient's nudge clock out (they snoozed, or acked with a partial). */
   deferNudge(originId: string, from: number): void;
+
+  // Project mail is addressed to a directory, not a person, so consent cannot live on
+  // the single delivery row the way it does for a direct message. These carry the
+  // per-member state that row could never hold.
+
+  /** Take exclusive ownership of a project ask. False when somebody already has it. */
+  claimProject(msgId: string, alias: string): boolean;
+  /** Who owns this project ask, if anyone. */
+  projectClaim(msgId: string): string | null;
+  /** "Not me" — this member steps back without settling the ask for anyone else. */
+  passProject(msgId: string, alias: string): void;
+  /** Has this member already claimed or passed on this ask? */
+  projectStanding(msgId: string, alias: string): "claimed" | "passed" | null;
   isAwaitingOpen(originId: string): boolean;
   getAwaiting(originId: string): Awaiting | null;
   awaitingPastTtl(now: number): Awaiting[]; // only records with a deadline that has passed

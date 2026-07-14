@@ -40,6 +40,14 @@ CREATE TABLE IF NOT EXISTS awaiting (
   reply_by_s REAL, nudged_stage INTEGER DEFAULT 0, nudge_from REAL);
 CREATE INDEX IF NOT EXISTS ix_await_open ON awaiting(closed, expires_at);
 
+-- Project mail is addressed to a directory. The claim is exclusive (one PRIMARY KEY per
+-- message, so the first INSERT wins and the rest bounce off); a pass is per member, so
+-- one session stepping back never speaks for the others.
+CREATE TABLE IF NOT EXISTS project_claims (
+  msg_id TEXT PRIMARY KEY, alias TEXT NOT NULL, ts REAL);
+CREATE TABLE IF NOT EXISTS project_passes (
+  msg_id TEXT, alias TEXT, PRIMARY KEY (msg_id, alias));
+
 CREATE TABLE IF NOT EXISTS registry_snapshot (
   alias TEXT PRIMARY KEY, session_id TEXT, cwd TEXT, caps TEXT,
   pid INTEGER, tty TEXT, last_seen REAL, status TEXT, token TEXT);
@@ -312,6 +320,33 @@ export class SqliteBackend implements StorageBackend {
 
   deferNudge(originId: string, from: number): void {
     this.db.query(`UPDATE awaiting SET nudge_from=?, nudged_stage=0 WHERE origin_id=?`).run(from, originId);
+  }
+
+  claimProject(msgId: string, alias: string): boolean {
+    // The PRIMARY KEY is the whole mechanism: two sessions racing to take the same piece
+    // of project work both run this, and exactly one row lands. SQLite is synchronous
+    // here, so there is no window between the check and the write.
+    const r = this.db
+      .query(`INSERT OR IGNORE INTO project_claims (msg_id, alias, ts) VALUES (?,?,?)`)
+      .run(msgId, alias, Date.now() / 1000);
+    return r.changes > 0;
+  }
+
+  projectClaim(msgId: string): string | null {
+    const r = this.db.query(`SELECT alias FROM project_claims WHERE msg_id = ?`).get(msgId) as
+      | { alias: string }
+      | undefined;
+    return r?.alias ?? null;
+  }
+
+  passProject(msgId: string, alias: string): void {
+    this.db.query(`INSERT OR IGNORE INTO project_passes (msg_id, alias) VALUES (?,?)`).run(msgId, alias);
+  }
+
+  projectStanding(msgId: string, alias: string): "claimed" | "passed" | null {
+    if (this.projectClaim(msgId) === alias) return "claimed";
+    const p = this.db.query(`SELECT 1 FROM project_passes WHERE msg_id=? AND alias=?`).get(msgId, alias);
+    return p ? "passed" : null;
   }
 
   isAwaitingOpen(originId: string): boolean {

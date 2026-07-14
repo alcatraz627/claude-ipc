@@ -8,7 +8,7 @@
  */
 
 import { ttyForPid } from "../badge.ts";
-import { makeMessage, type DeliveredVia, type ErrorCode, type Kind, type Status } from "../models.ts";
+import { makeMessage, type DeliveredVia, type ErrorCode, type Kind, type Message, type Status } from "../models.ts";
 import { isProjectAddress, normalizeProjectPath, projectAddress, projectPath, sameLineage } from "../projectAddress.ts";
 import { PROTOCOL_VERSION, type Request, type Response } from "../protocol.ts";
 import type { StorageBackend } from "../storage/base.ts";
@@ -258,7 +258,7 @@ export class Router {
       const messages = this.projectMailboxes(a.project).flatMap((addr) =>
         this.backend.pending(addr, { consume: a.consume ?? false }),
       );
-      return ok({ messages });
+      return ok({ messages: this.stillOwedBy(messages, this.aliasOfToken(req)) });
     }
     if (!a.alias) return fail("bad_args", "check needs alias");
     const denied = this.requireOwner(req, a.alias); // only the owner reads its inbox
@@ -281,7 +281,8 @@ export class Router {
       const messages = this.projectMailboxes(a.project).flatMap((addr) =>
         this.backend.claimForDelivery(addr, a.via ?? "hook"),
       );
-      return ok({ messages });
+      // Don't hand a session work that somebody else already took, or work it passed on.
+      return ok({ messages: this.stillOwedBy(messages, this.aliasOfToken(req)) });
     }
     if (!a.alias) return fail("bad_args", "deliver needs alias");
     const denied = this.requireOwner(req, a.alias); // only the owner drains its queue
@@ -328,6 +329,30 @@ export class Router {
    * Gate a project-consuming op: the caller's token must belong to a
    * registered session whose cwd shares lineage with the project path.
    */
+  /** Which session is talking, per the capability token it presented. */
+  private aliasOfToken(req: Request): string | null {
+    if (!req.token) return null;
+    for (const e of this.registry.list()) if (this.registry.tokenOf(e.alias) === req.token) return e.alias;
+    return null;
+  }
+
+  /**
+   * Project mail this session is still on the hook for.
+   *
+   * Work somebody else has claimed, and work this session already passed on, is no
+   * longer owed by it — showing it anyway is how a shared mailbox turns into everyone
+   * nagging each other about a job that is already being done. An anonymous peek still
+   * sees everything: visibility of a project mailbox is deliberately open.
+   */
+  private stillOwedBy(messages: Message[], self: string | null): Message[] {
+    if (!self) return messages;
+    return messages.filter((m) => {
+      if (this.backend.projectStanding(m.id, self) === "passed") return false;
+      const owner = this.backend.projectClaim(m.id);
+      return owner === null || owner === self;
+    });
+  }
+
   private requireProjectMember(req: Request, dir: string): Response | null {
     if (!req.token) return fail("unauthorized", "consuming project mail needs a session token");
     const d = normalizeProjectPath(dir);
@@ -408,24 +433,79 @@ export class Router {
     return ok({ surfaced: true });
   }
 
-  /** Consent to act on a request. Marks the delivery accepted; the work + reply follow. */
+  /**
+   * Consent to act on a request — and for project mail, take exclusive ownership of it.
+   *
+   * Project mail is addressed to a directory, so accepting it must be a CLAIM: exactly
+   * one session can win, and the loser is told who has it rather than both starting the
+   * same job. A direct request needs no claim; its recipient is already the only one.
+   */
   private accept(req: Request): Response {
     const a = req.args as { alias?: string; msgId?: string };
     if (!a.alias || !a.msgId) return fail("bad_args", "accept needs alias + msgId");
     const denied = this.requireOwner(req, a.alias); // only the recipient consents
     if (denied) return denied;
+
+    const origin = this.backend.get(a.msgId);
+    if (origin && isProjectAddress(origin.toAlias)) {
+      const won = this.backend.claimProject(a.msgId, a.alias);
+      const owner = this.backend.projectClaim(a.msgId);
+      if (!won) {
+        return ok({
+          accepted: false,
+          claimedBy: owner,
+          note: `"${owner}" already took ${a.msgId}. Leave it to them; nothing is owed by you.`,
+        });
+      }
+      return ok({ accepted: true, claimedBy: a.alias, note: "It's yours. Do the work, then reply." });
+    }
+
     this.backend.setConsent(a.msgId, a.alias, true);
     return ok({ accepted: true });
   }
 
-  /** Refuse a request; the sender gets a terminal response{error,declined}. */
+  /**
+   * Refuse a request. For a direct ask that is a terminal "no"; for project mail it is
+   * only "not me".
+   *
+   * A project ask was addressed to a directory, so one member stepping back does not
+   * speak for the rest: the ask stays open, everyone else still sees it, and the sender
+   * is told who passed rather than being told they were refused.
+   */
   private decline(req: Request): Response {
     const a = req.args as { from?: string; msgId?: string; reason?: string };
     if (!a.from || !a.msgId) return fail("bad_args", "decline needs from + msgId");
     const denied = this.requireOwner(req, a.from); // only the recipient declines
     if (denied) return denied;
-    this.backend.setConsent(a.msgId, a.from, false);
     const origin = this.backend.originOf(a.msgId);
+
+    if (origin && isProjectAddress(origin.toAlias)) {
+      this.backend.passProject(a.msgId, a.from);
+      if (this.backend.isAwaitingOpen(a.msgId)) {
+        const note = makeMessage({
+          id: this.newId(),
+          kind: "inform", // NOT a terminal decline: nobody has refused this yet
+          fromAlias: "ipc",
+          toAlias: origin.fromAlias,
+          ts: this.now(),
+          corrId: a.msgId,
+          status: "ok",
+          errorCode: null,
+          terminal: false,
+          body:
+            `[claude-ipc] PASSED — "${a.from}" stepped back from ${a.msgId}` +
+            (a.reason ? `: ${a.reason}` : "") +
+            `. It was addressed to ${projectPath(origin.toAlias)}, not to them, so it stays open for the others.`,
+          conversationId: origin.conversationId,
+        });
+        this.backend.append(note);
+        this.backend.enqueue(note.id, origin.fromAlias);
+        this.notify(origin.fromAlias);
+      }
+      return ok({ passed: true, scope: "you", note: "The ask stays open for other members of this project." });
+    }
+
+    this.backend.setConsent(a.msgId, a.from, false);
     if (origin && this.backend.isAwaitingOpen(a.msgId)) {
       const resp = makeMessage({
         id: this.newId(),
@@ -443,12 +523,6 @@ export class Router {
       this.backend.append(resp);
       this.backend.enqueue(resp.id, origin.fromAlias);
       this.backend.closeAwaiting(a.msgId, "responded");
-      // The decliner's own row is already settled by setConsent above, which records
-      // the stronger fact (refused, not merely read). A PROJECT ask has no such row:
-      // it was delivered to the proj: address, so declining it left it pending for
-      // every other member of the directory forever — nobody could clear what
-      // somebody else had already refused.
-      if (isProjectAddress(origin.toAlias)) this.backend.markConsumed(a.msgId, origin.toAlias);
       this.notify(origin.fromAlias);
     }
     return ok({ declined: true });
