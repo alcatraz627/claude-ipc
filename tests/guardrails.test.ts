@@ -51,38 +51,38 @@ describe("the broker's own name is not for sale", () => {
   });
 });
 
-describe("you can read your own traffic, not the machine's", () => {
-  test("history without a token shows the flow, never the contents", () => {
+describe("local visibility, but no cross-session transcript pointers", () => {
+  test("the operator's log shows bodies — the whole point of a monitoring tool", () => {
     const { call, reg } = harness();
     reg("alice");
     reg("bob");
-    call("send", { from: "alice", to: "bob", kind: "inform", body: "secret" }, "alice");
+    call("send", { from: "alice", to: "bob", kind: "inform", body: "the build is green" }, "alice");
 
-    // The operator's `tail` is a legitimate view of the fabric — who is talking to whom
-    // — and that much is already ambient in the roster. The BODIES are not, nor are the
-    // transcript pointers that lead to other sessions' whole conversations.
-    const msgs = call("history", {}).result?.messages as { fromAlias: string; body: string }[];
-    expect(msgs.some((m) => m.fromAlias === "alice")).toBe(true); // the flow is visible
-    expect(msgs.every((m) => m.body === "")).toBe(true); // the contents are not
+    // A human running `log`/`tail` from the shell holds no session token. Blanking bodies
+    // for them (an earlier over-correction) made the monitor content-blind for its owner.
+    const msgs = call("history", {}).result?.messages as { body: string }[];
+    expect(msgs.some((m) => m.body === "the build is green")).toBe(true);
   });
 
-  test("a session reads its own bodies; a bystander reads none of them", () => {
+  test("a message's transcript pointer is stripped for anyone not a party to it", () => {
     const { call, reg } = harness();
     reg("alice");
     reg("bob");
     reg("nosy");
-    call("send", { from: "alice", to: "bob", kind: "inform", body: "between us" }, "alice");
+    call(
+      "send",
+      { from: "alice", to: "bob", kind: "inform", body: "hi", contextPtr: { sessionId: "sA", transcriptPath: "/a.jsonl", cwd: "/a" } },
+      "alice",
+    );
 
-    const mine = call("history", {}, "alice").result?.messages as { body: string }[];
-    expect(mine.some((m) => m.body === "between us")).toBe(true);
-
-    // The threat here is not a burglar — it is a well-meaning peer running `history` to
-    // debug something and inhaling the whole machine into its context.
-    const theirs = call("history", {}, "nosy").result?.messages as { body: string }[];
-    expect(theirs.some((m) => m.body === "between us")).toBe(false);
+    // A pointer to another session's whole transcript is the real cross-session leak.
+    const mine = call("history", {}, "alice").result?.messages as { contextPtr: unknown }[];
+    expect(mine[0]?.contextPtr).not.toBeNull(); // her own message keeps its pointer
+    const theirs = call("history", {}, "nosy").result?.messages as { contextPtr: unknown }[];
+    expect(theirs[0]?.contextPtr).toBeNull(); // a non-party never gets the transcript pointer
   });
 
-  test("status on someone else's message is refused", () => {
+  test("status is not a hard deny — it returns the lifecycle, pointer stripped for non-parties", () => {
     const { call, reg } = harness();
     reg("alice");
     reg("bob");
@@ -90,9 +90,9 @@ describe("you can read your own traffic, not the machine's", () => {
     const sent = call("send", { from: "alice", to: "bob", kind: "query", body: "?" }, "alice");
     const id = sent.result?.msgId as string;
 
-    expect(call("status", { msgId: id }, "nosy").ok).toBe(false);
-    expect(call("status", { msgId: id }, "alice").ok).toBe(true); // her own ask
-    expect(call("status", { msgId: id }, "bob").ok).toBe(true); // addressed to him
+    expect(call("status", { msgId: id }, "nosy").ok).toBe(true); // visible, not refused
+    expect(call("status", { msgId: id }, "alice").ok).toBe(true);
+    expect(call("status", { msgId: id }).ok).toBe(true); // even the tokenless operator
   });
 });
 

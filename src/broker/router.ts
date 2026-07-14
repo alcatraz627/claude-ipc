@@ -631,36 +631,36 @@ export class Router {
   private status(req: Request): Response {
     const a = req.args as { msgId?: string };
     if (!a.msgId) return fail("bad_args", "status needs msgId");
-    const self = this.aliasOfToken(req);
-    if (!self) return fail("unauthorized", "status needs a registered session's token");
     const message = this.backend.get(a.msgId);
     if (!message) return fail("not_found", `no message ${a.msgId}`);
-    if (!this.involves(message, self)) {
-      return fail("unauthorized", `${a.msgId} is not yours — you were neither its sender nor its recipient`);
-    }
+    const strip = this.stripForCaller(req);
     return ok({
-      message,
+      message: strip(message),
       deliveries: this.backend.deliveriesFor(a.msgId),
-      responses: this.backend.history({}).filter((m) => m.corrId === a.msgId),
+      responses: this.backend
+        .history({})
+        .filter((m) => m.corrId === a.msgId)
+        .map(strip),
     });
   }
 
-  /** Audit query: who/what/when, filterable by peer, time, and conversation. */
   /**
-   * Your traffic, not everyone's.
+   * The flow, visible to any local caller — the operator's own `log`/`tail` is first-class.
    *
-   * This used to need no token at all and hand back every message body on the machine —
-   * plus the transcript pointers attached to them, which lead to other sessions' entire
-   * conversations. The threat here is not a burglar; it is a well-meaning peer running
-   * `history` to debug something and inhaling the whole machine into its context.
+   * Reaching this same-uid 0700 socket already proves you own the machine, so bodies and
+   * routing are yours to read; blanking them blinded the monitoring the tool exists for.
+   * The transcript POINTER is the one thing not sprayed cross-session (see stripForCaller).
    */
   private history(req: Request): Response {
     const a = req.args as { peer?: string; since?: number; conversationId?: string };
+    const strip = this.stripForCaller(req);
+    return ok({ messages: this.backend.history(a).map(strip) });
+  }
+
+  /** Redact the transcript pointer from any message the caller isn't a party to. */
+  private stripForCaller(req: Request): (m: Message) => Message {
     const self = this.aliasOfToken(req);
-    const messages = this.backend
-      .history(a)
-      .map((m) => (self && this.involves(m, self) ? m : { ...m, body: "", contextPtr: null }));
-    return ok({ messages });
+    return (m) => (self && this.involves(m, self) ? m : { ...m, contextPtr: null });
   }
 
   /** Was this session either end of the message — or a member of the project it went to? */
