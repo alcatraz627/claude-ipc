@@ -486,12 +486,32 @@ export class Router {
     if (!a.alias || !a.msgId) return fail("bad_args", "snooze needs alias + msgId");
     const denied = this.requireOwner(req, a.alias); // only the recipient defers
     if (denied) return denied;
+    const bad = this.notActable(a.msgId, a.alias);
+    if (bad) return bad;
     this.backend.markSurfaced(a.msgId, a.alias);
     // Deliberately deferring an ask is a kind of answer: stop nudging them about it.
     // The SENDER's deadline is untouched — when to stop waiting is their call, and a
     // recipient must not be able to extend it by snoozing.
     this.backend.deferNudge(a.msgId, this.now());
     return ok({ surfaced: true });
+  }
+
+  /**
+   * A message this alias may accept / decline / snooze — one that was actually delivered
+   * to it. Without this, all three verbs ran an UPDATE keyed on (msgId, alias) that matched
+   * zero rows for a wrong or mistyped id and still returned success — telling an agent it
+   * consented to something that isn't there. A no-op that reports success is the worst kind.
+   */
+  private notActable(msgId: string, alias: string): Response | null {
+    const msg = this.backend.get(msgId);
+    if (!msg) return fail("no_message", `no message with id ${msgId}`);
+    const direct = this.backend.deliveriesFor(msgId).some((d) => d.toAlias === alias);
+    const e = this.registry.get(alias);
+    const viaProject = isProjectAddress(msg.toAlias) && Boolean(e?.cwd) && withinProject(e!.cwd, projectPath(msg.toAlias));
+    if (!direct && !viaProject) {
+      return fail("not_yours", `${msgId} was not delivered to you — you can only act on your own mail`);
+    }
+    return null;
   }
 
   /**
@@ -506,6 +526,8 @@ export class Router {
     if (!a.alias || !a.msgId) return fail("bad_args", "accept needs alias + msgId");
     const denied = this.requireOwner(req, a.alias); // only the recipient consents
     if (denied) return denied;
+    const bad = this.notActable(a.msgId, a.alias);
+    if (bad) return bad;
 
     const origin = this.backend.get(a.msgId);
     if (origin && isProjectAddress(origin.toAlias)) {
@@ -542,6 +564,8 @@ export class Router {
     if (!a.from || !a.msgId) return fail("bad_args", "decline needs from + msgId");
     const denied = this.requireOwner(req, a.from); // only the recipient declines
     if (denied) return denied;
+    const bad = this.notActable(a.msgId, a.from);
+    if (bad) return bad;
     const origin = this.backend.originOf(a.msgId);
 
     if (origin && isProjectAddress(origin.toAlias)) {

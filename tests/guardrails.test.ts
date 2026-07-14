@@ -114,6 +114,30 @@ describe("project membership runs one way", () => {
   });
 });
 
+describe("consent verbs refuse a message that isn't yours to act on", () => {
+  test("accept / decline / snooze on a non-existent id are refused, not acked", () => {
+    const { call, reg } = harness();
+    reg("bob");
+    // No message with this id exists. The verbs used to UPDATE zero rows and cheerfully
+    // return {accepted:true}/{surfaced:true} — telling bob he consented to nothing.
+    expect(call("accept", { alias: "bob", msgId: "msg-nope" }, "bob").ok).toBe(false);
+    expect(call("decline", { from: "bob", msgId: "msg-nope" }, "bob").ok).toBe(false);
+    expect(call("snooze", { alias: "bob", msgId: "msg-nope" }, "bob").ok).toBe(false);
+  });
+
+  test("you cannot accept a message delivered to someone else", () => {
+    const { call, reg } = harness();
+    reg("alice");
+    reg("bob");
+    reg("carol");
+    const sent = call("send", { from: "alice", to: "bob", kind: "request", body: "do it" }, "alice");
+    const id = sent.result?.msgId as string;
+
+    expect(call("accept", { alias: "carol", msgId: id }, "carol").ok).toBe(false); // not carol's
+    expect(call("accept", { alias: "bob", msgId: id }, "bob").ok).toBe(true); // bob's own
+  });
+});
+
 describe("message ids have room to be unique", () => {
   test("the REAL generator emits 64 bits, not 32", async () => {
     // Test the actual mkId the broker uses, not a hand-copied duplicate — a duplicate
