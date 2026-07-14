@@ -263,8 +263,12 @@ export class Router {
     if (!a.alias) return fail("bad_args", "check needs alias");
     const denied = this.requireOwner(req, a.alias); // only the owner reads its inbox
     if (denied) return denied;
-    const messages = this.backend.pending(a.alias, { consume: a.consume ?? false });
-    this.notify(a.alias);
+    const consume = a.consume ?? false;
+    const messages = this.backend.pending(a.alias, { consume });
+    // Only a read that CHANGED the mailbox is worth announcing. The inbox watcher peeks
+    // every 10 seconds; notifying on a peek meant the broker repainted the session's tab
+    // badge forever, fighting whatever the user had put there.
+    if (consume) this.notify(a.alias);
     return ok({ messages });
   }
 

@@ -11,7 +11,20 @@ import { readFileSync } from "node:fs";
 import { readAliasForSession, writeAliasForSession } from "./aliasStore.ts";
 import { Client } from "./client.ts";
 import { config } from "./config.ts";
+import { TRUST_RAIL } from "./hooks/shared.ts";
 import { monitorSnapshot } from "./monitor.ts";
+
+/**
+ * State the trust boundary when an agent reads its mail from the shell.
+ *
+ * An agent woken by the monitor lands HERE, not on the hooks' rendered block, so this is
+ * the only place the boundary can hold for it. Written to stderr on purpose: stdout is a
+ * JSON contract the watcher itself parses, and prose there would break the wake loop.
+ */
+function railIfPeerMail(box: unknown): void {
+  const msgs = (box as { messages?: { kind?: string }[] })?.messages ?? [];
+  if (msgs.some((m) => m.kind === "query" || m.kind === "request")) console.error(`\n${TRUST_RAIL}`);
+}
 
 /** This session's own ipc alias, from the side-file the SessionStart hook writes
  *  (keyed by CLAUDE_CODE_SESSION_ID). Undefined if the session never registered.
@@ -292,7 +305,9 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
         if (flags.project) {
           const dir = await resolveProjectDir(flags.project, client);
           if (typeof dir !== "string") return 2;
-          out(await client.checkProject(dir, consume, resolveSelfAlias()));
+          const box = await client.checkProject(dir, consume, resolveSelfAlias());
+          out(box);
+          railIfPeerMail(box);
           return 0;
         }
         const alias = positional[0] ?? String(flags.alias ?? "");
@@ -300,7 +315,9 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
           console.error("inbox needs an alias (or --project [dir])");
           return 2;
         }
-        out(await client.check(alias, consume));
+        const box = await client.check(alias, consume);
+        out(box);
+        railIfPeerMail(box);
         return 0;
       }
       case "peers":

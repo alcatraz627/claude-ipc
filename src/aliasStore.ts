@@ -60,13 +60,20 @@ export function writeAliasForSession(sessionId: string, alias: string): void {
 /**
  * Normalize a session title into an alias, or undefined if it can't be one.
  *
- * The title is used as the alias verbatim (trimmed) so the name a human sees on
- * the tab is the name they message — no hidden slugging. Empty/whitespace titles
- * and an over-long title (capped) are rejected so they fall through to the id.
+ * Slugged, not verbatim: an alias is interpolated into every command this system
+ * prints, and it is the mailbox name the watcher polls. A space deafened the session
+ * for good. "fix auth bug" is addressed as "fix-auth-bug"; the roster prints it, so
+ * the name stays discoverable.
  */
 export function sanitizeAlias(raw: string | undefined | null): string | undefined {
   if (!raw) return undefined;
-  const t = raw.trim();
+  const t = raw
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_]+/g, "-") // "fix auth bug" is what a human types; "fix-auth-bug" is what a shell can hold
+    .replace(/[^a-z0-9.-]/g, "")
+    .replace(/-{2,}/g, "-")
+    .replace(/^[-.]+|[-.]+$/g, "");
   if (!t) return undefined;
   return t.length > 64 ? t.slice(0, 64) : t;
 }
