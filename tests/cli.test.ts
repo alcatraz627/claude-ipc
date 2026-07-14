@@ -96,6 +96,31 @@ describe("CLI", () => {
     expect(out).toContain("carol");
   });
 
+  // Owed-review MINOR 1 — flag validation is PER COMMAND, not one global set: a flag
+  // real for a different verb must not be a silent no-op here.
+  test("a flag valid for another command is rejected on this one (register --ttl)", async () => {
+    const origErr = console.error;
+    const errs: string[] = [];
+    console.error = (...a: unknown[]): void => void errs.push(a.map(String).join(" "));
+    try {
+      process.env.CLAUDE_CODE_SESSION_ID = "sid-flagcheck";
+      expect(await run(["register", "carol", "--ttl", "5m"], { socketPath: sock })).toBe(2);
+    } finally {
+      console.error = origErr;
+      delete process.env.CLAUDE_CODE_SESSION_ID;
+    }
+    expect(errs.join("\n")).toContain("unknown flag for register: --ttl");
+  });
+
+  test("a genuinely valid flag still passes (register --tty)", async () => {
+    process.env.CLAUDE_CODE_SESSION_ID = "sid-tty-ok";
+    try {
+      expect(await run(["register", "dave", "--tty", "/dev/ttys001"], { socketPath: sock })).toBe(0);
+    } finally {
+      delete process.env.CLAUDE_CODE_SESSION_ID;
+    }
+  });
+
   // Regression: --partial is a boolean flag and must NOT swallow the body that
   // follows it (it once consumed the first body word, leaving interim replies empty).
   test("reply --partial keeps the full body and is non-terminal", async () => {

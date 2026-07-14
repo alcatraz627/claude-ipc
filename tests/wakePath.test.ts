@@ -299,4 +299,31 @@ describe("the watcher does not lie about itself", () => {
     expect(existsSync(log)).toBe(true);
     expect(readFileSync(log, "utf8")).toContain("bob");
   }, 30_000);
+
+  // VALIDATION.md A7 — the watcher's log must not grow without bound. The prior sweep
+  // claimed this was mutation-tested; the owed review (2026-07-15) found ZERO coverage
+  // and proved the cap could be deleted with the suite staying green. This is that test:
+  // seed the log past a tiny cap, let the watcher write, assert it truncated to the tail.
+  test("the watcher log is capped, not grown without bound (A7)", async () => {
+    const logDir = join(rig.home, "logs");
+    mkdirSync(logDir, { recursive: true });
+    const log = join(logDir, "watch-inbox-s-cap.log");
+    // Seed ~2000 short lines — well past the 1 KB cap we set below.
+    writeFileSync(log, Array.from({ length: 2000 }, (_, i) => `seed line ${i}`).join("\n") + "\n");
+    const seededBytes = readFileSync(log, "utf8").length;
+    expect(seededBytes).toBeGreaterThan(20_000);
+
+    await rig.client.register("capper", { sessionId: "s-cap", cwd: "/w" });
+    bindAlias("s-cap", "capper");
+    // A 1 KB cap: the watcher's own startup log lines push it over, forcing a rotate.
+    startWatcher("s-cap", { IPC_WATCH_LOG_MAX: "1024" });
+    await sleep(TICK * 2500);
+
+    const after = readFileSync(log, "utf8");
+    // The rotate keeps the last 200 lines, so the file must be far smaller than the seed
+    // and must have shed the earliest seed lines.
+    expect(after.length).toBeLessThan(seededBytes);
+    expect(after).not.toContain("seed line 0");
+    expect(after.split("\n").length).toBeLessThanOrEqual(210); // tail -n 200 + the new writes
+  }, 30_000);
 });

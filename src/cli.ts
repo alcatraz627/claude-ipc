@@ -168,24 +168,46 @@ const USAGE = `claude-ipc — cross-session messaging
   prune  [--offline-for <30m|2h|1d>]   (drop peers offline past the window; default 1d)
   daemon status|start|stop`;
 
-// Every flag any command reads. An unknown flag is almost always a typo (--knid, --replyby),
-// and the old parser accepted it silently — so the message went with the DEFAULT and the user
-// never learned their flag did nothing. Catch it up front instead of shipping a silent no-op.
-const KNOWN_FLAGS = new Set([
-  "alias", "as", "body", "consume", "corr", "from", "key", "kind", "no-reply-expected",
-  "offline-for", "once", "partial", "peer", "project", "reason", "reply-by", "since",
-  "status", "to", "to-project", "ttl", "tty",
-]);
+// The flags each command actually reads. Validated PER COMMAND, not globally: a flag
+// that is real for a different verb (`register --ttl`, `send --reason`) is still a
+// silent no-op here, and the old flat allowlist waved it through. `body` appears on
+// send/reply so the "body is positional" hint fires instead of a generic rejection.
+// A command absent from this map (help, serve) skips the check.
+const COMMAND_FLAGS: Record<string, string[]> = {
+  register: ["as", "tty"],
+  send: ["to", "to-project", "from", "kind", "ttl", "reply-by", "no-reply-expected", "body"],
+  reply: ["from", "corr", "status", "partial", "body"],
+  inbox: ["alias", "consume", "project"],
+  count: ["alias", "project"],
+  orphans: ["project"],
+  prune: ["offline-for"],
+  log: ["peer", "since"],
+  status: [],
+  accept: ["as"],
+  decline: ["as", "reason"],
+  snooze: ["as"],
+  cancel: ["corr"],
+  compose: ["from"],
+  tail: ["once"],
+  peers: [],
+  projects: [],
+};
 
 export async function run(argv: string[], opts: { socketPath?: string } = {}): Promise<number> {
   const { cmd, positional, flags } = parse(argv);
   const client = new Client(opts.socketPath ?? config.socketPath);
   const out = (v: unknown): void => console.log(typeof v === "string" ? v : JSON.stringify(v, null, 2));
 
-  const unknown = Object.keys(flags).filter((f) => !KNOWN_FLAGS.has(f));
-  if (unknown.length && cmd !== "help") {
-    console.error(`unknown flag${unknown.length > 1 ? "s" : ""}: ${unknown.map((f) => `--${f}`).join(", ")}. See: claude-ipc help`);
-    return 2;
+  const allowedFlags = COMMAND_FLAGS[cmd];
+  if (allowedFlags) {
+    const unknown = Object.keys(flags).filter((f) => !allowedFlags.includes(f));
+    if (unknown.length) {
+      const plural = unknown.length > 1 ? "s" : "";
+      console.error(
+        `unknown flag${plural} for ${cmd}: ${unknown.map((f) => `--${f}`).join(", ")} — ${cmd} takes ${allowedFlags.length ? allowedFlags.map((f) => `--${f}`).join(", ") : "no flags"}. See: claude-ipc help`,
+      );
+      return 2;
+    }
   }
 
   try {
