@@ -162,15 +162,31 @@ const USAGE = `claude-ipc — cross-session messaging
   accept <msg-id> --as <alias>
   decline <msg-id> --as <alias> [--reason <r>]
   snooze <msg-id> --as <alias>  (defer without consuming — stays pending + owed)
+  cancel <msg-id>               (abandon an outstanding query/request YOU sent)
   compose                    (interactive: pick a live peer + notes, then send)
   tail                       (live monitor, full-screen redraw — for a human)
   prune  [--offline-for <30m|2h|1d>]   (drop peers offline past the window; default 1d)
   daemon status|start|stop`;
 
+// Every flag any command reads. An unknown flag is almost always a typo (--knid, --replyby),
+// and the old parser accepted it silently — so the message went with the DEFAULT and the user
+// never learned their flag did nothing. Catch it up front instead of shipping a silent no-op.
+const KNOWN_FLAGS = new Set([
+  "alias", "as", "body", "consume", "corr", "from", "key", "kind", "no-reply-expected",
+  "offline-for", "once", "partial", "peer", "project", "reason", "reply-by", "since",
+  "status", "to", "to-project", "ttl", "tty",
+]);
+
 export async function run(argv: string[], opts: { socketPath?: string } = {}): Promise<number> {
   const { cmd, positional, flags } = parse(argv);
   const client = new Client(opts.socketPath ?? config.socketPath);
   const out = (v: unknown): void => console.log(typeof v === "string" ? v : JSON.stringify(v, null, 2));
+
+  const unknown = Object.keys(flags).filter((f) => !KNOWN_FLAGS.has(f));
+  if (unknown.length && cmd !== "help") {
+    console.error(`unknown flag${unknown.length > 1 ? "s" : ""}: ${unknown.map((f) => `--${f}`).join(", ")}. See: claude-ipc help`);
+    return 2;
+  }
 
   try {
     switch (cmd) {
@@ -199,14 +215,18 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
         // per-turn hooks resolve to it immediately. (Mail already queued to the
         // session's previous alias is not chased — see the register-rebind note in
         // docs; a boundary rename converges it.)
-        const res = await client.register(alias, {
+        const res = (await client.register(alias, {
           sessionId: sid,
           cwd: process.cwd(),
           pid: process.ppid,
           tty: flags.tty ? String(flags.tty) : undefined,
-        });
+        })) as { replaced?: boolean };
         writeAliasForSession(sid, alias);
-        out(res);
+        // Print a confirmation, NOT the raw capability token that register returns — it is
+        // a secret (whoever holds it can act as this alias), and dumping it to stdout puts
+        // it in scrollback and any log that captures the command. It is already saved,
+        // owner-only, to the token file; the CLI never needs to echo it.
+        out(`registered as "${alias}"${res.replaced ? " (rebound from a prior name)" : ""} — peers can now reach you as ${alias}.`);
         return 0;
       }
       case "send": {
@@ -235,6 +255,14 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
           return 2;
         }
         const kind = String(flags.kind ?? "inform") as "inform" | "query" | "request";
+        // Parse the ttl with the same suffix-aware parser as --reply-by. Number("5m") is
+        // NaN, which slipped through as a NaN deadline that never fired — a silent no-op
+        // dressed as a working flag. "bad" is a real error, not a silent drop.
+        const ttlSeconds = flags.ttl === undefined ? undefined : (parseDuration(String(flags.ttl)) ?? "bad");
+        if (ttlSeconds === "bad") {
+          console.error(`--ttl wants a duration like 60, 90s, 5m, or 1h. Got: ${String(flags.ttl)}`);
+          return 2;
+        }
         const replyBy = parseReplyBy(flags["reply-by"], flags["no-reply-expected"] === true);
         if (replyBy === "bad") {
           console.error(`--reply-by wants a duration like 5m / 90s, or "none". Got: ${String(flags["reply-by"])}`);
@@ -245,7 +273,7 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
           to,
           kind,
           body: positional.join(" "),
-          ttlS: flags.ttl ? Number(flags.ttl) : undefined,
+          ttlS: ttlSeconds, // already number | undefined; "bad" returned above
           replyByS: replyBy,
         });
         // The broker accepts a send to any known alias (even offline — the mail
@@ -418,6 +446,18 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
         out(await client.snooze(as, msgId));
         return 0;
       }
+      case "cancel": {
+        // Abandon an outstanding ask you sent — a later reply to it is dropped. The client,
+        // router, and MCP tool all had this; the CLI simply never exposed the verb, so the
+        // human had no way to take back a query they no longer cared about.
+        const corrId = positional[0] ?? String(flags.corr ?? "");
+        if (!corrId) {
+          console.error("cancel <msg-id>   (the id of YOUR outstanding query/request)");
+          return 2;
+        }
+        out(await client.cancel(corrId, resolveSelfAlias()));
+        return 0;
+      }
       case "serve": {
         // Run the broker in-process so the compiled CLI binary IS the broker.
         // launchd points here, eliminating the source-vs-dist drift where the
@@ -472,6 +512,19 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
         return 2;
       }
       case "compose": {
+        // The sender is THIS session, not a literal "cli" — hardcoding that made every
+        // compose die with not_registered under strict mode, after the whole prompt chain.
+        const cfrom = flags.from ? String(flags.from) : resolveSelfAlias();
+        if (!cfrom) {
+          console.error(
+            "compose can't tell who's sending — register this session first, or pass --from <alias>.",
+          );
+          return 2;
+        }
+        if (!process.stdin.isTTY) {
+          console.error("compose is interactive and needs a terminal. Use: claude-ipc send --to <alias> \"<message>\"");
+          return 2;
+        }
         const peers = (await client.list()).peers as { alias: string; cwd: string; status: string }[];
         const live = peers.filter((p) => p.status !== "offline");
         if (live.length === 0) {
@@ -490,7 +543,7 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
           | "query"
           | "request";
         const body = prompt("notes: ") ?? "";
-        out(await client.send({ from: String(flags.from ?? "cli"), to: target.alias, kind, body }));
+        out(await client.send({ from: cfrom, to: target.alias, kind, body }));
         return 0;
       }
       case "tail": {
