@@ -15,13 +15,41 @@ export interface BadgeSink {
   write(ttyPath: string, title: string): void;
 }
 
+/**
+ * A path safe for the broker to open and write a terminal escape to.
+ *
+ * The path comes from a peer's `--tty`; a crafted one could aim the broker's
+ * write at any file its uid owns. Only real terminal device nodes qualify.
+ */
+export function isTtyPath(path: string): boolean {
+  return /^\/dev\/(tty[a-z]*[0-9]*|pts\/\d+)$/.test(path);
+}
+
+/**
+ * Strip the bytes that would let a title escape its own OSC sequence.
+ *
+ * An embedded BEL/ESC/newline could end the title sequence early and leave the
+ * rest running as raw terminal commands on the peer's screen. Last gate before
+ * bytes reach another session's pty.
+ */
+function sanitizeTitle(title: string): string {
+  // eslint-disable-next-line no-control-regex — control bytes are exactly what we strip
+  return title.replace(/[\x00-\x1f\x7f]/g, "").slice(0, 256);
+}
+
+/** The full OSC-0 "set title" byte sequence for a title, sanitized so it can't break out. */
+export function oscTitle(title: string): string {
+  return `\x1b]0;${sanitizeTitle(title)}\x07`;
+}
+
 /** Writes the OSC-0 "set title" escape straight to a peer's pty. Best-effort. */
 export const ttyBadgeSink: BadgeSink = {
   write(ttyPath, title) {
+    if (!isTtyPath(ttyPath)) return; // never open a non-tty path for writing
     try {
       const fd = openSync(ttyPath, "w");
       try {
-        writeSync(fd, `\x1b]0;${title}\x07`);
+        writeSync(fd, oscTitle(title));
       } finally {
         closeSync(fd);
       }

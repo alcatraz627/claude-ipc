@@ -5,7 +5,7 @@ import { Router } from "../src/broker/router.ts";
 import { startBroker } from "../src/broker/server.ts";
 import { Client } from "../src/client.ts";
 import { readFileSync, rmSync } from "node:fs";
-import { badgeTitle, BadgeNotifier, ttyBadgeSink, type BadgeSink } from "../src/badge.ts";
+import { badgeTitle, BadgeNotifier, ttyBadgeSink, isTtyPath, oscTitle, type BadgeSink } from "../src/badge.ts";
 import { makeMessage } from "../src/models.ts";
 
 const tmpSock = (): string => `/tmp/cipc-${process.pid}-${Math.random().toString(36).slice(2, 10)}.sock`;
@@ -17,11 +17,28 @@ describe("badge formatting", () => {
   });
 });
 
-describe("ttyBadgeSink", () => {
-  test("writes the OSC-0 title escape (exercised against a real file)", () => {
+describe("ttyBadgeSink — target validation + escape safety (Tier-2 #11)", () => {
+  test("only real terminal device paths are accepted as a write target", () => {
+    expect(isTtyPath("/dev/ttys009")).toBe(true);
+    expect(isTtyPath("/dev/tty")).toBe(true);
+    expect(isTtyPath("/dev/pts/3")).toBe(true);
+    // a crafted --tty must not turn the broker into a file-writer / injector
+    expect(isTtyPath("/tmp/cipc-badge-x")).toBe(false);
+    expect(isTtyPath("/etc/passwd")).toBe(false);
+    expect(isTtyPath("/dev/../etc/passwd")).toBe(false);
+    expect(isTtyPath("/dev/ttys009; rm -rf")).toBe(false);
+  });
+
+  test("the OSC title strips bytes that would break out of the sequence", () => {
+    // an embedded BEL would end the title early; ESC + newline would run as commands
+    expect(oscTitle("hi\x07\x1b]2;evil\x07there")).toBe("\x1b]0;hi]2;evilthere\x07");
+    expect(oscTitle("📨 2 · backend")).toBe("\x1b]0;📨 2 · backend\x07"); // ordinary title untouched
+  });
+
+  test("a non-tty path is refused — nothing is opened or written", () => {
     const path = `/tmp/cipc-badge-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
-    ttyBadgeSink.write(path, "📨 2 · backend");
-    expect(readFileSync(path, "utf8")).toBe("\x1b]0;📨 2 · backend\x07");
+    ttyBadgeSink.write(path, "should not land here");
+    expect(() => readFileSync(path, "utf8")).toThrow(); // the file was never created
     rmSync(path, { force: true });
   });
 
