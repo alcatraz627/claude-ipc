@@ -161,6 +161,23 @@ describe("the wake path wakes an idle session", () => {
     expect(w.out.join("\n")).not.toContain("pre-existing backlog");
   }, 30_000);
 
+  test("mail to a SIBLING alias of the same session wakes it (the vb-opus deafness)", async () => {
+    // A session launched with --name registers that name; the session-id registration
+    // then rewrites the side-file. The watcher used to follow ONLY the side-file, so
+    // mail to the boot name never woke the session — deaf as its own public name,
+    // while the roster kept routing to it (live incident, 2026-07-14 evening).
+    await rig.client.register("vb-boot", { sessionId: "s-dual", cwd: "/w" });
+    await rig.client.register("vb-current", { sessionId: "s-dual", cwd: "/w" });
+    bindAlias("s-dual", "vb-current"); // the side-file names only the newer alias
+    const w = startWatcher("s-dual");
+    await sleep(TICK * 1500);
+
+    await rig.client.send({ from: "alice", to: "vb-boot", kind: "query", body: "boot alias must wake" });
+    const wake = await waitForWake(w, /boot alias must wake/);
+    expect(wake).toBeTruthy();
+    expect(wake).toContain("claude-ipc inbox vb-boot"); // the read points at the box that holds it
+  }, 30_000);
+
   test("it follows a rename, and inherits the adopted mailbox's unread mail", async () => {
     await rig.client.register("derived-1234", { sessionId: "s-bob", cwd: "/w" });
     await rig.client.register("ipc-doctor", { sessionId: "s-bob", cwd: "/w" });

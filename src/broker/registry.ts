@@ -74,6 +74,7 @@ export class Registry {
       status: "live",
       token,
     });
+    this.touchSiblings(info.sessionId, alias); // registering IS a liveness signal for the whole session
     this.snapshot();
     return { ok: true, replaced, token };
   }
@@ -94,6 +95,24 @@ export class Registry {
     if (e) {
       e.lastSeen = this.now();
       e.status = "live";
+      this.touchSiblings(e.sessionId, alias);
+    }
+  }
+
+  /**
+   * A liveness signal through ANY of a session's aliases speaks for all of them.
+   *
+   * Sessions often hold several names; when only one heartbeated, a live session
+   * read `idle` under its new name and `offline` under its old one, and peers
+   * acted on the false half. An explicitly-left alias stays retired — that was a
+   * statement of intent, not a missed heartbeat.
+   */
+  private touchSiblings(sessionId: string, except: string): void {
+    for (const s of this.entries.values()) {
+      if (s.alias === except || s.sessionId !== sessionId) continue;
+      if (s.status === "offline") continue; // an explicit leave sticks
+      s.lastSeen = this.now();
+      s.status = "live";
     }
   }
 
@@ -112,11 +131,21 @@ export class Registry {
   }
 
   list(): RegistryEntry[] {
+    // Name each entry's sibling aliases, so a reader can tell "two names, one
+    // session" apart from two sessions — the confusion that had agents sending
+    // IDENTIFY YOURSELF probes and one session messaging itself.
+    const bySid = new Map<string, string[]>();
+    for (const e of this.entries.values()) {
+      const list = bySid.get(e.sessionId) ?? [];
+      list.push(e.alias);
+      bySid.set(e.sessionId, list);
+    }
     return [...this.entries.values()].map((e) => ({
       ...e,
       caps: [...e.caps],
       status: this.statusOf(e),
       token: null, // never expose tokens in the public roster
+      sessionAliases: [...(bySid.get(e.sessionId) ?? [e.alias])].sort(),
     }));
   }
 

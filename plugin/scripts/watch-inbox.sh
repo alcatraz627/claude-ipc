@@ -96,36 +96,70 @@ orphaned() {
   return 1
 }
 
-# One snapshot of BOTH mailboxes (this session's + the project's) as flat
-# lines: id<TAB>kind<TAB>from<TAB>origin<TAB>one-line body head. Exits non-zero
-# when the broker didn't answer with JSON (down, CLI missing), so a dead broker
-# is a skipped tick — never mistaken for an empty inbox. Double quotes only
-# inside the single-quoted program (backslash escapes there break under bash
-# single quotes).
+# A session may be addressable under MORE names than the side-file's: a launch
+# --name registered at boot, or an earlier register, stays routable in the broker.
+# Mail to any of them belongs to this session — watching only the side-file alias
+# left a session deaf as its own public name (the vb-opus incident). Ask the
+# registry which aliases share our session id; broker down → empty, and the
+# side-file alias alone carries the tick.
+sibling_aliases() {
+  "$CIPC" peers 2>/dev/null | "$PY" -c '
+import sys, json
+try:
+    peers = json.load(sys.stdin).get("peers", [])
+except Exception:
+    sys.exit(0)
+for p in peers:
+    if p.get("sessionId") == sys.argv[1] and p.get("alias") != sys.argv[2]:
+        print(p.get("alias"))
+' "$SID" "$1" 2>/dev/null | sort -u
+}
+
+# One snapshot of EVERY watched mailbox (all this session's aliases + the
+# project's) as flat lines: id<TAB>kind<TAB>from<TAB>box<TAB>one-line body head.
+# Exits non-zero when the PRIMARY box didn't come back as JSON (broker down, CLI
+# missing), so a dead broker is a skipped tick — never mistaken for an empty
+# inbox. Sibling boxes are best-effort: one unreadable sibling must not deafen
+# the primary. Double quotes only inside the single-quoted program (backslash
+# escapes there break under bash single quotes).
 snapshot() {
+  local primary="$1"
   {
-    "$CIPC" inbox "$1" 2>/dev/null
-    echo "---IPC-SPLIT---"
+    for box in "$@"; do
+      printf '%s\n' "===IPC-BOX $box==="
+      "$CIPC" inbox "$box" 2>/dev/null
+    done
+    printf '%s\n' "===IPC-BOX --project==="
     "$CIPC" inbox --project 2>/dev/null
   } | "$PY" -c '
 import sys, json
-raw = sys.stdin.read().split("---IPC-SPLIT---")
-if len(raw) != 2:
-    sys.exit(3)
-for chunk, origin in ((raw[0], "session"), (raw[1], "project")):
+primary = sys.argv[1]
+name, buf, chunks = None, [], []
+for line in sys.stdin:
+    if line.startswith("===IPC-BOX ") and line.rstrip().endswith("==="):
+        if name is not None:
+            chunks.append((name, "".join(buf)))
+        name, buf = line.rstrip()[11:-3].strip(), []
+    else:
+        buf.append(line)
+if name is not None:
+    chunks.append((name, "".join(buf)))
+for box, chunk in chunks:
+    origin = "project" if box == "--project" else box
     try:
         msgs = json.loads(chunk).get("messages", [])
     except Exception:
-        if origin == "session":
-            sys.exit(3)  # own inbox unreadable = broker down; project peek is best-effort
+        if origin == primary:
+            sys.exit(3)  # own inbox unreadable = broker down; the rest are best-effort
         continue
     for m in msgs:
         head = " ".join(str(m.get("body") or "").split())[:120]
         print(str(m.get("id")) + "\t" + str(m.get("kind")) + "\t" + str(m.get("fromAlias")) + "\t" + origin + "\t" + head)
-'
+' "$primary"
 }
 
 ALIAS=""
+WATCHED=""
 baselined=""
 broker_ok=""
 while :; do
@@ -154,7 +188,18 @@ while :; do
     ALIAS="$now_alias"
   fi
 
-  if cur="$(snapshot "$ALIAS")"; then
+  # The full watch set: the side-file alias plus every sibling alias the registry
+  # binds to this session id. Aliases never contain whitespace (sanitizeAlias
+  # guarantees it), so the deliberate word-splitting below is safe.
+  SIBS="$(sibling_aliases "$ALIAS" | tr '\n' ' ')"
+  WATCH="$ALIAS ${SIBS}"
+  if [ "$WATCH" != "$WATCHED" ]; then
+    log "watching mailboxes: $WATCH"
+    WATCHED="$WATCH"
+  fi
+
+  # shellcheck disable=SC2086 — $WATCH is a deliberate word-split list
+  if cur="$(snapshot $WATCH)"; then
     [ -n "$broker_ok" ] || { log "broker answering"; broker_ok=1; }
     # awk, not rg: this loop is the wake surface, and a missing binary here fails
     # silently (the pipeline's error is swallowed, cur_ids comes out empty, and the
@@ -175,19 +220,22 @@ while :; do
         wake="$(printf '%s\n' "$cur" | "$PY" -c '
 import sys
 new_ids = set(sys.argv[1].split())
-items, origins = [], set()
+primary = sys.argv[2]
+items, boxes = [], []
 for line in sys.stdin:
     parts = line.rstrip("\n").split("\t")
     if len(parts) < 5 or parts[0] not in new_ids:
         continue
     if parts[1] in ("query", "request", "response"):
-        tag = ", project" if parts[3] == "project" else ""
-        origins.add(parts[3])
+        box = parts[3]
+        tag = ", project" if box == "project" else ("" if box == primary else ", to " + box)
+        if box not in boxes:
+            boxes.append(box)
         items.append(parts[1] + " from " + parts[2] + " (" + parts[0] + tag + "): " + parts[4])
 if items:
-    reads = []
-    if "session" in origins: reads.append("claude-ipc inbox " + sys.argv[2])
-    if "project" in origins: reads.append("claude-ipc inbox --project")
+    # Point the read at the box that actually holds each item — a session woken for
+    # mail on a sibling alias must not be sent to drain the wrong mailbox.
+    reads = ["claude-ipc inbox --project" if b == "project" else "claude-ipc inbox " + b for b in boxes]
     # This line IS the wake, and it is the only thing an idle agent sees before it
     # starts acting on a stranger text. The quoted fragments below are a PEER agent
     # speaking, not the user, and this is the one place that can say so.

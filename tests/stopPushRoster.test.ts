@@ -87,6 +87,32 @@ describe("P2 · peers roster (V8)", () => {
     const r = formatRoster(many, "self") as string;
     expect(r).toContain("+3 more"); // 15 shown-capped-at-12
   });
+
+  // A1 — two names, one agent. A session's aliases rendered as separate peers had
+  // agents sending IDENTIFY YOURSELF probes at their own teammate's second name —
+  // and one session messaging itself. One session = one roster line; and my own
+  // sibling alias is me, not a peer.
+  test("aliases of one session collapse to a single line, and my own sibling alias is excluded", () => {
+    const withSibs = (alias: string, status: string, sessionAliases: string[]) => ({
+      alias,
+      cwd: "/p/vb",
+      status,
+      sessionAliases,
+    });
+    const r = formatRoster(
+      [
+        withSibs("me", "live", ["me", "me-old"]),
+        withSibs("me-old", "idle", ["me", "me-old"]),
+        withSibs("vb-opus", "live", ["catch-7c", "vb-opus"]),
+        withSibs("catch-7c", "idle", ["catch-7c", "vb-opus"]),
+      ],
+      "me",
+    ) as string;
+    expect(r).toContain("vb-opus");
+    expect(r).toContain("also: catch-7c"); // the sibling is labelled, not listed as a stranger
+    expect((r.match(/catch-7c/g) ?? []).length).toBe(1); // one line for the session, not two
+    expect(r).not.toContain("me-old"); // my own second alias is not a peer
+  });
 });
 
 describe("P2 · roster reflects the live broker registry (V8)", () => {
