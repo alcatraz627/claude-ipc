@@ -22,7 +22,10 @@ import type { StorageBackend } from "../storage/base.ts";
 import type { Registry } from "./registry.ts";
 
 const ok = (result: unknown): Response => ({ ok: true, result });
-const fail = (code: string, message: string): Response => ({ ok: false, error: { code, message } });
+const fail = (code: string, message: string, data?: unknown): Response => ({
+  ok: false,
+  error: data === undefined ? { code, message } : { code, message, data },
+});
 
 const SENDABLE: readonly Kind[] = ["inform", "query", "request"];
 
@@ -197,7 +200,23 @@ export class Router {
     // `proj:/x/` and `proj:/x` are one mailbox.
     if (isProjectAddress(a.to)) a.to = projectAddress(projectPath(a.to));
     else if (a.to !== "*" && !this.registry.has(a.to)) {
-      return ok({ msgId: null, error: { code: "no_peer", livePeers: this.registry.liveAliases() } });
+      return fail("no_peer", `no peer named "${a.to}" is registered — nothing was sent. See who's reachable: claude-ipc peers`, {
+        livePeers: this.registry.liveAliases(),
+      });
+    }
+
+    // A session may hold several aliases (a launch --name plus the session-id
+    // registration is the common way). A send whose recipient resolves to the
+    // sender's OWN session would be accepted, delivered, and then chased by the
+    // nudge machinery — the broker nagging a session to answer itself. Refuse it
+    // while nothing has happened yet.
+    const senderSid = this.registry.get(a.from)?.sessionId ?? null;
+    if (senderSid && a.to !== "*" && !isProjectAddress(a.to) && this.registry.get(a.to)?.sessionId === senderSid) {
+      return fail(
+        "self_send",
+        `"${a.to}" is another name for THIS session — you are "${a.from}", and a message to "${a.to}" would only ` +
+          `come back to you. Nothing was sent. Pick a peer: claude-ipc peers`,
+      );
     }
 
     // Allowlist guards who may target a peer (e.g. only certain senders may task a
@@ -205,7 +224,7 @@ export class Router {
     // security boundary under the no-auth model.
     const allowed = this.allowlist[a.to];
     if (a.to !== "*" && allowed && !allowed.includes(a.from)) {
-      return ok({ msgId: null, error: { code: "not_allowed", message: `${a.from} may not target ${a.to}` } });
+      return fail("not_allowed", `${a.from} may not target ${a.to} — nothing was sent`);
     }
 
     const id = this.newId();
@@ -228,7 +247,12 @@ export class Router {
     });
     this.backend.append(msg);
 
-    const targets = a.to === "*" ? this.registry.liveAliases(a.from) : [a.to];
+    // Broadcast excludes the WHOLE sending session, not just the from-alias —
+    // its sibling aliases are still the same agent talking to itself.
+    const targets =
+      a.to === "*"
+        ? this.registry.liveAliases(a.from).filter((t) => !senderSid || this.registry.get(t)?.sessionId !== senderSid)
+        : [a.to];
     for (const t of targets) this.backend.enqueue(msg.id, t);
     // Project mail can't notify its own address — nudge the live sessions
     // working in that tree instead, so their channels/badges see it.
@@ -439,11 +463,23 @@ export class Router {
       return fail("no_origin", `no message with id ${a.corrId}`);
     }
     const aw = this.backend.getAwaiting(a.corrId);
-    // Drop only if the sender explicitly cancelled. Otherwise deliver — even after
+    // Refuse only if the sender explicitly cancelled. Otherwise deliver — even after
     // a timeout fired: a real (if late) answer beats a provisional timeout, and a
     // human-paced reply hours later is the normal case, not an error to discard.
+    //
+    // Refuse LOUDLY, and with the way out: the old `ok({dropped:true})` binned a
+    // composed reply while reading as success — a field agent lost its whole report
+    // to that, twice in one day. The replier keeps its own text; what it needs from
+    // us is the fact of non-delivery and the exact command that still reaches the
+    // asker. Their pending copy of the dead ask is consumed so it stops nagging.
     if (aw?.closed && aw.closedReason === "cancelled") {
-      return ok({ dropped: true, reason: "cancelled" });
+      this.backend.markConsumed(a.corrId, a.from);
+      if (isProjectAddress(origin.toAlias)) this.backend.markConsumed(a.corrId, origin.toAlias);
+      return fail(
+        "ask_cancelled",
+        `${origin.fromAlias} cancelled ${a.corrId} — your reply was NOT delivered, and no reply is owed. ` +
+          `If the answer still matters, send it directly: claude-ipc send --to ${origin.fromAlias} --from ${a.from} "<your answer>"`,
+      );
     }
     const terminal = a.terminal ?? true;
     const late = aw?.closed === true;
@@ -617,7 +653,7 @@ export class Router {
     return ok({ declined: true });
   }
 
-  /** The sender abandons an outstanding request; a later reply will be dropped. */
+  /** The sender abandons an outstanding request; a later reply will be refused. */
   private cancel(req: Request): Response {
     const a = req.args as { corrId?: string };
     if (!a.corrId) return fail("bad_args", "cancel needs corrId");
@@ -626,7 +662,38 @@ export class Router {
       const denied = this.requireOwner(req, origin.fromAlias);
       if (denied) return denied;
     }
+    // Tell the recipient the ask was withdrawn, rather than letting them find out by
+    // composing an answer into a refusal (a field agent lost a finished report that
+    // way). A copy they never saw is consumed silently; a copy already in front of
+    // them gets a notice — kind "response" so the wake path carries it — and stops
+    // counting as pending. Only a real state change notifies: a second cancel is a no-op.
+    const wasOpen = this.backend.isAwaitingOpen(a.corrId);
     this.backend.closeAwaiting(a.corrId, "cancelled");
+    if (origin && wasOpen) {
+      for (const d of this.backend.deliveriesFor(a.corrId)) {
+        if (d.state !== "queued" && d.state !== "delivered" && d.state !== "surfaced") continue;
+        this.backend.markConsumed(a.corrId, d.toAlias);
+        if (d.state === "queued") continue; // never seen — nothing to un-tell
+        const note = makeMessage({
+          id: this.newId(),
+          kind: "response",
+          fromAlias: "ipc",
+          toAlias: d.toAlias,
+          ts: this.now(),
+          corrId: a.corrId,
+          status: "ok",
+          errorCode: null,
+          terminal: false,
+          body:
+            `[claude-ipc] CANCELLED — ${origin.fromAlias} withdrew ${origin.kind} ${a.corrId}; no reply is owed. ` +
+            `A reply to it now would be refused.`,
+          conversationId: origin.conversationId,
+        });
+        this.backend.append(note);
+        this.backend.enqueue(note.id, d.toAlias);
+        this.notify(d.toAlias);
+      }
+    }
     return ok({ cancelled: true });
   }
 

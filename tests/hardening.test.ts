@@ -3,6 +3,7 @@ import { MemoryBackend } from "../src/storage/memoryBackend.ts";
 import { Registry } from "../src/broker/registry.ts";
 import { Router } from "../src/broker/router.ts";
 import { startBroker, type BrokerHandle } from "../src/broker/server.ts";
+import { BrokerError } from "../src/client.ts";
 import { Client } from "../src/client.ts";
 import { createTools } from "../src/tools.ts";
 
@@ -32,9 +33,15 @@ describe("allowlist", () => {
     expect(r.msgId).toBe("msg-1");
   });
 
-  test("a disallowed sender is rejected with not_allowed", async () => {
-    const r = await client.send({ from: "rando", to: "privileged", kind: "request", body: "rm -rf" });
-    expect(r.error.code).toBe("not_allowed");
+  test("a disallowed sender is REFUSED with not_allowed — a failed send must fail", async () => {
+    let err: unknown;
+    try {
+      await client.send({ from: "rando", to: "privileged", kind: "request", body: "rm -rf" });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(BrokerError);
+    if (err instanceof BrokerError) expect(err.code).toBe("not_allowed");
   });
 
   test("peers with no allowlist entry are unrestricted", async () => {

@@ -5,7 +5,7 @@ import { Router } from "../src/broker/router.ts";
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { startBroker, type BrokerHandle } from "../src/broker/server.ts";
-import { Client, request } from "../src/client.ts";
+import { BrokerError, Client, request } from "../src/client.ts";
 import { config } from "../src/config.ts";
 import { FrameDecoder } from "../src/protocol.ts";
 
@@ -40,11 +40,19 @@ describe("broker end-to-end", () => {
     expect(peers.peers.map((p: { alias: string }) => p.alias).sort()).toEqual(["alice", "bob"]);
   });
 
-  test("send to an unknown alias returns no_peer with the live-peer list", async () => {
+  test("send to an unknown alias REFUSES with no_peer — a failed send must fail, not inform", async () => {
     await client.register("alice", { sessionId: "sA", cwd: "/a" });
-    const res = await client.send({ from: "alice", to: "ghost", kind: "query", body: "?" });
-    expect(res.error.code).toBe("no_peer");
-    expect(res.error.livePeers).toContain("alice");
+    let err: unknown;
+    try {
+      await client.send({ from: "alice", to: "ghost", kind: "query", body: "?" });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(BrokerError);
+    if (err instanceof BrokerError) {
+      expect(err.code).toBe("no_peer");
+      expect((err.data as { livePeers: string[] }).livePeers).toContain("alice");
+    }
   });
 
   test("alias rebind keeps the alias-keyed queue intact", async () => {

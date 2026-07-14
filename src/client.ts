@@ -104,6 +104,25 @@ export function request(socketPath: string, req: Request, timeoutMs: number = co
   });
 }
 
+/**
+ * A refusal from the broker, as a typed error.
+ *
+ * `code` is the stable branch key (per rules/error-classification: callers switch on
+ * codes, never on message text); `data` is optional structured context (e.g. no_peer
+ * carries the live roster). The message keeps its `code: message` shape because
+ * existing callers (sessionStart's register-rejection guard) match on that prefix.
+ */
+export class BrokerError extends Error {
+  constructor(
+    public readonly code: string,
+    detail: string,
+    public readonly data?: unknown,
+  ) {
+    super(`${code}: ${detail}`);
+    this.name = "BrokerError";
+  }
+}
+
 export interface RegisterInfo {
   sessionId: string;
   cwd: string;
@@ -146,7 +165,7 @@ export class Client {
       if (this.fallback) return this.degraded(op, args);
       throw e;
     }
-    if (!res.ok) throw new Error(`${res.error.code}: ${res.error.message}`);
+    if (!res.ok) throw new BrokerError(res.error.code, res.error.message, res.error.data);
     return res.result;
   }
 

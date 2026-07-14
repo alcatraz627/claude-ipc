@@ -41,7 +41,9 @@ export interface Request {
 
 export type Response =
   | { ok: true; result: unknown }
-  | { ok: false; error: { code: string; message: string } };
+  // `data` is optional structured context a client may render (e.g. no_peer carries
+  // the live roster) — additive, so older clients that ignore it stay compatible.
+  | { ok: false; error: { code: string; message: string; data?: unknown } };
 
 /** Encode a value as one length-prefixed UTF-8 JSON frame. */
 export function encodeFrame(value: unknown): Uint8Array {

@@ -105,7 +105,7 @@ export function buildMcpServer(tools: IpcTools): McpServer {
 
   server.tool(
     "ipc_cancel",
-    "Abandon a query/request you sent (by corrId); a later reply to it is dropped.",
+    "Abandon a query/request you sent (by corrId); the recipient is told, and a later reply to it is refused.",
     { corrId: z.string() },
     async (a) => asText(await tools.ipc_cancel(a)),
   );

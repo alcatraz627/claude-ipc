@@ -9,7 +9,7 @@
 
 import { readFileSync } from "node:fs";
 import { readAliasForSession, writeAliasForSession } from "./aliasStore.ts";
-import { Client } from "./client.ts";
+import { BrokerError, Client } from "./client.ts";
 import { config } from "./config.ts";
 import { TRUST_RAIL } from "./hooks/shared.ts";
 import { monitorSnapshot } from "./monitor.ts";
@@ -268,33 +268,37 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
           console.error(`--reply-by wants a duration like 5m / 90s, or "none". Got: ${String(flags["reply-by"])}`);
           return 2;
         }
-        const res = await client.send({
-          from,
-          to,
-          kind,
-          body: positional.join(" "),
-          ttlS: ttlSeconds, // already number | undefined; "bad" returned above
-          replyByS: replyBy,
-        });
-        // The broker accepts a send to any known alias (even offline — the mail
-        // waits for it), and rejects only a name nobody ever registered. Turn that
-        // bare no_peer into a discovery answer: name who's reachable now and who's
-        // known-but-offline, so a typo'd or half-remembered recipient is easy to fix.
-        const err = (res as { error?: { code?: string } }).error;
-        if (err?.code === "no_peer") {
-          const all = ((await client.list()).peers ?? []) as { alias: string; status: string }[];
-          const live = all.filter((p) => p.status !== "offline").map((p) => p.alias);
-          const offline = all.filter((p) => p.status === "offline").map((p) => p.alias);
-          const lines = [`no peer named "${to}" is registered.`];
-          if (live.length) lines.push(`  reachable now:  ${live.join(", ")}`);
-          if (offline.length) {
-            const shown = offline.slice(0, 8).join(", ");
-            lines.push(`  known but offline (mail still reaches them):  ${shown}${offline.length > 8 ? ", …" : ""}`);
+        let res: unknown;
+        try {
+          res = await client.send({
+            from,
+            to,
+            kind,
+            body: positional.join(" "),
+            ttlS: ttlSeconds, // already number | undefined; "bad" returned above
+            replyByS: replyBy,
+          });
+        } catch (e) {
+          // The broker accepts a send to any known alias (even offline — the mail
+          // waits for it), and refuses only a name nobody ever registered. Turn that
+          // bare no_peer into a discovery answer: name who's reachable now and who's
+          // known-but-offline, so a typo'd or half-remembered recipient is easy to fix.
+          if (e instanceof BrokerError && e.code === "no_peer") {
+            const all = ((await client.list()).peers ?? []) as { alias: string; status: string }[];
+            const live = all.filter((p) => p.status !== "offline").map((p) => p.alias);
+            const offline = all.filter((p) => p.status === "offline").map((p) => p.alias);
+            const lines = [`no peer named "${to}" is registered — NOTHING WAS SENT.`];
+            if (live.length) lines.push(`  reachable now:  ${live.join(", ")}`);
+            if (offline.length) {
+              const shown = offline.slice(0, 8).join(", ");
+              lines.push(`  known but offline (mail still reaches them):  ${shown}${offline.length > 8 ? ", …" : ""}`);
+            }
+            if (!live.length && !offline.length) lines.push(`  no peers are registered yet.`);
+            lines.push(`  full roster:  claude-ipc peers`);
+            console.error(lines.join("\n"));
+            return 2;
           }
-          if (!live.length && !offline.length) lines.push(`  no peers are registered yet.`);
-          lines.push(`  full roster:  claude-ipc peers`);
-          console.error(lines.join("\n"));
-          return 2;
+          throw e; // any other refusal → the shared catch prints `error: code: …` and exits 1
         }
         out(res);
         // An ask now carries a deadline, so say what it bought. A sender that knows

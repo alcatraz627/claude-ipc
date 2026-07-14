@@ -62,7 +62,14 @@ function pump(socket: Writable): void {
   }
 }
 
-export function startBroker(opts: { router: Router; socketPath: string }): BrokerHandle {
+export function startBroker(opts: {
+  router: Router;
+  socketPath: string;
+  // Called for every refused request — the broker-side record that a drop happened.
+  // Without it a refusal exists only in the caller's terminal, which is how a
+  // "rejected inform" became unfalsifiable a day later.
+  onRefusal?: (req: Request, code: string) => void;
+}): BrokerHandle {
   try {
     unlinkSync(opts.socketPath);
   } catch {
@@ -77,7 +84,9 @@ export function startBroker(opts: { router: Router; socketPath: string }): Broke
       data(socket, data) {
         try {
           for (const frame of socket.data.dec.push(new Uint8Array(data))) {
-            socket.data.outbox.push(encodeFrame(opts.router.handle(frame as Request)));
+            const res = opts.router.handle(frame as Request);
+            if (!res.ok) opts.onRefusal?.(frame as Request, res.error.code);
+            socket.data.outbox.push(encodeFrame(res));
           }
         } catch {
           // A malformed or oversized frame throws out of the decoder and desyncs
@@ -244,7 +253,16 @@ export function main(): void {
       onError: (what, e) => brokerLog(config.logPath, `sweep: ${what} failed: ${e}`),
     });
   }, config.sweepIntervalS * 1000);
-  const broker = startBroker({ router, socketPath: config.socketPath });
+  const broker = startBroker({
+    router,
+    socketPath: config.socketPath,
+    onRefusal: (req, code) => {
+      const a = (req.args ?? {}) as Record<string, unknown>;
+      const who = a.from ?? a.alias ?? "?";
+      const what = a.to ?? a.corrId ?? a.msgId ?? "";
+      brokerLog(config.logPath, `refused op=${req.op} code=${code} from=${String(who)}${what ? ` re=${String(what)}` : ""}`);
+    },
+  });
   writeFileSync(config.pidPath, String(process.pid));
   // Shut down cleanly: stop the sweeper, release the socket, and close SQLite so
   // its WAL is checkpointed — otherwise a restart inherits a dirty WAL and a

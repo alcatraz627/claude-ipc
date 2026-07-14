@@ -4,7 +4,7 @@ import { Registry } from "../src/broker/registry.ts";
 import { Router } from "../src/broker/router.ts";
 import { tickSweeper } from "../src/broker/sweeper.ts";
 import { startBroker, type BrokerHandle } from "../src/broker/server.ts";
-import { Client } from "../src/client.ts";
+import { BrokerError, Client } from "../src/client.ts";
 import type { StorageBackend } from "../src/storage/base.ts";
 
 const tmpSock = (): string => `/tmp/cipc-${process.pid}-${Math.random().toString(36).slice(2, 10)}.sock`;
@@ -164,13 +164,21 @@ describe("correlation, consent, timeouts", () => {
     expect(inbox.messages.some((m: { body: string }) => m.body === "actually, here it is")).toBe(true);
   });
 
-  test("a reply after the sender cancelled is dropped", async () => {
+  test("a reply after the sender cancelled is REFUSED (ask_cancelled), never binned as success", async () => {
     const q = await client.send({ from: "alice", to: "bob", kind: "query", body: "?" });
     await client.cancel(q.msgId, "alice"); // alice cancels her own ask
-    const r = await client.reply({ from: "bob", corrId: q.msgId, body: "nvm" });
-    expect(r.dropped).toBe(true);
-    expect(r.reason).toBe("cancelled");
-    expect((await client.check("alice")).messages.length).toBe(0);
+    let err: unknown;
+    try {
+      await client.reply({ from: "bob", corrId: q.msgId, body: "nvm" });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(BrokerError);
+    if (err instanceof BrokerError) {
+      expect(err.code).toBe("ask_cancelled");
+      expect(err.message).toContain("claude-ipc send --to alice"); // the way out rides in the refusal
+    }
+    expect((await client.check("alice")).messages.length).toBe(0); // still nothing delivered to the asker
   });
 
   test("replying to a RESPONSE steers you to send, instead of a dead-end 'no message'", async () => {
