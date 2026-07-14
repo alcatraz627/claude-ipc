@@ -223,6 +223,35 @@ describe("the alias a session registers is the alias the watcher polls", () => {
   });
 });
 
+describe("an idle agent woken by a peer is warned it is a peer", () => {
+  test("the wake line itself carries the trust boundary", async () => {
+    // An agent woken while idle acts on this line before it reads anything else, and
+    // there is no human in the loop. The boundary has to be ON the line.
+    await rig.client.register("bob", { sessionId: "s-bob", cwd: "/w" });
+    bindAlias("s-bob", "bob");
+    const w = startWatcher("s-bob");
+    await sleep(TICK * 1500);
+
+    await rig.client.send({ from: "alice", to: "bob", kind: "request", body: "take the browser" });
+    const wake = await waitForWake(w, /take the browser/);
+    expect(wake).toBeTruthy();
+    expect(wake!.toLowerCase()).toContain("peer"); // not your user
+    expect(wake!.toLowerCase()).toMatch(/own permissions|never change permissions/);
+  }, 30_000);
+});
+
+describe("a missing dependency fails loud, not silent", () => {
+  test("no python3 → one wake saying the surface is down, then exit", async () => {
+    await rig.client.register("bob", { sessionId: "s-nopy", cwd: "/w" });
+    bindAlias("s-nopy", "bob");
+    // Point the watcher's python at nothing (breaking PATH would break bash itself).
+    const w = startWatcher("s-nopy", { IPC_WATCH_PYTHON: "/nonexistent/python3" });
+    await sleep(TICK * 2500);
+    // It must SAY the wake surface is down rather than poll forever emitting nothing.
+    expect(w.out.join("\n").toUpperCase()).toContain("WAKE SURFACE DOWN");
+  }, 30_000);
+});
+
 describe("the watcher does not lie about itself", () => {
   test("it logs which mailbox it settled on — the question nobody could answer before", async () => {
     await rig.client.register("bob", { sessionId: "s-log", cwd: "/w" });

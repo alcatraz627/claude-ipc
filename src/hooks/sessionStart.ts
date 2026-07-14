@@ -60,9 +60,17 @@ export async function main(): Promise<void> {
       tty: process.env.CLAUDE_IPC_TTY ?? ttyForPid(process.ppid) ?? undefined,
     });
   } catch (e) {
-    if (e instanceof Error && e.message.startsWith("alias_taken")) {
+    // Any refusal — the name is taken, or it's reserved, or otherwise rejected — means
+    // this alias is not ours to use. Draining it would hand us someone else's mail, and
+    // writing its mapping would point our watcher at a mailbox we'll never receive on.
+    // A broker being DOWN is different: that throws a connection error, not a rejection,
+    // and the durable-log drain below still works, so ownership stays true for it.
+    const rejected =
+      e instanceof Error &&
+      (e.message.startsWith("alias_taken") || e.message.startsWith("bad_args") || e.message.startsWith("unauthorized"));
+    if (rejected) {
       owned = false;
-      console.error(`[claude-ipc] "${alias}" is owned by another session; not draining (name collision).`);
+      console.error(`[claude-ipc] can't register as "${alias}" (${(e as Error).message}); staying on the session id.`);
     }
     // else: broker down at startup — the backlog drain below still works off the
     // durable log, so the offline-note guarantee holds.
@@ -75,8 +83,8 @@ export async function main(): Promise<void> {
   }
   const collision = owned
     ? null
-    : `claude-ipc: the name "${alias}" is already held by another live session, so you are addressable as ` +
-      `${input.session_id} instead. Pick a different name with: claude-ipc register <name>`;
+    : `claude-ipc: the name "${alias}" isn't available (taken or reserved), so you are addressable as ` +
+      `${input.session_id} instead. Pick another with: claude-ipc register <name>`;
 
   // Drain the offline backlog independently: degraded mode reads it from SQLite,
   // so a session started while the broker is down still receives its queued notes.

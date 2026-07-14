@@ -137,6 +137,15 @@ const nowS = (): number => Math.floor(Date.now() / 1000);
  * agent on the machine its IPC — far worse than a sweep that misses a beat. Jobs are
  * isolated from each other, and failures are logged rather than swallowed.
  */
+/**
+ * A message id with room to be unique.
+ *
+ * 64 bits, not the old 32: at 32 a collision was a coin-flip around 65k messages, and
+ * `INSERT OR IGNORE` made it silent — the new message dropped while its delivery row was
+ * still written, so the recipient got the OLDER message's content under the new id.
+ */
+export const newMessageId = (): string => `msg-${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
+
 export function sweepOnce(deps: {
   backend: StorageBackend;
   registry: Registry;
@@ -205,7 +214,7 @@ export function main(): void {
   // 64 bits, not 32. At 32 a collision was a coin-flip around 65k messages, and
   // `INSERT OR IGNORE` made it silent: the new message was dropped while its delivery
   // row was still written, handing the recipient the OLDER message under the new id.
-  const mkId = (): string => `msg-${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
+  const mkId = newMessageId;
   const notifier = new BadgeNotifier(backend, registry, ttyBadgeSink, config.badge);
   const router = new Router(
     backend,

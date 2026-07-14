@@ -30,11 +30,12 @@ function harness() {
     const r = call("register", { alias, sessionId: `s-${alias}`, cwd, pid: 1 });
     tokens.set(alias, r.result?.token as string);
   };
+  const leave = (alias: string): void => void call("leave", { alias }, alias);
   const sendProject = (from: string, body: string): string => {
     const r = call("send", { from, to: projectAddress(PROJ), kind: "request", body }, from);
     return r.result?.msgId as string;
   };
-  return { backend, call, reg, sendProject };
+  return { backend, call, reg, sendProject, leave };
 }
 
 describe("project work can be claimed, exactly once", () => {
@@ -76,6 +77,29 @@ describe("project work can be claimed, exactly once", () => {
     const bobSees = call("check", { project: PROJ }, "bob").result?.messages as { id: string }[];
     expect(annSees.map((m) => m.id)).toContain(id); // she took it; she owes the reply
     expect(bobSees.map((m) => m.id)).not.toContain(id); // he shouldn't be nagged about her job
+  });
+});
+
+describe("a claim does not take the work to the grave", () => {
+  test("if the claimer leaves without replying, the job comes back to the others", () => {
+    const { call, reg, sendProject, leave } = harness();
+    reg("asker");
+    reg("ann");
+    reg("bob");
+    const id = sendProject("asker", "someone run the migration");
+
+    call("accept", { alias: "ann", msgId: id }, "ann");
+    // ann claimed it, then her session ends without ever replying.
+    leave("ann");
+
+    // The work must be visible and claimable again — a claim held by a session that is
+    // gone is stale, not permanent. Otherwise it is a silent way to lose the job.
+    const bobSees = call("check", { project: PROJ }, "bob").result?.messages as { id: string }[];
+    expect(bobSees.map((m) => m.id)).toContain(id);
+
+    const reclaim = call("accept", { alias: "bob", msgId: id }, "bob");
+    expect(reclaim.result?.accepted).toBe(true);
+    expect(reclaim.result?.claimedBy).toBe("bob");
   });
 });
 

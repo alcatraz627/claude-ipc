@@ -153,11 +153,13 @@ export class Registry {
       .map((e) => e.alias);
   }
 
-  // Status is derived from age alone. An explicit `leave` persists by backdating
-  // lastSeen rather than by a sticky flag: the flag was indistinguishable from the
-  // warm-start default above, so "we haven't heard from you yet" and "you told us
-  // you were going" collapsed into the same permanent verdict.
+  // An explicit `leave` sticks immediately, and only a `leave` sets status to offline
+  // now that the constructor preserves the snapshotted status instead of force-writing
+  // "offline" on every warm-start. That decoupling is what makes the sticky check safe:
+  // "you told us you're going" is honoured at once, while "we just haven't heard from
+  // you yet" is left to decay by age like any live peer.
   private statusOf(e: RegistryEntry): RegistryEntry["status"] {
+    if (e.status === "offline") return "offline";
     const age = this.now() - e.lastSeen;
     if (age > this.liveness.offlineS) return "offline";
     if (age > this.liveness.idleS) return "idle";

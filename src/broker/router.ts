@@ -378,8 +378,18 @@ export class Router {
     return messages.filter((m) => {
       if (this.backend.projectStanding(m.id, self) === "passed") return false;
       const owner = this.backend.projectClaim(m.id);
-      return owner === null || owner === self;
+      // A claim only hides the work while its owner is still around to do it. Derive
+      // that from liveness at read time rather than trusting the claim forever: a
+      // session that claimed a job and then died would otherwise take it to the grave,
+      // invisible to every other member — a silent way to lose work.
+      return owner === null || owner === self || !this.claimStillHeld(owner);
     });
+  }
+
+  /** True while the claimer is a session we'd still route to (registered, not offline). */
+  private claimStillHeld(owner: string): boolean {
+    const e = this.registry.get(owner);
+    return Boolean(e && e.status !== "offline");
   }
 
   private requireProjectMember(req: Request, dir: string): Response | null {
@@ -477,6 +487,10 @@ export class Router {
 
     const origin = this.backend.get(a.msgId);
     if (origin && isProjectAddress(origin.toAlias)) {
+      // A claim held by a session that has since gone offline is stale — the work went
+      // unfinished. Free it so a live member can pick it up, then race for it normally.
+      const holder = this.backend.projectClaim(a.msgId);
+      if (holder && holder !== a.alias && !this.claimStillHeld(holder)) this.backend.releaseClaim(a.msgId);
       const won = this.backend.claimProject(a.msgId, a.alias);
       const owner = this.backend.projectClaim(a.msgId);
       if (!won) {

@@ -115,14 +115,43 @@ describe("project membership runs one way", () => {
 });
 
 describe("message ids have room to be unique", () => {
-  test("64 bits, not 32", () => {
-    // A collision dropped the new message but still wrote its delivery row, so the
-    // recipient got the OLDER message's content under the new id. Silent, and the worst
-    // failure a message bus can have.
+  test("the REAL generator emits 64 bits, not 32", async () => {
+    // Test the actual mkId the broker uses, not a hand-copied duplicate — a duplicate
+    // stays green while the real generator regresses. A collision dropped the new
+    // message but still wrote its delivery row, handing the recipient the OLDER
+    // message's content under the new id. Silent, and the worst failure a bus can have.
+    const { newMessageId } = await import("../src/broker/server.ts");
     const ids = new Set<string>();
-    for (let i = 0; i < 5000; i++) ids.add(`msg-${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`);
+    for (let i = 0; i < 5000; i++) ids.add(newMessageId());
     expect(ids.size).toBe(5000);
-    const sample = [...ids][0] as string;
-    expect(sample.replace("msg-", "").length).toBe(16); // 16 hex chars = 64 bits
+    expect((newMessageId().replace("msg-", "")).length).toBe(16); // 16 hex = 64 bits
+  });
+});
+
+describe("the watcher's poll does not repaint the user's tab", () => {
+  test("a non-consuming peek does not notify; a consuming read does", () => {
+    // check() fired the notifier on every peek, so the 10s watcher made the broker
+    // repaint the session's badge forever, fighting whatever the user put there.
+    const backend = new MemoryBackend();
+    const registry = new Registry(backend, () => 1000, { idleS: 300, offlineS: 1800 });
+    const notified: string[] = [];
+    let n = 0;
+    const router = new Router(backend, registry, () => 1000, () => `msg-${++n}`, null, (a) => notified.push(a));
+    const reg = (alias: string) => {
+      const r = router.handle({ v: 1, op: "register", args: { alias, sessionId: `s-${alias}`, cwd: "/w" } } as never) as {
+        result?: { token: string };
+      };
+      return r.result?.token as string;
+    };
+    const tok = reg("bob");
+    reg("alice");
+    router.handle({ v: 1, op: "send", args: { from: "alice", to: "bob", kind: "inform", body: "hi" } } as never);
+    notified.length = 0;
+
+    router.handle({ v: 1, op: "check", args: { alias: "bob", consume: false }, token: tok } as never);
+    expect(notified).toEqual([]); // a peek changes nothing → no repaint
+
+    router.handle({ v: 1, op: "check", args: { alias: "bob", consume: true }, token: tok } as never);
+    expect(notified).toContain("bob"); // a consuming read did change the mailbox
   });
 });

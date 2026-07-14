@@ -43,6 +43,8 @@ export interface StorageBackend {
 
   /** Take exclusive ownership of a project ask. False when somebody already has it. */
   claimProject(msgId: string, alias: string): boolean;
+  /** Drop a claim so the ask can be taken again — used when the claimer has gone. */
+  releaseClaim(msgId: string): void;
   /** Who owns this project ask, if anyone. */
   projectClaim(msgId: string): string | null;
   /** "Not me" — this member steps back without settling the ask for anyone else. */

@@ -64,7 +64,8 @@ log "watcher up (sid=$SID interval=${INTERVAL}s)"
 # The loop cannot run without python3. Absent, every tick fails identically and the
 # session is deaf with nothing to show for it — the exact silence this whole watcher
 # exists to prevent. So say it once, out loud, on the one channel the agent reads.
-if ! command -v python3 > /dev/null 2>&1; then
+PY="${IPC_WATCH_PYTHON:-python3}"
+if ! command -v "$PY" > /dev/null 2>&1; then
   log "FATAL: python3 not found — no wake surface for this session"
   printf 'ipc: WAKE SURFACE DOWN — python3 is not on PATH, so this session will not be woken by incoming mail. Peers can still reach you at a turn boundary.\n'
   exit 1
@@ -104,7 +105,7 @@ snapshot() {
     "$CIPC" inbox "$1" 2>/dev/null
     echo "---IPC-SPLIT---"
     "$CIPC" inbox --project 2>/dev/null
-  } | python3 -c '
+  } | "$PY" -c '
 import sys, json
 raw = sys.stdin.read().split("---IPC-SPLIT---")
 if len(raw) != 2:
@@ -169,7 +170,7 @@ while :; do
     else
       new="$(comm -13 "$STATE/seen" "$STATE/cur_ids")"
       if [ -n "$new" ]; then
-        wake="$(printf '%s\n' "$cur" | python3 -c '
+        wake="$(printf '%s\n' "$cur" | "$PY" -c '
 import sys
 new_ids = set(sys.argv[1].split())
 items, origins = [], set()

@@ -332,6 +332,10 @@ export class SqliteBackend implements StorageBackend {
     return r.changes > 0;
   }
 
+  releaseClaim(msgId: string): void {
+    this.db.query(`DELETE FROM project_claims WHERE msg_id = ?`).run(msgId);
+  }
+
   projectClaim(msgId: string): string | null {
     const r = this.db.query(`SELECT alias FROM project_claims WHERE msg_id = ?`).get(msgId) as
       | { alias: string }
