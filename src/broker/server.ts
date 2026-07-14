@@ -209,6 +209,10 @@ export function main(): void {
   }
   mkdirSync(dirname(config.socketPath), { recursive: true, mode: 0o700 });
   mkdirSync(dirname(config.dbPath), { recursive: true, mode: 0o700 });
+  // The pidfile's dir is NOT implied by the two above when the socket path is
+  // overridden — without it the broker binds the socket, then dies writing the
+  // pidfile: half-up, worse than down.
+  mkdirSync(dirname(config.pidPath), { recursive: true, mode: 0o700 });
   // Tighten dirs that may already exist from a pre-0.2 install (mkdir mode is a
   // no-op on an existing dir), so the cross-UID boundary holds after upgrade.
   for (const d of [dirname(config.socketPath), dirname(config.dbPath)]) {
