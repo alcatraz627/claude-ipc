@@ -222,11 +222,17 @@ import sys
 new_ids = set(sys.argv[1].split())
 primary = sys.argv[2]
 items, boxes = [], []
+seen_msgs = set()
 for line in sys.stdin:
     parts = line.rstrip("\n").split("\t")
     if len(parts) < 5 or parts[0] not in new_ids:
         continue
     if parts[1] in ("query", "request", "response"):
+        # A broadcast lands the SAME message in every one of our boxes —
+        # one message is one item, not one per mailbox it reached.
+        if parts[0] in seen_msgs:
+            continue
+        seen_msgs.add(parts[0])
         box = parts[3]
         tag = ", project" if box == "project" else ("" if box == primary else ", to " + box)
         if box not in boxes:

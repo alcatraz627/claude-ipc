@@ -178,6 +178,25 @@ describe("the wake path wakes an idle session", () => {
     expect(wake).toContain("claude-ipc inbox vb-boot"); // the read points at the box that holds it
   }, 30_000);
 
+  test("a broadcast into a dual-aliased recipient wakes ONCE — one message, not one per mailbox", async () => {
+    // The broker fans a broadcast out per live ALIAS, so a session holding two
+    // names receives the same msgId in both boxes. The wake formatter deduped by
+    // box but never by message — "2 actionable" for one message, with two read
+    // commands (gate finding, 2026-07-15). One message = one item on the wake line.
+    await rig.client.register("dual-boot", { sessionId: "s-dual2", cwd: "/w" });
+    await rig.client.register("dual-current", { sessionId: "s-dual2", cwd: "/w" });
+    await rig.client.register("third-party", { sessionId: "s-third", cwd: "/t" });
+    bindAlias("s-dual2", "dual-current");
+    const w = startWatcher("s-dual2");
+    await sleep(TICK * 1500);
+
+    await rig.client.send({ from: "third-party", to: "*", kind: "query", body: "everyone check in" });
+    const wake = await waitForWake(w, /everyone check in/);
+    expect(wake).toBeTruthy();
+    expect(wake).toContain("1 actionable"); // one message, whatever the box count
+    expect((wake!.match(/msg-w\d+/g) ?? []).length).toBe(1); // the msgId appears once
+  }, 30_000);
+
   test("it follows a rename, and inherits the adopted mailbox's unread mail", async () => {
     await rig.client.register("derived-1234", { sessionId: "s-bob", cwd: "/w" });
     await rig.client.register("ipc-doctor", { sessionId: "s-bob", cwd: "/w" });

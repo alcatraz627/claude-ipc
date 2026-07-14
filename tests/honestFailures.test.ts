@@ -105,6 +105,23 @@ describe("B3 · refusals are failures, not information", () => {
     expect(pending.length).toBe(0); // no dead ask, no notice
   });
 
+  test("an EMPTY reply into a cancelled ask learns the ask is dead, not that its body is empty", async () => {
+    await client.register("alice", { sessionId: "sA", cwd: "/a" });
+    await client.register("bob", { sessionId: "sB", cwd: "/b" });
+    const sent = await client.send({ from: "alice", to: "bob", kind: "query", body: "?" });
+    await client.cancel(sent.msgId, "alice");
+    let err: unknown;
+    try {
+      await client.reply({ from: "bob", corrId: sent.msgId, body: "  " });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(BrokerError);
+    // "the ask is dead" outranks "your body is empty" — otherwise the composer fixes
+    // the body and retries straight into the refusal they could have had now.
+    if (err instanceof BrokerError) expect(err.code).toBe("ask_cancelled");
+  });
+
   test("cancel of a nonexistent id is a refusal, not a success about nothing", async () => {
     await client.register("alice", { sessionId: "sA", cwd: "/a" });
     let err: unknown;

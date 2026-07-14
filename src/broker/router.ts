@@ -436,13 +436,6 @@ export class Router {
       errorCode?: ErrorCode;
     };
     if (!a.from || !a.corrId) return fail("bad_args", "reply needs from + corrId");
-    // An answer with no words is not an answer. Acking an empty reply as `terminal:true`
-    // told the sender they'd been answered while delivering zero bytes — the caller had
-    // its body dropped (e.g. passed as an unread flag) and never learned. An error reply
-    // is the one exception: its errorCode carries the meaning, so it may be body-less.
-    if (a.status !== "error" && !(a.body ?? "").trim()) {
-      return fail("empty_reply", "a reply needs a body — nothing was delivered. (The body is positional: reply <id> --from <you> \"<answer>\")");
-    }
     const denied = this.requireOwner(req, a.from); // you may only reply AS yourself
     if (denied) return denied;
     const origin = this.backend.originOf(a.corrId);
@@ -456,7 +449,7 @@ export class Router {
         const other = msg.fromAlias === a.from ? msg.toAlias : msg.fromAlias;
         return fail(
           "not_an_ask",
-          `${a.corrId} is a ${msg.kind}, not a question — you reply to answer an ask, not to continue a thread. ` +
+          `${a.corrId} is ${msg.kind === "inform" ? "an" : "a"} ${msg.kind}, not a question — you reply to answer an ask, not to continue a thread. ` +
             `To reply to ${other}, send them a new message: claude-ipc send --to ${other} --from ${a.from} "<your message>"`,
         );
       }
@@ -480,6 +473,14 @@ export class Router {
         `${origin.fromAlias} cancelled ${a.corrId} — your reply was NOT delivered, and no reply is owed. ` +
           `If the answer still matters, send it directly: claude-ipc send --to ${origin.fromAlias} --from ${a.from} "<your answer>"`,
       );
+    }
+    // An answer with no words is not an answer. Acking an empty reply as `terminal:true`
+    // told the sender they'd been answered while delivering zero bytes. Checked AFTER
+    // the cancellation above: "the ask is dead" outranks "your body is empty" — the
+    // composer should learn there's nothing to answer before they fix the body and
+    // retry into the same refusal. An error reply may be body-less (errorCode carries it).
+    if (a.status !== "error" && !(a.body ?? "").trim()) {
+      return fail("empty_reply", "a reply needs a body — nothing was delivered. (The body is positional: reply <id> --from <you> \"<answer>\")");
     }
     const terminal = a.terminal ?? true;
     const late = aw?.closed === true;
@@ -663,7 +664,12 @@ export class Router {
     // reports-success class the consent verbs were cured of.
     if (!origin) {
       const msg = this.backend.get(a.corrId);
-      if (msg) return fail("not_an_ask", `${a.corrId} is a ${msg.kind} — only your own open query/request can be cancelled`);
+      if (msg) {
+        return fail(
+          "not_an_ask",
+          `${a.corrId} is ${msg.kind === "inform" ? "an" : "a"} ${msg.kind} — only your own open query/request can be cancelled`,
+        );
+      }
       return fail("no_message", `no message with id ${a.corrId} — nothing to cancel`);
     }
     const denied = this.requireOwner(req, origin.fromAlias);
@@ -697,7 +703,15 @@ export class Router {
         });
         this.backend.append(note);
         this.backend.enqueue(note.id, d.toAlias);
-        this.notify(d.toAlias);
+        // A project mailbox has no tty of its own — badge the live sessions
+        // working in that tree instead, the same way send() does.
+        if (isProjectAddress(d.toAlias)) {
+          for (const e of this.registry.list()) {
+            if (e.status !== "offline" && withinProject(e.cwd, projectPath(d.toAlias))) this.notify(e.alias);
+          }
+        } else {
+          this.notify(d.toAlias);
+        }
       }
     }
     return ok({ cancelled: true });
