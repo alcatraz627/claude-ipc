@@ -12,6 +12,7 @@ import { chmodSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "n
 import { dirname } from "node:path";
 import { config } from "../config.ts";
 import { encodeFrame, FrameDecoder, type Request } from "../protocol.ts";
+import type { StorageBackend } from "../storage/base.ts";
 import { brokerLog } from "./log.ts";
 import { Registry } from "./registry.ts";
 import { Router } from "./router.ts";
@@ -128,7 +129,55 @@ function isAlive(pid: number): boolean {
 
 const nowS = (): number => Math.floor(Date.now() / 1000);
 
+/**
+ * One round of housekeeping, where no single failure can take the bus down.
+ *
+ * Client requests were already wrapped; this timer was not, so one corrupt row killed the
+ * broker and launchd restarted it into the same row, forever. A crash-loop costs every
+ * agent on the machine its IPC — far worse than a sweep that misses a beat. Jobs are
+ * isolated from each other, and failures are logged rather than swallowed.
+ */
+export function sweepOnce(deps: {
+  backend: StorageBackend;
+  registry: Registry;
+  now: () => number;
+  mkId: () => string;
+  retentionS?: number;
+  finalGraceS?: number;
+  registryRetentionS?: number;
+  onError?: (what: string, err: string) => void;
+}): void {
+  const { backend, registry, now, mkId } = deps;
+  const retention = deps.retentionS ?? config.retentionS;
+  const grace = deps.finalGraceS ?? config.reply.finalGraceS;
+  const regRetention = deps.registryRetentionS ?? config.registryRetentionS;
+  const jobs: [string, () => void][] = [
+    ["ttl-park/purge", () => tickSweeper(backend, now, mkId, retention)],
+    ["reply-deadlines", () => sweepReplyDeadlines(backend, now, mkId, grace)],
+    ["prune-peers", () => registry.pruneOffline(now() - regRetention)],
+  ];
+  for (const [what, run] of jobs) {
+    try {
+      run();
+    } catch (e) {
+      deps.onError?.(what, e instanceof Error ? (e.stack ?? e.message) : String(e));
+    }
+  }
+}
+
 export function main(): void {
+  // A floor under the whole daemon. Nothing here is supposed to throw, but this process
+  // is the only bus every agent on the machine has, and dying costs all of them their
+  // IPC — while launchd faithfully restarts us into whatever killed us. Staying up and
+  // degraded beats a crash-loop; the log is what makes the degradation visible rather
+  // than another silence.
+  process.on("uncaughtException", (e: Error) => {
+    brokerLog(config.logPath, `uncaught: ${e?.stack ?? e?.message ?? String(e)}`);
+  });
+  process.on("unhandledRejection", (e: unknown) => {
+    brokerLog(config.logPath, `unhandled rejection: ${e instanceof Error ? (e.stack ?? e.message) : String(e)}`);
+  });
+
   // Refuse to start a second broker over a live one — otherwise startBroker would
   // unlink the live socket out from under it, orphaning every connected peer.
   try {
@@ -175,9 +224,13 @@ export function main(): void {
   // fire-and-forget injection model, not fixable without an agent-side ack.)
   const inflight = backend.replayInflight();
   const sweeper = setInterval(() => {
-    tickSweeper(backend, nowS, mkId, config.retentionS); // park past-TTL asks, purge settled
-    sweepReplyDeadlines(backend, nowS, mkId, config.reply.finalGraceS); // chase unanswered asks
-    registry.pruneOffline(nowS() - config.registryRetentionS); // drop long-dead peers
+    sweepOnce({
+      backend,
+      registry,
+      now: nowS,
+      mkId,
+      onError: (what, e) => brokerLog(config.logPath, `sweep: ${what} failed: ${e}`),
+    });
   }, config.sweepIntervalS * 1000);
   const broker = startBroker({ router, socketPath: config.socketPath });
   writeFileSync(config.pidPath, String(process.pid));

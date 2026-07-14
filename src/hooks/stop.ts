@@ -32,12 +32,14 @@ export type PushDecision =
 const markerPath = (id: string): string => join(config.blockedDir, encodeURIComponent(id));
 const alreadyBlocked = (id: string): boolean => existsSync(markerPath(id));
 
-function markBlocked(id: string): void {
+/** Record that this ask has had its one block. False when we could not write it down. */
+function markBlocked(id: string): boolean {
   try {
     mkdirSync(config.blockedDir, { recursive: true });
     writeFileSync(markerPath(id), "");
+    return true;
   } catch {
-    // best-effort — a lost marker at worst blocks the same message a second time
+    return false;
   }
 }
 
@@ -72,6 +74,24 @@ export function decidePush(pending: Ask[], self: string, wasBlocked: (id: string
   return { kind: "remind", context: `Still awaiting your reply: ${items}. Use claude-ipc reply … or decline.` };
 }
 
+/**
+ * Turn the decision into an action, and never block on a promise we can't keep.
+ *
+ * "Blocks once" rests entirely on being able to write the marker down: an ask with no
+ * marker reads as fresh, so a write that keeps failing would re-block at EVERY turn end,
+ * for good — the human wedged out of their own session by a reminder about someone
+ * else's mail. If we cannot record it, we say it quietly instead.
+ */
+export function applyPush(
+  d: PushDecision,
+  record: (id: string) => boolean,
+): { kind: "block"; reason: string } | { kind: "context"; text: string } | { kind: "none" } {
+  if (d.kind === "remind") return { kind: "context", text: d.context };
+  if (d.kind !== "block") return { kind: "none" };
+  const recorded = d.mark.map(record).every(Boolean);
+  return recorded ? { kind: "block", reason: d.reason } : { kind: "context", text: d.reason };
+}
+
 export async function main(): Promise<void> {
   const input = await readHookInput();
   const alias = aliasFor(input);
@@ -96,13 +116,9 @@ export async function main(): Promise<void> {
     } catch {
       // project peek is best-effort; session mail already covered above
     }
-    const d = decidePush(pending, alias, alreadyBlocked);
-    if (d.kind === "block") {
-      for (const id of d.mark) markBlocked(id);
-      process.stdout.write(JSON.stringify({ decision: "block", reason: d.reason }));
-    } else if (d.kind === "remind") {
-      emitContext("Stop", d.context);
-    }
+    const out = applyPush(decidePush(pending, alias, alreadyBlocked), markBlocked);
+    if (out.kind === "block") process.stdout.write(JSON.stringify({ decision: "block", reason: out.reason }));
+    else if (out.kind === "context") emitContext("Stop", out.text);
   } catch {
     // broker down or check failed — never block the turn
   }
