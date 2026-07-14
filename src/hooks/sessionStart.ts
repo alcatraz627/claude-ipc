@@ -20,6 +20,20 @@ function isEphemeral(cwd: string): boolean {
   return config.noRegister || /^\/(private\/)?(tmp|var\/folders)\//.test(cwd);
 }
 
+/**
+ * Did the broker REFUSE this alias, as opposed to being unreachable?
+ *
+ * A refusal (taken, reserved, or otherwise rejected) means the alias isn't ours — fall
+ * back to the session id and don't drain or claim it. A broker that is DOWN throws a
+ * connection error instead, and the durable-log drain still works, so ownership holds.
+ */
+export function isRegisterRejection(e: unknown): boolean {
+  return (
+    e instanceof Error &&
+    (e.message.startsWith("alias_taken") || e.message.startsWith("bad_args") || e.message.startsWith("unauthorized"))
+  );
+}
+
 export async function main(): Promise<void> {
   const input = await readHookInput();
   const cwd = input.cwd ?? process.cwd();
@@ -60,15 +74,7 @@ export async function main(): Promise<void> {
       tty: process.env.CLAUDE_IPC_TTY ?? ttyForPid(process.ppid) ?? undefined,
     });
   } catch (e) {
-    // Any refusal — the name is taken, or it's reserved, or otherwise rejected — means
-    // this alias is not ours to use. Draining it would hand us someone else's mail, and
-    // writing its mapping would point our watcher at a mailbox we'll never receive on.
-    // A broker being DOWN is different: that throws a connection error, not a rejection,
-    // and the durable-log drain below still works, so ownership stays true for it.
-    const rejected =
-      e instanceof Error &&
-      (e.message.startsWith("alias_taken") || e.message.startsWith("bad_args") || e.message.startsWith("unauthorized"));
-    if (rejected) {
+    if (isRegisterRejection(e)) {
       owned = false;
       console.error(`[claude-ipc] can't register as "${alias}" (${(e as Error).message}); staying on the session id.`);
     }

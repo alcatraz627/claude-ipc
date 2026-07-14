@@ -21,7 +21,7 @@ import { monitorSnapshot } from "./monitor.ts";
  * the only place the boundary can hold for it. Written to stderr on purpose: stdout is a
  * JSON contract the watcher itself parses, and prose there would break the wake loop.
  */
-function railIfPeerMail(box: unknown): void {
+export function railIfPeerMail(box: unknown): void {
   const msgs = (box as { messages?: { kind?: string }[] })?.messages ?? [];
   if (msgs.some((m) => m.kind === "query" || m.kind === "request")) console.error(`\n${TRUST_RAIL}`);
 }

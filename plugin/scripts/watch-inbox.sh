@@ -78,7 +78,9 @@ fi
 # The session process is our grandparent, so hold onto it and stop when IT goes. The
 # reparented-to-init check still covers the simpler topologies.
 ORPHAN_REASON=""
-SESSION_PID="$(ps -o ppid= -p "${PPID:-0}" 2>/dev/null | tr -d ' ')"
+# The session process is our grandparent; an env override exists only so a test can point
+# this at a process it controls and kill it to prove the orphan-exit path.
+SESSION_PID="${IPC_WATCH_SESSION_PID:-$(ps -o ppid= -p "${PPID:-0}" 2>/dev/null | tr -d ' ')}"
 case "$SESSION_PID" in ''|0|1) SESSION_PID="" ;; esac
 log "watching session pid ${SESSION_PID:-unknown}"
 
