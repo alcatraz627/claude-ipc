@@ -16,7 +16,7 @@ import type { StorageBackend } from "../storage/base.ts";
 import { brokerLog } from "./log.ts";
 import { Registry } from "./registry.ts";
 import { Router } from "./router.ts";
-import { sweepReplyDeadlines, tickSweeper } from "./sweeper.ts";
+import { reclaimStaleMarkers, sweepReplyDeadlines, tickSweeper } from "./sweeper.ts";
 import { BadgeNotifier, ttyBadgeSink } from "../badge.ts";
 import { SqliteBackend } from "../storage/sqliteBackend.ts";
 
@@ -173,6 +173,18 @@ export function sweepOnce(deps: {
     ["ttl-park/purge", () => tickSweeper(backend, now, mkId, retention)],
     ["reply-deadlines", () => sweepReplyDeadlines(backend, now, mkId, grace)],
     ["prune-peers", () => registry.pruneOffline(now() - regRetention)],
+    [
+      "reclaim-markers",
+      () =>
+        reclaimStaleMarkers({
+          blockedDir: config.blockedDir,
+          aliasDir: config.aliasDir,
+          hasMessage: (id) => backend.get(id) !== null,
+          liveSessionIds: new Set(registry.list().map((e) => e.sessionId)),
+          now: now(),
+          aliasStaleS: regRetention,
+        }),
+    ],
   ];
   for (const [what, run] of jobs) {
     try {

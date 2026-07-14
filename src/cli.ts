@@ -532,6 +532,15 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
             const pid = Number(readFileSync(config.pidPath, "utf8").trim());
             process.kill(pid, "SIGTERM");
             out(`stopped broker (pid ${pid})`);
+            // A SIGTERM only sticks if nothing is supervising the process. Under
+            // launchd/systemd KeepAlive the broker respawns within seconds, so a bare
+            // `daemon stop` looks like it worked and doesn't — say so, and name the
+            // command that actually keeps it down.
+            out(
+              "note: if a service manager supervises the broker (launchd KeepAlive / systemd Restart), " +
+                "it will respawn. To keep it down, stop it there — e.g. " +
+                "launchctl bootout gui/$(id -u)/com.alcatraz.claude-ipc",
+            );
             return 0;
           } catch {
             out("broker not running (no pidfile)");

@@ -11,8 +11,66 @@
  * reaches the sender whenever it comes. Replaces the old terminal timeout error.
  */
 
+import { readdirSync, statSync, unlinkSync } from "node:fs";
+import { join } from "node:path";
 import { makeMessage } from "../models.ts";
 import type { StorageBackend } from "../storage/base.ts";
+
+/**
+ * Reclaim the per-message and per-session marker files that nothing else deletes.
+ *
+ * `blocked/` and `alias-by-sid/` accrete forever otherwise. A blocked-marker is
+ * dead once its message is purged; an alias file is dead once no live session
+ * claims it AND it's sat untouched past the retention window. Both checks are
+ * deliberately conservative — deleting a live session's alias file deafens it.
+ */
+export function reclaimStaleMarkers(deps: {
+  blockedDir: string;
+  aliasDir: string;
+  hasMessage: (id: string) => boolean;
+  liveSessionIds: Set<string>;
+  now: number;
+  aliasStaleS: number;
+}): { blocked: number; alias: number } {
+  let blocked = 0;
+  let alias = 0;
+  const dead = deps.now - deps.aliasStaleS;
+
+  try {
+    for (const name of readdirSync(deps.blockedDir)) {
+      const id = decodeURIComponent(name);
+      if (deps.hasMessage(id)) continue; // still a real message — keep its marker
+      try {
+        unlinkSync(join(deps.blockedDir, name));
+        blocked++;
+      } catch {
+        // raced with another sweep or already gone
+      }
+    }
+  } catch {
+    // no blocked dir yet — nothing to reclaim
+  }
+
+  try {
+    for (const name of readdirSync(deps.aliasDir)) {
+      if (name.endsWith(".tmp")) continue; // a rename in flight, not a mapping
+      const sid = decodeURIComponent(name);
+      if (deps.liveSessionIds.has(sid)) continue; // a registered session owns this name
+      const path = join(deps.aliasDir, name);
+      try {
+        if (statSync(path).mtimeMs / 1000 >= dead) continue; // touched recently — a live session may still hold it
+        unlinkSync(path);
+        alias++;
+      } catch {
+        // raced or already gone
+      }
+    }
+  } catch {
+    // no alias dir yet
+  }
+
+  return { blocked, alias };
+}
 
 export function tickSweeper(
   backend: StorageBackend,
