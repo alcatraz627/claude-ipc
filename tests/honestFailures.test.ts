@@ -105,6 +105,41 @@ describe("B3 · refusals are failures, not information", () => {
     expect(pending.length).toBe(0); // no dead ask, no notice
   });
 
+  test("cancel of a nonexistent id is a refusal, not a success about nothing", async () => {
+    await client.register("alice", { sessionId: "sA", cwd: "/a" });
+    let err: unknown;
+    try {
+      await client.cancel("msg-does-not-exist", "alice");
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(BrokerError);
+    if (err instanceof BrokerError) expect(err.code).toBe("no_message");
+  });
+
+  test("cancel of an inform (not an ask) names the real problem", async () => {
+    await client.register("alice", { sessionId: "sA", cwd: "/a" });
+    await client.register("bob", { sessionId: "sB", cwd: "/b" });
+    const sent = await client.send({ from: "alice", to: "bob", kind: "inform", body: "fyi" });
+    let err: unknown;
+    try {
+      await client.cancel(sent.msgId, "alice");
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(BrokerError);
+    if (err instanceof BrokerError) expect(err.code).toBe("not_an_ask");
+  });
+
+  test("cancelling twice stays truthful — the second cancel is an idempotent success", async () => {
+    await client.register("alice", { sessionId: "sA", cwd: "/a" });
+    await client.register("bob", { sessionId: "sB", cwd: "/b" });
+    const sent = await client.send({ from: "alice", to: "bob", kind: "query", body: "?" });
+    await client.cancel(sent.msgId, "alice");
+    const again = await client.cancel(sent.msgId, "alice");
+    expect(again.cancelled).toBe(true); // it IS cancelled — the claim matches the state
+  });
+
   test("an allowlisted target refuses outsiders with ok:false (not an ok-wrapped error)", () => {
     const backend2 = new MemoryBackend();
     const registry2 = new Registry(backend2, () => 1000, { idleS: 300, offlineS: 1800 });

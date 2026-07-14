@@ -658,10 +658,16 @@ export class Router {
     const a = req.args as { corrId?: string };
     if (!a.corrId) return fail("bad_args", "cancel needs corrId");
     const origin = this.backend.originOf(a.corrId); // only the asker cancels their ask
-    if (origin) {
-      const denied = this.requireOwner(req, origin.fromAlias);
-      if (denied) return denied;
+    // No origin = nothing to cancel — saying `cancelled:true` about a message that
+    // doesn't exist (or was never an ask) is a claim nothing backs, the same no-op-
+    // reports-success class the consent verbs were cured of.
+    if (!origin) {
+      const msg = this.backend.get(a.corrId);
+      if (msg) return fail("not_an_ask", `${a.corrId} is a ${msg.kind} — only your own open query/request can be cancelled`);
+      return fail("no_message", `no message with id ${a.corrId} — nothing to cancel`);
     }
+    const denied = this.requireOwner(req, origin.fromAlias);
+    if (denied) return denied;
     // Tell the recipient the ask was withdrawn, rather than letting them find out by
     // composing an answer into a refusal (a field agent lost a finished report that
     // way). A copy they never saw is consumed silently; a copy already in front of
