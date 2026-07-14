@@ -422,7 +422,22 @@ export class Router {
     const denied = this.requireOwner(req, a.from); // you may only reply AS yourself
     if (denied) return denied;
     const origin = this.backend.originOf(a.corrId);
-    if (!origin) return fail("no_origin", `no message for corrId ${a.corrId}`);
+    if (!origin) {
+      // The id may be a real message that simply isn't a repliable ASK — a response or
+      // an inform. You reply to answer an open question; to keep a thread going past
+      // that, you SEND. Say which it is and give the exact command, instead of the
+      // dead-end "no message" (the message is right there in their inbox).
+      const msg = this.backend.get(a.corrId);
+      if (msg) {
+        const other = msg.fromAlias === a.from ? msg.toAlias : msg.fromAlias;
+        return fail(
+          "not_an_ask",
+          `${a.corrId} is a ${msg.kind}, not a question — you reply to answer an ask, not to continue a thread. ` +
+            `To reply to ${other}, send them a new message: claude-ipc send --to ${other} --from ${a.from} "<your message>"`,
+        );
+      }
+      return fail("no_origin", `no message with id ${a.corrId}`);
+    }
     const aw = this.backend.getAwaiting(a.corrId);
     // Drop only if the sender explicitly cancelled. Otherwise deliver — even after
     // a timeout fired: a real (if late) answer beats a provisional timeout, and a

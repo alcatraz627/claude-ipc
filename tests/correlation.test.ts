@@ -173,6 +173,23 @@ describe("correlation, consent, timeouts", () => {
     expect((await client.check("alice")).messages.length).toBe(0);
   });
 
+  test("replying to a RESPONSE steers you to send, instead of a dead-end 'no message'", async () => {
+    // The peer answered; you want to keep the thread going and naturally try to reply to
+    // their reply. That id isn't a repliable ask, so the old error said "no message for
+    // corrId" — a lie, it's right there in your inbox. Now it names the fix.
+    const q = await client.send({ from: "alice", to: "bob", kind: "query", body: "base url?" });
+    const r = await client.reply({ from: "bob", corrId: q.msgId, body: "localhost:3000" });
+    const respId = r.msgId as string; // bob's response
+
+    await expect(client.reply({ from: "alice", corrId: respId, body: "thanks!" })).rejects.toThrow(
+      /not_an_ask.*send --to bob --from alice/s,
+    );
+  });
+
+  test("replying to a genuinely unknown id still says no_origin", async () => {
+    await expect(client.reply({ from: "bob", corrId: "msg-does-not-exist", body: "x" })).rejects.toThrow(/no_origin/);
+  });
+
   test("a query with no TTL is never auto-timed-out", async () => {
     const q = await client.send({ from: "alice", to: "bob", kind: "query", body: "no deadline", ttlS: undefined });
     // router default ttl in this suite is 60, so pass an explicit null-equivalent: send with a huge ttl is finite;
