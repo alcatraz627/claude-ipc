@@ -227,6 +227,32 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
         // it in scrollback and any log that captures the command. It is already saved,
         // owner-only, to the token file; the CLI never needs to echo it.
         out(`registered as "${alias}"${res.replaced ? " (rebound from a prior name)" : ""} — peers can now reach you as ${alias}.`);
+        // The moment a lane takes a name is the moment its predecessor's mail
+        // matters: owner directives stranded in a dead alias's box were only ever
+        // found when a peer said "go peek" by hand. Name the dead boxes still
+        // holding mail here, with the commands ready to run. Best-effort — a
+        // down broker must not fail the register.
+        try {
+          const list = ((await client.orphans(process.cwd())).orphans ?? []) as { alias: string; pending: number }[];
+          const preds = list.filter((o) => o.alias !== alias && o.pending > 0);
+          if (preds.length) {
+            const shown = preds.slice(0, 5);
+            const tail =
+              preds.length > shown.length ? [`  … +${preds.length - shown.length} more (claude-ipc orphans --project)`] : [];
+            out(
+              [
+                `predecessor mail in this project — dead sessions still hold unread messages:`,
+                ...shown.map(
+                  (o) =>
+                    `  ${o.alias} holds ${o.pending} — peek: claude-ipc inbox ${o.alias} · claim: claude-ipc inbox ${o.alias} --consume`,
+                ),
+                ...tail,
+              ].join("\n"),
+            );
+          }
+        } catch {
+          // orphan discovery is advisory; the registration above already succeeded
+        }
         return 0;
       }
       case "send": {

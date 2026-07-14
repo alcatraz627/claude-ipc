@@ -47,6 +47,27 @@ describe("CLI", () => {
     expect(lines.join("\n")).toContain("alice");
   });
 
+  // A3 — successor discoverability at the exact moment it matters. Owner directives
+  // stranded in a dead lane's mailbox were only found when a peer said "go peek" by
+  // hand (19 unread all day, 2026-07-14). Taking a name in a project now names the
+  // dead boxes still holding mail, with the peek/claim commands ready to run.
+  test("register surfaces a dead predecessor's unread mail in this project", async () => {
+    const c = new Client(sock);
+    await c.register("pred-lane-x", { sessionId: "s-pred", cwd: process.cwd() });
+    await c.register("mailer-x", { sessionId: "s-mailer", cwd: "/m" });
+    await c.send({ from: "mailer-x", to: "pred-lane-x", kind: "request", body: "owner directive needing ack" });
+    await c.leave("pred-lane-x"); // the lane died with mail waiting
+    process.env.CLAUDE_CODE_SESSION_ID = `sid-succ-${Math.random().toString(36).slice(2, 8)}`;
+    try {
+      expect(await run(["register", "succ-lane-x"], { socketPath: sock })).toBe(0);
+    } finally {
+      delete process.env.CLAUDE_CODE_SESSION_ID;
+    }
+    const outText = lines.join("\n");
+    expect(outText).toContain("pred-lane-x holds 1");
+    expect(outText).toContain("claude-ipc inbox pred-lane-x"); // the peek command, ready to run
+  });
+
   test("send then inbox round-trips a message", async () => {
     await new Client(sock).register("bob", { sessionId: "sB", cwd: "/b" });
     await run(["send", "--from", "alice", "--to", "bob", "--kind", "inform", "hi", "there"], { socketPath: sock });
