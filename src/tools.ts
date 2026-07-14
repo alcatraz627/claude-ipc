@@ -68,9 +68,9 @@ export function createTools(client: Client, me: SelfIdentity) {
       client.awaitReply(me.alias, a.corrId, a.timeoutMs, a.untilTerminal),
 
     ipc_history: (a: { peer?: string; since?: number; conversationId?: string } = {}): Promise<unknown> =>
-      client.history(a),
+      client.history(a, me.alias),
 
-    ipc_status: (a: { msgId: string }): Promise<unknown> => client.status(a.msgId),
+    ipc_status: (a: { msgId: string }): Promise<unknown> => client.status(a.msgId, me.alias),
 
     // The compose flow: returns live peers for the HUMAN to pick from. The agent
     // must surface these in the host's input UI (pick_one + form) and let the user

@@ -364,7 +364,7 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
         const q: { peer?: string; since?: number } = {};
         if (flags.peer) q.peer = String(flags.peer);
         if (flags.since) q.since = Number(flags.since);
-        out(await client.history(q));
+        out(await client.history(q, resolveSelfAlias()));
         return 0;
       }
       case "status": {
@@ -373,7 +373,7 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
           console.error("status <msg-id>");
           return 2;
         }
-        out(await client.status(msgId));
+        out(await client.status(msgId, resolveSelfAlias()));
         return 0;
       }
       case "accept": {

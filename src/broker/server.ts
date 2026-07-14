@@ -202,7 +202,10 @@ export function main(): void {
   }
   const backend = new SqliteBackend(config.dbPath);
   const registry = new Registry(backend, nowS, config.liveness);
-  const mkId = (): string => `msg-${crypto.randomUUID().slice(0, 8)}`;
+  // 64 bits, not 32. At 32 a collision was a coin-flip around 65k messages, and
+  // `INSERT OR IGNORE` made it silent: the new message was dropped while its delivery
+  // row was still written, handing the recipient the OLDER message under the new id.
+  const mkId = (): string => `msg-${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
   const notifier = new BadgeNotifier(backend, registry, ttyBadgeSink, config.badge);
   const router = new Router(
     backend,

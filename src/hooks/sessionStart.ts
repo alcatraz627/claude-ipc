@@ -27,12 +27,11 @@ export async function main(): Promise<void> {
   const alias = aliasFor(input);
   const client = new Client(config.socketPath, { dbPath: config.dbPath });
 
-  // Bridge session id → friendly alias so the per-turn hooks (which never see the
-  // title) poll this same mailbox. Only when the two differ: a session with no
-  // title resolves to its raw id and needs no mapping (unchanged behavior).
-  if (input.session_id && alias !== input.session_id) {
-    writeAliasForSession(input.session_id, alias);
-  }
+  // The alias→session mapping is written further down, only once the registry has
+  // actually GIVEN us this alias. Recording it first meant that when two sessions wanted
+  // the same name, the loser kept the mapping anyway — and then every later hook acted
+  // as an alias it held no token for, was refused, and swallowed the error. It went
+  // quietly deaf for the rest of its life, over a name it never owned.
 
   // Capture this session's transcript path for the MCP send path to attach as a
   // contextPtr — the hook is the only place it's natively available.
@@ -68,6 +67,16 @@ export async function main(): Promise<void> {
     // else: broker down at startup — the backlog drain below still works off the
     // durable log, so the offline-note guarantee holds.
   }
+
+  // Now that the name is ours, point the per-turn hooks at it. A session that lost the
+  // race keeps no mapping and stays addressable as its session id, which it does own.
+  if (owned && input.session_id && alias !== input.session_id) {
+    writeAliasForSession(input.session_id, alias);
+  }
+  const collision = owned
+    ? null
+    : `claude-ipc: the name "${alias}" is already held by another live session, so you are addressable as ` +
+      `${input.session_id} instead. Pick a different name with: claude-ipc register <name>`;
 
   // Drain the offline backlog independently: degraded mode reads it from SQLite,
   // so a session started while the broker is down still receives its queued notes.
@@ -109,7 +118,7 @@ export async function main(): Promise<void> {
     // broker down — orphan surfacing is best-effort
   }
 
-  const parts = [backlog, roster, orphanNote].filter((p): p is string => p !== null);
+  const parts = [collision, backlog, roster, orphanNote].filter((p): p is string => p !== null);
   if (parts.length) emitContext("SessionStart", parts.join("\n\n"));
 }
 

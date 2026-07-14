@@ -9,7 +9,14 @@
 
 import { ttyForPid } from "../badge.ts";
 import { makeMessage, type DeliveredVia, type ErrorCode, type Kind, type Message, type Status } from "../models.ts";
-import { isProjectAddress, normalizeProjectPath, projectAddress, projectPath, sameLineage } from "../projectAddress.ts";
+import {
+  isProjectAddress,
+  normalizeProjectPath,
+  projectAddress,
+  projectPath,
+  sameLineage,
+  withinProject,
+} from "../projectAddress.ts";
 import { PROTOCOL_VERSION, type Request, type Response } from "../protocol.ts";
 import type { StorageBackend } from "../storage/base.ts";
 import type { Registry } from "./registry.ts";
@@ -94,6 +101,16 @@ export class Router {
     }
   }
 
+  /**
+   * Names no session may take.
+   *
+   * The broker signs its own notices "ipc" — the nudges, the parked notices, the "no
+   * reply yet, you may act without them". A peer holding that name could mint any of
+   * those, and a recipient has no way to tell the difference. "*" is the broadcast
+   * address and belongs to nobody either.
+   */
+  private static readonly RESERVED = new Set(["ipc", "*"]);
+
   private register(req: Request): Response {
     const a = req.args as {
       alias?: string;
@@ -104,6 +121,9 @@ export class Router {
       tty?: string;
     };
     if (!a.alias || !a.sessionId) return fail("bad_args", "register needs alias + sessionId");
+    if (Router.RESERVED.has(a.alias)) {
+      return fail("bad_args", `"${a.alias}" is reserved — the broker speaks under that name. Pick another.`);
+    }
     const tty = a.tty ?? (a.pid ? ttyForPid(a.pid) : null);
     const result = this.registry.register(
       a.alias,
@@ -214,7 +234,7 @@ export class Router {
     // working in that tree instead, so their channels/badges see it.
     if (isProjectAddress(a.to)) {
       for (const e of this.registry.list()) {
-        if (e.status !== "offline" && sameLineage(e.cwd, projectPath(a.to))) this.notify(e.alias);
+        if (e.status !== "offline" && withinProject(e.cwd, projectPath(a.to))) this.notify(e.alias);
       }
     }
 
@@ -255,8 +275,9 @@ export class Router {
         const denied = this.requireProjectMember(req, a.project);
         if (denied) return denied;
       }
-      const messages = this.projectMailboxes(a.project).flatMap((addr) =>
-        this.backend.pending(addr, { consume: a.consume ?? false }),
+      const consuming = a.consume ?? false;
+      const messages = this.projectMailboxes(a.project, !consuming).flatMap((addr) =>
+        this.backend.pending(addr, { consume: consuming }),
       );
       return ok({ messages: this.stillOwedBy(messages, this.aliasOfToken(req)) });
     }
@@ -307,7 +328,7 @@ export class Router {
       if (isProjectAddress(addr)) continue; // project mail is not orphaned — it waits by design
       const e = entries.get(addr);
       if (e && e.status !== "offline") continue; // owner can still wake — not an orphan
-      if (dir && (!e?.cwd || !sameLineage(e.cwd, dir))) continue;
+      if (dir && (!e?.cwd || !withinProject(e.cwd, dir))) continue;
       out.push({
         alias: addr,
         cwd: e?.cwd ?? null,
@@ -320,9 +341,17 @@ export class Router {
   }
 
   /** Project addresses whose path shares lineage with the given directory. */
-  private projectMailboxes(dir: string): string[] {
+  private projectMailboxes(dir: string, peek = false): string[] {
     const d = normalizeProjectPath(dir);
-    return this.backend.projectAddresses().filter((addr) => sameLineage(projectPath(addr), d));
+    // Peeking runs BOTH ways on purpose — a repo-root session may read what its
+    // subdirectories were sent, and vice versa; visibility of a project mailbox is
+    // deliberately open. CONSUMING does not: you may only claim mail addressed to a
+    // directory you actually work inside. Otherwise a session opened in the home
+    // directory is a "member" of every project on the machine and its per-turn hook
+    // quietly drains all of them.
+    return this.backend
+      .projectAddresses()
+      .filter((addr) => (peek ? sameLineage(projectPath(addr), d) : withinProject(d, projectPath(addr))));
   }
 
   /**
@@ -357,7 +386,7 @@ export class Router {
     if (!req.token) return fail("unauthorized", "consuming project mail needs a session token");
     const d = normalizeProjectPath(dir);
     for (const e of this.registry.list()) {
-      if (this.registry.tokenOf(e.alias) === req.token && sameLineage(e.cwd, d)) return null;
+      if (this.registry.tokenOf(e.alias) === req.token && withinProject(e.cwd, d)) return null;
     }
     return fail("unauthorized", `no session you own works under ${d}`);
   }
@@ -566,8 +595,13 @@ export class Router {
   private status(req: Request): Response {
     const a = req.args as { msgId?: string };
     if (!a.msgId) return fail("bad_args", "status needs msgId");
+    const self = this.aliasOfToken(req);
+    if (!self) return fail("unauthorized", "status needs a registered session's token");
     const message = this.backend.get(a.msgId);
     if (!message) return fail("not_found", `no message ${a.msgId}`);
+    if (!this.involves(message, self)) {
+      return fail("unauthorized", `${a.msgId} is not yours — you were neither its sender nor its recipient`);
+    }
     return ok({
       message,
       deliveries: this.backend.deliveriesFor(a.msgId),
@@ -576,9 +610,30 @@ export class Router {
   }
 
   /** Audit query: who/what/when, filterable by peer, time, and conversation. */
+  /**
+   * Your traffic, not everyone's.
+   *
+   * This used to need no token at all and hand back every message body on the machine —
+   * plus the transcript pointers attached to them, which lead to other sessions' entire
+   * conversations. The threat here is not a burglar; it is a well-meaning peer running
+   * `history` to debug something and inhaling the whole machine into its context.
+   */
   private history(req: Request): Response {
     const a = req.args as { peer?: string; since?: number; conversationId?: string };
-    return ok({ messages: this.backend.history(a) });
+    const self = this.aliasOfToken(req);
+    const messages = this.backend
+      .history(a)
+      .map((m) => (self && this.involves(m, self) ? m : { ...m, body: "", contextPtr: null }));
+    return ok({ messages });
+  }
+
+  /** Was this session either end of the message — or a member of the project it went to? */
+  private involves(m: Message, self: string): boolean {
+    if (m.fromAlias === self || m.toAlias === self) return true;
+    if (m.toAlias === "*") return true;
+    if (!isProjectAddress(m.toAlias)) return false;
+    const e = this.registry.get(self);
+    return Boolean(e?.cwd && withinProject(e.cwd, projectPath(m.toAlias)));
   }
 
   /** Non-blocking peek: has a correlated reply landed in this alias's inbox yet? */

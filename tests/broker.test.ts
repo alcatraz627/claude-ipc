@@ -78,7 +78,7 @@ describe("broker end-to-end", () => {
     for (let i = 0; i < 30; i++) {
       await client.send({ from: "alice", to: "bob", kind: "inform", body: `${i}:${body}` });
     }
-    const log = await client.history({});
+    const log = await client.history({}, "alice");
     expect(log.messages.length).toBe(30);
     expect(log.messages.at(-1).body).toBe(`29:${body}`);
   });

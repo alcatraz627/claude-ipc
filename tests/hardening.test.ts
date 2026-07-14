@@ -62,7 +62,7 @@ describe("status + context pointer", () => {
   test("status returns a message's deliveries + responses", async () => {
     const q = await client.send({ from: "alice", to: "bob", kind: "query", body: "?" });
     await client.reply({ from: "bob", corrId: q.msgId, body: "answer" });
-    const s = await client.status(q.msgId);
+    const s = await client.status(q.msgId, "bob"); // bob is the registered party here
     expect(s.message.id).toBe(q.msgId);
     expect(s.deliveries.length).toBe(1);
     expect(s.deliveries[0].toAlias).toBe("bob");
@@ -79,7 +79,7 @@ describe("status + context pointer", () => {
   test("ipc_send carries a context pointer back to the sender's session", async () => {
     const alice = createTools(client, { alias: "alice", sessionId: "sess-A", cwd: "/work/be" });
     const sent = (await alice.ipc_send({ to: "bob", kind: "inform", body: "fyi" })) as { msgId: string };
-    const s = await client.status(sent.msgId);
+    const s = await client.status(sent.msgId, "bob"); // addressed to bob, who holds a token
     expect(s.message.contextPtr.sessionId).toBe("sess-A");
     expect(s.message.contextPtr.cwd).toBe("/work/be");
   });

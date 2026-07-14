@@ -170,7 +170,7 @@ export class Client {
     const db = new SqliteBackend(this.fallback!.dbPath);
     try {
       if (op === "send") {
-        const id = `msg-${crypto.randomUUID().slice(0, 8)}`;
+        const id = `msg-${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`; // 64 bits — see server.mkId
         db.append(
           makeMessage({
             id,
@@ -240,11 +240,13 @@ export class Client {
   list(): Promise<any> {
     return this.call("list", {});
   }
-  history(q: { peer?: string; since?: number; conversationId?: string } = {}): Promise<any> {
-    return this.call("history", { ...q });
+  // `asAlias` is who is asking. Without it you still see the flow — who talked to whom —
+  // but never the bodies, and never another session's transcript pointer.
+  history(q: { peer?: string; since?: number; conversationId?: string } = {}, asAlias?: string): Promise<any> {
+    return this.call("history", { ...q }, asAlias);
   }
-  status(msgId: string): Promise<any> {
-    return this.call("status", { msgId });
+  status(msgId: string, asAlias?: string): Promise<any> {
+    return this.call("status", { msgId }, asAlias);
   }
   count(alias: string): Promise<any> {
     return this.call("count", { alias }, alias);
