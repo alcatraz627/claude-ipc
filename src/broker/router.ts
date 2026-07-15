@@ -740,11 +740,11 @@ export class Router {
 
   /** A message's full lifecycle: the message, its per-recipient deliveries, and any responses. */
   private status(req: Request): Response {
-    const a = req.args as { msgId?: string };
+    const a = req.args as { msgId?: string; operator?: boolean };
     if (!a.msgId) return fail("bad_args", "status needs msgId");
     const message = this.backend.get(a.msgId);
     if (!message) return fail("not_found", `no message ${a.msgId}`);
-    const strip = this.stripForCaller(req);
+    const strip = this.stripForCaller(req, a.operator === true);
     return ok({
       message: strip(message),
       deliveries: this.backend.deliveriesFor(a.msgId),
@@ -763,15 +763,28 @@ export class Router {
    * The transcript POINTER is the one thing not sprayed cross-session (see stripForCaller).
    */
   private history(req: Request): Response {
-    const a = req.args as { peer?: string; since?: number; conversationId?: string };
-    const strip = this.stripForCaller(req);
+    const a = req.args as { peer?: string; since?: number; conversationId?: string; operator?: boolean };
+    const strip = this.stripForCaller(req, a.operator === true);
     return ok({ messages: this.backend.history(a).map(strip) });
   }
 
-  /** Redact the transcript pointer from any message the caller isn't a party to. */
-  private stripForCaller(req: Request): (m: Message) => Message {
+  /**
+   * What a caller may see of a message it isn't a party to.
+   *
+   * A party (sender/recipient, or a session in the message's project tree) sees
+   * everything; everyone else gets routing metadata but not the body or transcript
+   * pointer — the content that turns "monitor the fabric" into "read private
+   * traffic". The operator opts into the full firehose explicitly (`--operator`);
+   * a confused agent's reflexive history() never carries that flag.
+   */
+  private static readonly HIDDEN_BODY = "[hidden — you are not a party to this message; run with --operator to see all bodies]";
+  private stripForCaller(req: Request, operator: boolean): (m: Message) => Message {
     const self = this.aliasOfToken(req);
-    return (m) => (self && this.involves(m, self) ? m : { ...m, contextPtr: null });
+    return (m) => {
+      if (operator) return m;
+      if (self && this.involves(m, self)) return m;
+      return { ...m, body: Router.HIDDEN_BODY, contextPtr: null };
+    };
   }
 
   /** Was this session either end of the message — or a member of the project it went to? */

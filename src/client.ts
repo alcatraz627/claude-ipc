@@ -261,11 +261,13 @@ export class Client {
   }
   // `asAlias` is who is asking. Without it you still see the flow — who talked to whom —
   // but never the bodies, and never another session's transcript pointer.
-  history(q: { peer?: string; since?: number; conversationId?: string } = {}, asAlias?: string): Promise<any> {
-    return this.call("history", { ...q }, asAlias);
+  // `operator` opts into the full-machine view (every body); default false, so a
+  // caller sees bodies only for messages it's a party to (or a project peer of).
+  history(q: { peer?: string; since?: number; conversationId?: string } = {}, asAlias?: string, operator = false): Promise<any> {
+    return this.call("history", { ...q, operator }, asAlias);
   }
-  status(msgId: string, asAlias?: string): Promise<any> {
-    return this.call("status", { msgId }, asAlias);
+  status(msgId: string, asAlias?: string, operator = false): Promise<any> {
+    return this.call("status", { msgId, operator }, asAlias);
   }
   count(alias: string): Promise<any> {
     return this.call("count", { alias }, alias);

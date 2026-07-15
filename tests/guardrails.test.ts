@@ -52,16 +52,48 @@ describe("the broker's own name is not for sale", () => {
 });
 
 describe("local visibility, but no cross-session transcript pointers", () => {
-  test("the operator's log shows bodies — the whole point of a monitoring tool", () => {
+  // D2 middle path (user decision 2026-07-15): a caller sees a body only if it's a
+  // party (sender/recipient or a project-tree peer) OR it explicitly asks with
+  // --operator. A confused agent's reflexive history() carries no flag and no
+  // token, so it can't slurp cross-session traffic; the human passes --operator.
+  test("a non-party sees routing metadata but NOT the body (D2 closed)", () => {
+    const { call, reg } = harness();
+    reg("alice", "/proj-a");
+    reg("bob", "/proj-a");
+    reg("nosy", "/proj-z"); // a different project — not a party, not a project peer
+    call("send", { from: "alice", to: "bob", kind: "inform", body: "the deploy password is hunter2" }, "alice");
+
+    const seen = call("history", {}, "nosy").result?.messages as { body: string; fromAlias: string }[];
+    expect(seen[0]?.fromAlias).toBe("alice"); // routing metadata is still visible
+    expect(seen.some((m) => m.body.includes("hunter2"))).toBe(false); // the secret is not
+    expect(seen[0]?.body).toContain("--operator"); // the redaction names the way in
+  });
+
+  test("--operator gives the human the full-machine firehose (bodies and all)", () => {
     const { call, reg } = harness();
     reg("alice");
     reg("bob");
     call("send", { from: "alice", to: "bob", kind: "inform", body: "the build is green" }, "alice");
 
-    // A human running `log`/`tail` from the shell holds no session token. Blanking bodies
-    // for them (an earlier over-correction) made the monitor content-blind for its owner.
-    const msgs = call("history", {}).result?.messages as { body: string }[];
-    expect(msgs.some((m) => m.body === "the build is green")).toBe(true);
+    const tokenless = call("history", {}).result?.messages as { body: string }[];
+    expect(tokenless.some((m) => m.body === "the build is green")).toBe(false); // scoped by default
+    const operator = call("history", { operator: true }).result?.messages as { body: string }[];
+    expect(operator.some((m) => m.body === "the build is green")).toBe(true); // firehose on request
+  });
+
+  test("project-addressed mail is visible to a project peer without the flag; a direct message between others is not", () => {
+    const { call, reg } = harness();
+    reg("alice", "/team/app");
+    reg("bob", "/team/app");
+    reg("carol", "/team/app"); // same project tree
+    // Project mail is the SHARED surface — a peer in the tree is a party to it.
+    call("send", { from: "alice", to: "proj:/team/app", kind: "inform", body: "team-wide notice" }, "alice");
+    // A direct message is private to its two ends, even for a project-mate.
+    call("send", { from: "alice", to: "bob", kind: "inform", body: "just-for-bob" }, "alice");
+
+    const carolSees = call("history", {}, "carol").result?.messages as { body: string }[];
+    expect(carolSees.some((m) => m.body === "team-wide notice")).toBe(true); // shared project mail
+    expect(carolSees.some((m) => m.body === "just-for-bob")).toBe(false); // not a party to the direct msg
   });
 
   test("a message's transcript pointer is stripped for anyone not a party to it", () => {
@@ -82,17 +114,27 @@ describe("local visibility, but no cross-session transcript pointers", () => {
     expect(theirs[0]?.contextPtr).toBeNull(); // a non-party never gets the transcript pointer
   });
 
-  test("status is not a hard deny — it returns the lifecycle, pointer stripped for non-parties", () => {
+  test("status is not a hard deny — lifecycle visible, body redacted for non-parties", () => {
     const { call, reg } = harness();
-    reg("alice");
-    reg("bob");
-    reg("nosy");
-    const sent = call("send", { from: "alice", to: "bob", kind: "query", body: "?" }, "alice");
+    reg("alice", "/p-a");
+    reg("bob", "/p-a");
+    reg("nosy", "/p-z");
+    const sent = call("send", { from: "alice", to: "bob", kind: "query", body: "secret question" }, "alice");
     const id = sent.result?.msgId as string;
 
-    expect(call("status", { msgId: id }, "nosy").ok).toBe(true); // visible, not refused
+    // Not refused — the delivery lifecycle is observable to anyone local.
+    expect(call("status", { msgId: id }, "nosy").ok).toBe(true);
     expect(call("status", { msgId: id }, "alice").ok).toBe(true);
-    expect(call("status", { msgId: id }).ok).toBe(true); // even the tokenless operator
+    expect(call("status", { msgId: id }).ok).toBe(true);
+    // But the BODY inside follows the same party/operator rule as history.
+    const nosyBody = (call("status", { msgId: id }, "nosy").result?.message as { body: string }).body;
+    expect(nosyBody).not.toContain("secret question");
+    const aliceBody = (call("status", { msgId: id }, "alice").result?.message as { body: string }).body;
+    expect(aliceBody).toBe("secret question"); // a party sees it
+    const opBody = (call("status", { msgId: id }, undefined as unknown as string).result?.message as { body: string }).body;
+    expect(opBody).not.toContain("secret question"); // tokenless + no flag = redacted
+    const firehose = (call("status", { msgId: id, operator: true }).result?.message as { body: string }).body;
+    expect(firehose).toBe("secret question"); // --operator sees it
   });
 });
 

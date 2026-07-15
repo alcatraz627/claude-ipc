@@ -54,14 +54,17 @@ function kindTag(m: Msg): string {
   return c(color, m.errorCode ? `${m.kind}:${m.errorCode}` : m.kind);
 }
 
-export async function monitorSnapshot(client: Client): Promise<string> {
+export async function monitorSnapshot(
+  client: Client,
+  opts: { operator?: boolean; asAlias?: string } = {},
+): Promise<string> {
   let peers: Peer[];
   try {
     peers = (await client.list()).peers as Peer[];
   } catch {
     return c("31", "broker: DOWN") + " (run `claude-ipc daemon start`)";
   }
-  const all = (await client.history({})).messages as Msg[];
+  const all = (await client.history({}, opts.asAlias, opts.operator ?? false)).messages as Msg[];
   const recent = all.slice(-10);
 
   const header = dim(`claude-ipc · ${clock(Math.floor(Date.now() / 1000))}`);

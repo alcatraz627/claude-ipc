@@ -115,7 +115,7 @@ function parseDuration(s: string): number | null {
 
 // Presence-only flags: never consume the following token as a value, so they can
 // sit anywhere on the line (e.g. `reply <id> --from x --partial <body...>`).
-const BOOLEAN_FLAGS = new Set(["partial", "consume", "no-reply-expected"]);
+const BOOLEAN_FLAGS = new Set(["partial", "consume", "no-reply-expected", "operator", "all"]);
 
 function parse(argv: string[]): { cmd: string; positional: string[]; flags: Record<string, FlagValue> } {
   const cmd = argv[0] ?? "help";
@@ -181,14 +181,14 @@ const COMMAND_FLAGS: Record<string, string[]> = {
   count: ["alias", "project"],
   orphans: ["project"],
   prune: ["offline-for"],
-  log: ["peer", "since"],
-  status: [],
+  log: ["peer", "since", "operator", "all"],
+  status: ["operator", "all"],
+  tail: ["once", "operator", "all"],
   accept: ["as"],
   decline: ["as", "reason"],
   snooze: ["as"],
   cancel: ["corr"],
   compose: ["from"],
-  tail: ["once"],
   peers: [],
   projects: [],
 };
@@ -456,7 +456,9 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
         const q: { peer?: string; since?: number } = {};
         if (flags.peer) q.peer = String(flags.peer);
         if (flags.since) q.since = Number(flags.since);
-        out(await client.history(q, resolveSelfAlias()));
+        // --operator (alias --all) is the human asking for the whole machine's bodies;
+        // without it you see bodies only for your own project's traffic.
+        out(await client.history(q, resolveSelfAlias(), flags.operator === true || flags.all === true));
         return 0;
       }
       case "status": {
@@ -465,7 +467,7 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
           console.error("status <msg-id>");
           return 2;
         }
-        out(await client.status(msgId, resolveSelfAlias()));
+        out(await client.status(msgId, resolveSelfAlias(), flags.operator === true || flags.all === true));
         return 0;
       }
       case "accept": {
@@ -608,13 +610,14 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
         return 0;
       }
       case "tail": {
+        const opts = { operator: flags.operator === true || flags.all === true, asAlias: resolveSelfAlias() };
         if (flags.once === true || flags.once === "true") {
-          out(await monitorSnapshot(client));
+          out(await monitorSnapshot(client, opts));
           return 0;
         }
         for (;;) {
           process.stdout.write("\x1b[2J\x1b[H");
-          out(await monitorSnapshot(client));
+          out(await monitorSnapshot(client, opts));
           await new Promise((r) => setTimeout(r, 1000));
         }
       }
