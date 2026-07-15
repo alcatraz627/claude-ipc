@@ -12,6 +12,7 @@ import { readAliasForSession, writeAliasForSession } from "./aliasStore.ts";
 import { BrokerError, Client } from "./client.ts";
 import { config } from "./config.ts";
 import { TRUST_RAIL } from "./hooks/shared.ts";
+import { humanAge } from "./models.ts";
 import { monitorSnapshot } from "./monitor.ts";
 
 /**
@@ -105,6 +106,28 @@ async function resolveProjectDir(raw: FlagValue, client: Client): Promise<string
   return null;
 }
 
+/**
+ * Read a message body from a file (or stdin via `-`) instead of the command line.
+ *
+ * A body typed as a shell argument loses backticks and `$(…)` — the shell eats them
+ * before the CLI sees them, and agent-to-agent messages carry code. Reading raw bytes
+ * keeps them intact. undefined = no flag; "bad" = unreadable.
+ */
+function bodyFromFile(raw: FlagValue | undefined): string | undefined | "bad" {
+  if (raw === undefined || raw === true) return undefined;
+  const p = String(raw);
+  try {
+    return readFileSync(p === "-" ? 0 : p, "utf8");
+  } catch {
+    return "bad";
+  }
+}
+
+/** ", oldest 3h ago" for a predecessor-mail age hint, or "" when unknown. */
+function ageHint(oldestTs: number | null): string {
+  return oldestTs ? `, oldest ${humanAge(oldestTs, Math.floor(Date.now() / 1000))} ago` : "";
+}
+
 /** Parse a duration like "30m", "2h", "1d" (or bare seconds) to seconds; null if malformed. */
 function parseDuration(s: string): number | null {
   const m = /^(\d+)\s*([smhd]?)$/.exec(s.trim());
@@ -175,8 +198,8 @@ const USAGE = `claude-ipc — cross-session messaging
 // A command absent from this map (help, serve) skips the check.
 const COMMAND_FLAGS: Record<string, string[]> = {
   register: ["as", "tty"],
-  send: ["to", "to-project", "from", "kind", "ttl", "reply-by", "no-reply-expected", "body"],
-  reply: ["from", "corr", "status", "partial", "body"],
+  send: ["to", "to-project", "from", "kind", "ttl", "reply-by", "no-reply-expected", "body", "body-file"],
+  reply: ["from", "corr", "status", "partial", "body", "body-file"],
   inbox: ["alias", "consume", "project"],
   count: ["alias", "project"],
   orphans: ["project"],
@@ -255,7 +278,11 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
         // holding mail here, with the commands ready to run. Best-effort — a
         // down broker must not fail the register.
         try {
-          const list = ((await client.orphans(process.cwd())).orphans ?? []) as { alias: string; pending: number }[];
+          const list = ((await client.orphans(process.cwd())).orphans ?? []) as {
+            alias: string;
+            pending: number;
+            oldestTs: number | null;
+          }[];
           const preds = list.filter((o) => o.alias !== alias && o.pending > 0);
           if (preds.length) {
             const shown = preds.slice(0, 5);
@@ -263,10 +290,10 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
               preds.length > shown.length ? [`  … +${preds.length - shown.length} more (claude-ipc orphans --project)`] : [];
             out(
               [
-                `predecessor mail in this project — dead sessions still hold unread messages:`,
+                `predecessor mail in this project — dead sessions still hold unread messages (age is a staleness hint — old mail may have been superseded by a later correction):`,
                 ...shown.map(
                   (o) =>
-                    `  ${o.alias} holds ${o.pending} — peek: claude-ipc inbox ${o.alias} · claim: claude-ipc inbox ${o.alias} --consume`,
+                    `  ${o.alias} holds ${o.pending}${ageHint(o.oldestTs)} — peek: claude-ipc inbox ${o.alias} · claim: claude-ipc inbox ${o.alias} --consume`,
                 ),
                 ...tail,
               ].join("\n"),
@@ -316,13 +343,18 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
           console.error(`--reply-by wants a duration like 5m / 90s, or "none". Got: ${String(flags["reply-by"])}`);
           return 2;
         }
+        const fileBody = bodyFromFile(flags["body-file"]);
+        if (fileBody === "bad") {
+          console.error(`--body-file: can't read ${String(flags["body-file"])}`);
+          return 2;
+        }
         let res: unknown;
         try {
           res = await client.send({
             from,
             to,
             kind,
-            body: positional.join(" "),
+            body: fileBody ?? positional.join(" "),
             ttlS: ttlSeconds, // already number | undefined; "bad" returned above
             replyByS: replyBy,
           });
@@ -369,7 +401,12 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
           );
           return 2;
         }
-        const replyBody = positional.slice(1).join(" ");
+        const replyFileBody = bodyFromFile(flags["body-file"]);
+        if (replyFileBody === "bad") {
+          console.error(`--body-file: can't read ${String(flags["body-file"])}`);
+          return 2;
+        }
+        const replyBody = replyFileBody ?? positional.slice(1).join(" ");
         // The body is positional; a --body flag is a natural guess that silently drops
         // the answer. Catch it here, before the send, with the fix spelled out.
         if (!replyBody.trim() && flags.status !== "error") {

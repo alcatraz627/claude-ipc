@@ -120,13 +120,18 @@ export async function main(): Promise<void> {
   let orphanNote: string | null = null;
   try {
     const cwd = input.cwd ?? process.cwd();
-    const list = ((await client.orphans(cwd)).orphans ?? []) as { alias: string; pending: number }[];
+    const list = ((await client.orphans(cwd)).orphans ?? []) as {
+      alias: string;
+      pending: number;
+      oldestTs: number | null;
+    }[];
     if (list.length) {
-      const shown = list.slice(0, 5).map((o) => `${o.alias} (${o.pending})`);
+      const nowS = Math.floor(Date.now() / 1000);
+      const shown = list.slice(0, 5).map((o) => `${o.alias} (${o.pending}${o.oldestTs ? `, ${humanAge(o.oldestTs, nowS)}` : ""})`);
       const more = list.length > shown.length ? ` … +${list.length - shown.length} more` : "";
       orphanNote =
         `claude-ipc: dead sessions of this project still hold unread mail: ${shown.join(", ")}${more}` +
-        ` — peek with: claude-ipc inbox <alias> (list: claude-ipc orphans --project)`;
+        ` — peek with: claude-ipc inbox <alias> (age shown; old mail may have been superseded — list: claude-ipc orphans --project)`;
     }
   } catch {
     // broker down — orphan surfacing is best-effort

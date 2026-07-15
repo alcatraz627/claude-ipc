@@ -121,6 +121,26 @@ describe("CLI", () => {
     }
   });
 
+  // vb-feedback: --body-file carries a code-bearing body (backticks, $()) that the
+  // shell would eat from a positional arg — the delivered message must be byte-exact.
+  test("send --body-file delivers the raw body, backticks intact", async () => {
+    const { writeFileSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const c = new Client(sock);
+    await c.register("bob", { sessionId: "sB", cwd: "/b" });
+    const path = join(tmpdir(), `cipc-body-${process.pid}-${Math.random().toString(36).slice(2, 8)}`);
+    const raw = "run `git status` and $(echo hi) — both must survive";
+    writeFileSync(path, raw);
+    try {
+      expect(await run(["send", "--from", "alice", "--to", "bob", "--body-file", path], { socketPath: sock })).toBe(0);
+    } finally {
+      rmSync(path, { force: true });
+    }
+    const got = (await c.check("bob")).messages.at(-1) as { body: string };
+    expect(got.body).toBe(raw); // backticks and $() delivered verbatim
+  });
+
   // Regression: --partial is a boolean flag and must NOT swallow the body that
   // follows it (it once consumed the first body word, leaving interim replies empty).
   test("reply --partial keeps the full body and is non-terminal", async () => {

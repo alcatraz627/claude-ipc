@@ -192,7 +192,14 @@ export class Router {
       return fail("not_registered", `${a.from} must register before sending (strict mode)`);
     }
     if (!a.kind || !SENDABLE.includes(a.kind)) {
-      return fail("bad_args", `kind must be inform|query|request, got ${String(a.kind)}`);
+      // "response" is the top confusion: it's a real kind, but you don't SEND one —
+      // you `reply` to a query, which is what creates it. Name the fix rather than
+      // just listing the legal kinds.
+      const hint =
+        a.kind === "response"
+          ? ' — to ANSWER a query/request use "claude-ipc reply <id> --from <you>", not send --kind response'
+          : "";
+      return fail("bad_args", `kind must be inform|query|request, got ${String(a.kind)}${hint}`);
     }
 
     // A project address needs no registered peer — the mailbox IS the address,
@@ -347,17 +354,23 @@ export class Router {
     const a = req.args as { project?: string };
     const dir = a.project ? normalizeProjectPath(a.project) : null;
     const entries = new Map(this.registry.list().map((e) => [e.alias, e]));
-    const out: { alias: string; cwd: string | null; lastSeen: number | null; pending: number }[] = [];
+    const out: { alias: string; cwd: string | null; lastSeen: number | null; pending: number; oldestTs: number | null }[] =
+      [];
     for (const addr of this.backend.pendingAddresses()) {
       if (isProjectAddress(addr)) continue; // project mail is not orphaned — it waits by design
       const e = entries.get(addr);
       if (e && e.status !== "offline") continue; // owner can still wake — not an orphan
       if (dir && (!e?.cwd || !withinProject(e.cwd, dir))) continue;
+      const msgs = this.backend.pending(addr);
       out.push({
         alias: addr,
         cwd: e?.cwd ?? null,
         lastSeen: e?.lastSeen ?? null,
-        pending: this.backend.pending(addr).length,
+        pending: msgs.length,
+        // The oldest waiting message's age is the staleness signal: mail from several
+        // lineages ago is the case most likely to have been superseded, so a successor
+        // can weigh it before acting rather than treating a raw unread as fresh.
+        oldestTs: msgs.length ? Math.min(...msgs.map((m) => m.ts)) : null,
       });
     }
     out.sort((x, y) => y.pending - x.pending);
@@ -509,6 +522,19 @@ export class Router {
     // pending — otherwise the turn-end push keeps reminding about an
     // already-answered request until the next inbox drain (found live 2026-07-10).
     this.backend.markConsumed(a.corrId, a.from);
+    // A session may hold several aliases. When the ask was delivered to a SIBLING
+    // alias of the replier — a query to catch-fbl-7c answered from vb-opus, one
+    // session — consume that delivery too, or the addressed alias keeps showing the
+    // ask as owed and the turn-end nudge fires about a question already answered.
+    const fromSid = this.registry.get(a.from)?.sessionId ?? null;
+    if (
+      fromSid &&
+      origin.toAlias !== a.from &&
+      !isProjectAddress(origin.toAlias) &&
+      this.registry.get(origin.toAlias)?.sessionId === fromSid
+    ) {
+      this.backend.markConsumed(a.corrId, origin.toAlias);
+    }
     // A project-addressed ask has its delivery row under the proj: address,
     // not the replier's alias — consume that too, or every other member keeps
     // seeing an already-answered ask as pending.
