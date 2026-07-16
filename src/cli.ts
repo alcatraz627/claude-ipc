@@ -351,13 +351,26 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
           console.error(`--body-file: can't read ${String(flags["body-file"])}`);
           return 2;
         }
+        // The body is positional; a --body flag is a natural guess that silently
+        // sent EMPTY messages (found live: a whole agent lane talking in zero
+        // bytes). Same guard reply has had since the --partial incident.
+        const sendBody = fileBody ?? positional.join(" ");
+        if (!sendBody.trim()) {
+          console.error(
+            flags.body
+              ? `the message body is positional, not a flag — put it after the flags:\n` +
+                  `  claude-ipc send --to ${to} --from ${from} "${String(flags.body)}"`
+              : `send needs a body — NOTHING WAS SENT:\n  claude-ipc send --to ${to} --from ${from} "<message>"`,
+          );
+          return 2;
+        }
         let res: unknown;
         try {
           res = await client.send({
             from,
             to,
             kind,
-            body: fileBody ?? positional.join(" "),
+            body: sendBody,
             ttlS: ttlSeconds, // already number | undefined; "bad" returned above
             replyByS: replyBy,
           });
