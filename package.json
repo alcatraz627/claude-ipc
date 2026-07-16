@@ -12,9 +12,10 @@
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "lint": "tsc --noEmit",
+    "gate": "tsc --noEmit && bun test",
     "build:cli": "bun build src/cli.ts --compile --outfile dist/claude-ipc",
     "build:hooks": "bun build src/hooks/userPromptSubmit.ts --compile --outfile dist/ipc-ups && bun build src/hooks/sessionStart.ts --compile --outfile dist/ipc-session-start && bun build src/hooks/stop.ts --compile --outfile dist/ipc-stop",
-    "build": "bun run build:cli && bun run build:hooks"
+    "build": "bun run gate && bun run build:cli && bun run build:hooks"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

@@ -475,7 +475,7 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
           out(String((await client.countProject(dir)).count));
           return 0;
         }
-        const alias = positional[0] ?? "";
+        const alias = positional[0] ?? String(flags.alias ?? "");
         if (!alias) {
           console.error("count <alias> (or count --project [dir])");
           return 2;
