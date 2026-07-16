@@ -1,3 +1,62 @@
+## session: dashboard phases 2-4 + the empty-body ghosting find [dash-audit-09] — 2026-07-16 (later)
+
+Purpose: shipped dashboard phases 2-4 (inbox+actions, compose+textarea+$EDITOR,
+projects/orphans/log) on feat/i-dashboard, then pivoted to the owner's ghosting
+report and found the root cause live.
+
+Insights:
+- **"Ghosting" was two non-delivery mechanisms.** (1) `send --body "text"` was
+  allowlisted but never read → agents sent ZERO-BYTE messages that delivered
+  fine (vb-fable talked in empties for an hour, incl. a live query to this
+  session — receivers read it as being ghosted). CLI guard added; broker-side
+  empty_send still open. (2) Replies route to the ASKER's mailbox — a dead
+  asker's box is an orphan box; the "missing" vb feedback (1646+2019 bytes) sat
+  in ipc-dr-4e's box all along. Addressing dead ipc-* aliases from stale
+  knowledge is common (ipc-dev, 47d dead, still receiving).
+- **The dashboard diagnosed its own domain**: the operator LOG view + ORPHANS
+  view made both mechanisms visible in minutes. Dogfood value proven.
+- **ink batching bites twice**: printable key-runs coalesce into ONE multi-char
+  input event, and React batches a chunk's events into one commit — dispatchers
+  must replay per-char AND use functional updates. Also: any refetch requested
+  mid-fetch must queue via a latest-callback ref, or toggles silently miss.
+- **$EDITOR from a fullscreen ink app**: unmount AlternateScreen (render a
+  static fallback), pause all intervals + guard in-flight setSnapshot, spawn
+  inherit, remount = full repaint. No suspend API needed.
+- pty-walk assertions must respect damage-diffing: unchanged cells never
+  rewrite (words glue together, prefixes vanish); assert on freshly-painted
+  rows or use a full-frame oracle (open a modal) — and give every test message
+  a distinct timestamp or list order is nondeterministic.
+
+---
+
+## session: dashboard audit + phase 1 build [dash-audit-09] — 2026-07-16
+
+Purpose: hole-poke the -i dashboard docs against the tree, then build phase 1
+(app shell + peers + preview + copy menu) on feat/i-dashboard (3 commits).
+
+Insights:
+- **The audit's one big catch: ink-terminal ships NO text-input component.**
+  The locked "in-app textarea" decision (D7c) silently implied hand-rolling an
+  editable widget. Everything else in the plan's API cheat-sheet verified true
+  against the published tarball — check the components DIR, not just the hooks
+  list, before trusting a framework claim.
+- **ink useInput is broadcast, not bubbling** — every active handler sees every
+  key. One central dispatcher (filter-edit → modal → global → view) is the only
+  sane keymap; per-widget handlers double-fire Esc.
+- **pty-walk captures glue words together**: the damage-diff optimizer skips
+  unchanged space cells via cursor-forward moves, so asserting "switch view"
+  fails while "switchview" (space-stripped) passes. Compare space-free.
+- **Never rebuild dist/ on a branch** — launchd runs the live broker from
+  dist/claude-ipc, so a stray `bun run build` stages unreviewed code into the
+  next broker restart. The compile-gate test builds to a temp dir instead.
+- **The shared tokens dir is what makes per-peer inbox counts possible** (the
+  Client attaches any local alias's token). It also means the dashboard "acts
+  as" peers when peeking — non-consuming, so hooks/badges are undisturbed.
+- main was typecheck-red (sessionStart humanAge import missed by the previous
+  batch) — fixed here as fff79e7; run `bun run typecheck` before ending a batch.
+
+---
+
 ## session: post-v0.1 review + hardening — 2026-06-01
 
 Purpose: root-caused the empty-`tail` bug, then a full review → fixed Tiers A
