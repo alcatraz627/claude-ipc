@@ -7,14 +7,19 @@
 import { describe, expect, test } from "bun:test";
 import { makeMessage, type Message, type RegistryEntry } from "../src/models.ts";
 import {
+  actionsFor,
+  copyFieldsForMessage,
   copyFieldsForPeer,
   filterRoster,
   groupRoster,
+  inboxLine,
   inlineHead,
   lastMessageFor,
   lastOpenAskFrom,
+  messagePreview,
   peerPreview,
   pendingStats,
+  sanitizeBlock,
   sanitizeInline,
 } from "../src/tui/model.ts";
 
@@ -148,6 +153,62 @@ describe("copyFieldsForPeer", () => {
   test("no identity yet → a visible placeholder, not a broken command", () => {
     const fields = copyFieldsForPeer(row, undefined, undefined, undefined);
     expect(fields.at(-1)!.value).toContain("--from <you>");
+  });
+});
+
+describe("sanitizeBlock", () => {
+  test("keeps newlines but drops escapes and control bytes", () => {
+    expect(sanitizeBlock("line1\n\x1b[31mline2\x07")).toBe("line1\nline2");
+  });
+});
+
+describe("actionsFor", () => {
+  test("verbs follow the kind", () => {
+    const at = (kind: Message["kind"]) => actionsFor(msg({ id: "1", kind, fromAlias: "a", toAlias: "b", ts: 1 }));
+    expect(at("inform")).toEqual({ reply: false, accept: false, decline: false, snooze: false });
+    expect(at("query")).toEqual({ reply: true, accept: false, decline: false, snooze: true });
+    expect(at("request")).toEqual({ reply: true, accept: true, decline: true, snooze: true });
+  });
+});
+
+describe("inboxLine", () => {
+  test("tags kind + sender, marks error responses, neutralizes alias text", () => {
+    const q = inboxLine(msg({ id: "1", kind: "query", fromAlias: "vb\x1b[31m", toAlias: "me", ts: 10, body: "hi" }), 20);
+    expect(q.tag).toBe("query from vb");
+    const err = inboxLine(
+      msg({ id: "2", kind: "response", fromAlias: "x", toAlias: "me", ts: 10, status: "error", errorCode: "declined" }),
+      20,
+    );
+    expect(err.tag).toBe("response:declined from x");
+  });
+});
+
+describe("copyFieldsForMessage", () => {
+  test("asks carry a reply command; informs don't", () => {
+    const ask = msg({ id: "msg-9", kind: "request", fromAlias: "vb", toAlias: "me", ts: 1, body: "do it" });
+    const askFields = copyFieldsForMessage(ask, "me");
+    expect(askFields.find((f) => f.label === "reply command")!.value).toContain("reply msg-9 --from me");
+    const info = msg({ id: "msg-10", kind: "inform", fromAlias: "vb", toAlias: "me", ts: 1 });
+    expect(copyFieldsForMessage(info, "me").some((f) => f.label === "reply command")).toBe(false);
+  });
+});
+
+describe("messagePreview", () => {
+  test("shows routing, thread context, and a sanitized multi-line body", () => {
+    const m = msg({
+      id: "msg-5",
+      kind: "response",
+      fromAlias: "vb",
+      toAlias: "me",
+      ts: 10,
+      corrId: "msg-1",
+      body: "a\n\x1b[2mb",
+    });
+    const p = messagePreview(m, 70, { question: "original ask", replies: 2 });
+    expect(p.rows.find((r) => r.label === "answers")!.value).toBe("msg-1");
+    expect(p.rows.find((r) => r.label === "asked")!.value).toBe("original ask");
+    expect(p.rows.find((r) => r.label === "thread")!.value).toBe("2 replies so far");
+    expect(p.body).toBe("a\nb");
   });
 });
 

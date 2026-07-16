@@ -1,17 +1,21 @@
 /**
- * The PEERS view: the live roster on the left, a detail preview of the selected
- * session on the right. Pure render — selection, filter, and scrolling state
- * live in the app; this file only draws a snapshot of them.
+ * The home view: roster and inbox stacked on the left, both independently
+ * scrolling, with a preview of the focused pane's selection on the right.
+ * Pure render — selection, focus, and filter state live in the app.
  */
 
 import { Box, ScrollBox, Spacer, Text } from "ink-terminal";
 import { basename } from "node:path";
+import type { Message } from "../../models.ts";
 import type { PreviewData, RosterRow } from "../model.ts";
 import { ageLabel, inlineHead } from "../model.ts";
 import { STATUS_COLOR, STATUS_GLYPH, theme } from "../theme.ts";
 import { TextField } from "../widgets/TextField.tsx";
+import { InboxList, MessagePane } from "./inbox.tsx";
 
-export interface PeersViewProps {
+export type Pane = "roster" | "inbox";
+
+export interface HomeViewProps {
   rows: RosterRow[]; // visible rows (already filtered, offline handled)
   offlineHidden: number; // count collapsed behind the "+N offline" row
   sel: number;
@@ -25,41 +29,80 @@ export interface PeersViewProps {
   onSelect: (i: number) => void;
   onExpandOffline: () => void;
   scrollRef: React.Ref<unknown>;
+  // the inbox half
+  inbox: Message[];
+  inboxSel: number;
+  focusedPane: Pane;
+  identityKnown: boolean;
+  thread: { question: string | null; replies: number } | null;
+  onInboxSelect: (i: number) => void;
+  onFocusPane: (p: Pane) => void;
+  inboxScrollRef: React.Ref<unknown>;
 }
 
-export function PeersView(p: PeersViewProps) {
+export function HomeView(p: HomeViewProps) {
+  const rosterFocused = p.focusedPane === "roster";
   return (
     <Box flexGrow={1} gap={1}>
-      <Box flexDirection="column" width="55%" borderStyle="single" borderColor={theme.accent} paddingX={1}>
-        {(p.filterEditing || p.filter) && (
-          <TextField
-            value={p.filter}
-            onChange={p.onFilterChange}
-            onSubmit={p.onFilterSubmit}
-            onCancel={p.onFilterCancel}
-            active={p.filterEditing}
-            prefix="/"
-            placeholder="filter"
+      <Box flexDirection="column" width="55%">
+        <Box
+          flexDirection="column"
+          flexGrow={3}
+          borderStyle="single"
+          borderColor={rosterFocused ? theme.accent : undefined}
+          paddingX={1}
+          onClick={() => p.onFocusPane("roster")}
+        >
+          {(p.filterEditing || p.filter) && (
+            <TextField
+              value={p.filter}
+              onChange={p.onFilterChange}
+              onSubmit={p.onFilterSubmit}
+              onCancel={p.onFilterCancel}
+              active={p.filterEditing}
+              prefix="/"
+              placeholder="filter"
+            />
+          )}
+          <ScrollBox ref={p.scrollRef as never} flexGrow={1}>
+            {p.rows.length === 0 && (
+              <Text dim>{p.filter ? "nothing matches the filter" : "no peers registered yet"}</Text>
+            )}
+            {p.rows.map((r, i) => (
+              <Box key={r.key} onClick={() => p.onSelect(i)}>
+                <RosterLine row={r} selected={rosterFocused && i === p.sel} nowS={p.nowS} />
+              </Box>
+            ))}
+            {p.offlineHidden > 0 && (
+              <Box onClick={p.onExpandOffline}>
+                <Text dim>{`  +${p.offlineHidden} offline  (o to expand)`}</Text>
+              </Box>
+            )}
+          </ScrollBox>
+        </Box>
+        <Box flexGrow={2} flexDirection="column">
+          <InboxList
+            messages={p.inbox}
+            sel={p.inboxSel}
+            nowS={p.nowS}
+            focused={p.focusedPane === "inbox"}
+            identityKnown={p.identityKnown}
+            onSelect={p.onInboxSelect}
+            onFocus={() => p.onFocusPane("inbox")}
+            scrollRef={p.inboxScrollRef}
           />
-        )}
-        <ScrollBox ref={p.scrollRef as never} flexGrow={1}>
-          {p.rows.length === 0 && (
-            <Text dim>{p.filter ? "nothing matches the filter" : "no peers registered yet"}</Text>
-          )}
-          {p.rows.map((r, i) => (
-            <Box key={r.key} onClick={() => p.onSelect(i)}>
-              <RosterLine row={r} selected={i === p.sel} nowS={p.nowS} />
-            </Box>
-          ))}
-          {p.offlineHidden > 0 && (
-            <Box onClick={p.onExpandOffline}>
-              <Text dim>{`  +${p.offlineHidden} offline  (o to expand)`}</Text>
-            </Box>
-          )}
-        </ScrollBox>
+        </Box>
       </Box>
       <Box flexDirection="column" flexGrow={1} borderStyle="single" paddingX={1}>
-        {p.preview ? <Preview data={p.preview} /> : <Text dim>select a peer</Text>}
+        {rosterFocused ? (
+          p.preview ? (
+            <Preview data={p.preview} />
+          ) : (
+            <Text dim>select a peer</Text>
+          )
+        ) : (
+          <MessagePane msg={p.inbox[p.inboxSel]} nowS={p.nowS} thread={p.thread} />
+        )}
       </Box>
     </Box>
   );

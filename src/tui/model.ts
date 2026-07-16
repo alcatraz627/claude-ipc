@@ -170,6 +170,70 @@ export function ageLabel(ts: number, nowS: number): string {
   return humanAge(ts, nowS);
 }
 
+/**
+ * Neutralize a peer body for the multi-line preview pane: escapes and control
+ * bytes are dropped like sanitizeInline, but real newlines survive — the
+ * preview is where a full body is meant to be read as written.
+ */
+export function sanitizeBlock(s: string): string {
+  return s
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?/g, "")
+    .replace(/\x1b\[[0-9;:?]*[ -/]*[@-~]?/g, "")
+    .replace(/\x1b./g, "")
+    .replace(/\t/g, "  ")
+    .replace(/[\x00-\x09\x0b-\x1f\x7f]/g, "");
+}
+
+/** Which consent/answer verbs apply to a message — drives the contextual keybar. */
+export function actionsFor(m: Message): { reply: boolean; accept: boolean; decline: boolean; snooze: boolean } {
+  const ask = m.kind === "query" || m.kind === "request";
+  return { reply: ask, accept: m.kind === "request", decline: m.kind === "request", snooze: ask };
+}
+
+/** One inbox line: who wants what, how old it is, what it says. */
+export function inboxLine(m: Message, nowS: number): { tag: string; head: string; age: string } {
+  const err = m.kind === "response" && m.status === "error" ? `:${m.errorCode ?? "error"}` : "";
+  return {
+    tag: `${m.kind}${err} from ${sanitizeInline(m.fromAlias)}`,
+    head: inlineHead(m.body, 60),
+    age: ageLabel(m.ts, nowS),
+  };
+}
+
+/** Copy-menu fields for a message selection. */
+export function copyFieldsForMessage(m: Message, selfAlias: string | undefined): CopyField[] {
+  const fields: CopyField[] = [
+    { label: "msg-id", value: m.id },
+    { label: "from", value: m.fromAlias },
+    { label: "body", value: m.body },
+  ];
+  if (m.conversationId) fields.push({ label: "conversation", value: m.conversationId });
+  if (m.kind === "query" || m.kind === "request") {
+    fields.push({
+      label: "reply command",
+      value: `claude-ipc reply ${m.id} --from ${selfAlias ?? "<you>"} "<answer>"`,
+    });
+  }
+  return fields;
+}
+
+/** Preview-pane data for a message: routing header rows + the full body. */
+export function messagePreview(
+  m: Message,
+  nowS: number,
+  thread: { question: string | null; replies: number } | null,
+): { title: string; rows: PreviewData["rows"]; body: string } {
+  const rows: PreviewData["rows"] = [
+    { label: "kind", value: m.kind + (m.status === "error" ? ` (${m.errorCode ?? "error"})` : ""), accent: m.kind !== "inform" },
+    { label: "from", value: `${sanitizeInline(m.fromAlias)} → ${sanitizeInline(m.toAlias)}` },
+    { label: "when", value: `${ageLabel(m.ts, nowS)} ago` },
+  ];
+  if (m.corrId) rows.push({ label: "answers", value: m.corrId });
+  if (thread?.question) rows.push({ label: "asked", value: inlineHead(thread.question, 120) });
+  if (thread && thread.replies > 0) rows.push({ label: "thread", value: `${thread.replies} repl${thread.replies === 1 ? "y" : "ies"} so far` });
+  return { title: m.id, rows, body: sanitizeBlock(m.body) };
+}
+
 /** Preview-pane lines for a roster selection. Pure data; the component styles them. */
 export interface PreviewData {
   title: string;

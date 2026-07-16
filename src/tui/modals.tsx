@@ -5,9 +5,11 @@
  */
 
 import { Box, Text } from "ink-terminal";
+import type { Message } from "../models.ts";
 import type { CopyField } from "./model.ts";
 import { inlineHead } from "./model.ts";
 import { theme } from "./theme.ts";
+import { TextField } from "./widgets/TextField.tsx";
 
 function Frame({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -96,14 +98,58 @@ export function IdentityPicker({ candidates, sel }: { candidates: string[]; sel:
   );
 }
 
+/**
+ * Answer or decline an ask without leaving the dashboard. Single-line for now —
+ * the multi-line textarea + $EDITOR escalation is the compose modal's job.
+ */
+export function AskInput({
+  mode,
+  msg,
+  value,
+  onChange,
+  onSubmit,
+  onCancel,
+}: {
+  mode: "reply" | "decline";
+  msg: Message;
+  value: string;
+  onChange: (v: string) => void;
+  onSubmit: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <Frame title={mode === "reply" ? `reply to ${msg.id}` : `decline ${msg.id}`}>
+      <Box flexDirection="column" marginTop={1}>
+        <Text dim wrap="truncate-end">{`${msg.kind} from ${inlineHead(msg.fromAlias, 24)}: ${inlineHead(msg.body, 60)}`}</Text>
+        <Box marginTop={1}>
+          <TextField
+            value={value}
+            onChange={onChange}
+            onSubmit={onSubmit}
+            onCancel={onCancel}
+            active
+            prefix="> "
+            placeholder={mode === "reply" ? "your answer" : "reason (optional)"}
+          />
+        </Box>
+      </Box>
+      <Box marginTop={1}>
+        <Text dim>{mode === "reply" ? "enter send · esc back (a reply needs a body)" : "enter decline · esc back"}</Text>
+      </Box>
+    </Frame>
+  );
+}
+
 const HELP_LINES: [string, string][] = [
   ["tab / 1-5", "switch view"],
   ["↑↓ / jk", "move selection"],
   ["/", "filter the list (esc clears)"],
   ["y", "copy menu for the selection"],
   ["o", "expand / collapse offline peers"],
+  ["i / →", "focus the inbox pane (esc returns)"],
+  ["r a d s", "reply · accept · decline · snooze (inbox)"],
   ["R", "refresh now (auto every 5s)"],
-  ["a", "act as a different identity"],
+  ["@", "act as a different identity"],
   ["d", "start the broker (when down)"],
   ["?", "this help"],
   ["q / esc", "quit (guarded)"],
