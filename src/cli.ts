@@ -182,6 +182,9 @@ const USAGE = `claude-ipc — cross-session messaging
   count  <alias>             (pending count — cheap, for tab-title segments)
   log    [--peer <a>] [--since <epoch>]
   status <msg-id>            (a message's delivery + response lifecycle)
+  show   <msg-id>            (one message, readable — headers, body, replies)
+  owed   [--as <alias>]      (every ask you still owe an answer, across ALL your aliases + this project)
+  feedback <text...>         (file a report to the claude-ipc maintainers — works even when none are running)
   accept <msg-id> --as <alias>
   decline <msg-id> --as <alias> [--reason <r>]
   snooze <msg-id> --as <alias>  (defer without consuming — stays pending + owed)
@@ -207,6 +210,9 @@ const COMMAND_FLAGS: Record<string, string[]> = {
   prune: ["offline-for"],
   log: ["peer", "since", "operator", "all"],
   status: ["operator", "all"],
+  show: ["operator", "all"],
+  owed: ["as"],
+  feedback: ["from", "body-file"],
   tail: ["once", "operator", "all"],
   accept: ["as"],
   decline: ["as", "reason"],
@@ -542,6 +548,98 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
         out(await client.status(msgId, resolveSelfAlias(), flags.operator === true || flags.all === true));
         return 0;
       }
+      case "show": {
+        // One message, readable — both field agents asked for this instead of
+        // peeking the whole inbox and jq-filtering by id.
+        const msgId = positional[0] ?? "";
+        if (!msgId) {
+          console.error("show <msg-id>");
+          return 2;
+        }
+        const st = (await client.status(msgId, resolveSelfAlias(), flags.operator === true || flags.all === true)) as {
+          message: { id: string; kind: string; fromAlias: string; toAlias: string; body: string; ts: number; corrId: string | null; conversationId: string | null };
+          responses: { id: string; fromAlias: string; terminal: boolean }[];
+        };
+        const m = st.message;
+        const nowS = Math.floor(Date.now() / 1000);
+        out(`${m.id} · ${m.kind} · ${m.fromAlias} → ${m.toAlias} · ${humanAge(m.ts, nowS)} ago`);
+        if (m.corrId) out(`answers ${m.corrId}`);
+        if (m.conversationId) out(`conversation ${m.conversationId}`);
+        out("");
+        out(m.body || "(empty body)");
+        if (st.responses.length) {
+          out("");
+          out(`${st.responses.length} repl${st.responses.length === 1 ? "y" : "ies"}: ${st.responses.map((r) => `${r.id} (${r.fromAlias}${r.terminal ? "" : ", partial"})`).join(", ")}`);
+        }
+        return 0;
+      }
+      case "owed": {
+        // Everything this session still owes an answer to, across ALL its
+        // aliases and its project mailboxes — the startup-poll gap both field
+        // agents hit was exactly "inbox --project was empty while an
+        // alias-addressed ask sat owed".
+        const self = flags.as ? String(flags.as) : resolveSelfAlias();
+        if (!self) {
+          console.error("owed can't tell who you are — register this session, or pass --as <alias>");
+          return 2;
+        }
+        const roster = ((await client.list()).peers ?? []) as { alias: string; sessionAliases?: string[] }[];
+        const mine = roster.find((p) => p.alias === self)?.sessionAliases ?? [self];
+        const nowS = Math.floor(Date.now() / 1000);
+        const owedLines: string[] = [];
+        for (const alias of mine) {
+          try {
+            const box = (await client.check(alias, false)) as { messages: { id: string; kind: string; fromAlias: string; body: string; ts: number }[] };
+            for (const m of box.messages ?? []) {
+              if (m.kind !== "query" && m.kind !== "request") continue;
+              owedLines.push(
+                `${alias} owes ${m.fromAlias} · ${m.kind} ${m.id} · ${humanAge(m.ts, nowS)} old · reply: claude-ipc reply ${m.id} --from ${alias} "<answer>"\n    ${m.body.slice(0, 100).replace(/\n/g, " ")}`,
+              );
+            }
+          } catch {
+            // an alias whose mailbox we can't read is not silently skipped
+            owedLines.push(`${alias}: (mailbox unreadable)`);
+          }
+        }
+        try {
+          const proj = (await client.checkProject(process.cwd(), false, self)) as { messages: { id: string; kind: string; fromAlias: string; body: string; ts: number }[] };
+          for (const m of proj.messages ?? []) {
+            if (m.kind !== "query" && m.kind !== "request") continue;
+            owedLines.push(
+              `this project owes ${m.fromAlias} · ${m.kind} ${m.id} · ${humanAge(m.ts, nowS)} old · first to reply settles it`,
+            );
+          }
+        } catch {
+          // not a member here / broker degraded — alias boxes above still answered
+        }
+        out(owedLines.length ? owedLines.join("\n") : `nothing owed — all asks to ${mine.join(", ")} are settled`);
+        return 0;
+      }
+      case "feedback": {
+        // The standing intake: works with no maintainer session running (project
+        // mail waits by design) and with the broker down (degraded write). The
+        // default address is this machine's claude-ipc repo — set
+        // CLAUDE_IPC_FEEDBACK_ADDR when the repo lives elsewhere.
+        const ffrom = flags.from ? String(flags.from) : resolveSelfAlias();
+        if (!ffrom) {
+          console.error("feedback can't tell who's sending — register this session, or pass --from <alias>");
+          return 2;
+        }
+        const fBody = bodyFromFile(flags["body-file"]);
+        if (fBody === "bad") {
+          console.error(`--body-file: can't read ${String(flags["body-file"])}`);
+          return 2;
+        }
+        const text = fBody ?? positional.join(" ");
+        if (!text.trim()) {
+          console.error(`feedback needs a body:\n  claude-ipc feedback "<what's broken / what you wish existed>"`);
+          return 2;
+        }
+        const res = await client.send({ from: ffrom, to: config.feedbackAddr, kind: "inform", body: `[feedback] ${text}` });
+        out(res);
+        console.error("feedback filed — the next maintainer session in the claude-ipc repo sees it at wake-up.");
+        return 0;
+      }
       case "accept": {
         const msgId = positional[0] ?? "";
         const as = String(flags.as ?? "");
@@ -709,5 +807,11 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
 }
 
 if (import.meta.main) {
-  run(Bun.argv.slice(2)).then((code) => process.exit(code));
+  // exitCode, never process.exit(): a hard exit races the async stdout flush
+  // and truncated any output past ~64KB mid-JSON (log/peers, found live 07-16).
+  // Every returning verb closes its sockets and timers, so the loop drains and
+  // exits on its own; serve/tail never reach here.
+  run(Bun.argv.slice(2)).then((code) => {
+    process.exitCode = code;
+  });
 }

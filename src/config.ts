@@ -77,6 +77,11 @@ export const config = {
   // VISUAL/EDITOR contract; vi is the POSIX-safe fallback.
   editor: process.env.VISUAL || process.env.EDITOR || "vi",
 
+  // Where `claude-ipc feedback` files reports: the maintainer repo's project
+  // mailbox, which waits across maintainer absence and broker downtime. The
+  // default is THIS machine's checkout — off-host, set CLAUDE_IPC_FEEDBACK_ADDR.
+  feedbackAddr: process.env.CLAUDE_IPC_FEEDBACK_ADDR ?? "proj:/Users/alcatraz627/Code/Claude/claude-ipc",
+
   badge: (process.env.CLAUDE_IPC_BADGE ?? "1") !== "0", // broker→peer-TTY tab badge
   allowlist: parseAllowlist(process.env.CLAUDE_IPC_ALLOWLIST), // {target: [allowed senders]}
 } as const;
