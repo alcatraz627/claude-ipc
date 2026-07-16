@@ -895,9 +895,15 @@ export class Router {
   private static readonly HIDDEN_BODY = "[hidden — you are not a party to this message; run with --operator to see all bodies]";
   private stripForCaller(req: Request, operator: boolean): (m: Message) => Message {
     const self = this.aliasOfToken(req);
+    // Resolve the caller's whole session — all its aliases + its cwd — ONCE, not
+    // per message: history/status strip every row through this closure, and a
+    // registry scan per row is O(rows × peers) on a long log.
+    const selfEntry = self ? this.registry.list().find((e) => e.alias === self) : undefined;
+    const mine = new Set(selfEntry?.sessionAliases ?? (self ? [self] : []));
+    const cwd = selfEntry?.cwd;
     return (m) => {
       if (operator) return m;
-      if (self && this.involves(m, self)) return m;
+      if (self && this.involves(m, mine, cwd)) return m;
       return { ...m, body: Router.HIDDEN_BODY, contextPtr: null };
     };
   }
@@ -910,13 +916,11 @@ export class Router {
    * blanking its own mail's body as "not a party" was the sibling-blindness the
    * obligation and liveness fixes already cured elsewhere.
    */
-  private involves(m: Message, self: string): boolean {
-    const mine = new Set(this.registry.list().find((e) => e.alias === self)?.sessionAliases ?? [self]);
+  private involves(m: Message, mine: Set<string>, cwd: string | undefined): boolean {
     if (mine.has(m.fromAlias) || mine.has(m.toAlias)) return true;
     if (m.toAlias === "*") return true;
     if (!isProjectAddress(m.toAlias)) return false;
-    const e = this.registry.get(self);
-    return Boolean(e?.cwd && withinProject(e.cwd, projectPath(m.toAlias)));
+    return Boolean(cwd && withinProject(cwd, projectPath(m.toAlias)));
   }
 
   /** Non-blocking peek: has a correlated reply landed in this alias's inbox yet? */
