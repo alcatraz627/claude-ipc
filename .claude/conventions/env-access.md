@@ -36,6 +36,9 @@ the entry points, not in `config.ts`:
 - `src/cli.ts` `resolveSelfAlias()` — `CLAUDE_CODE_SESSION_ID` → this session's
   recorded alias, so `send`/`reply` infer `--from` without a session naming
   itself. Same per-invocation identity read as `register`, at the boundary.
+- `src/tui/identity.ts` `sessionIdentity()` — the dashboard's entry-point copy
+  of the `resolveSelfAlias()` read (importing it from `cli.ts` would cycle:
+  cli → tui app → identity).
 
 These are per-invocation identity, not shared configuration, so they stay at the
 boundary. Everything else routes through `config.ts`.

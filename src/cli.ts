@@ -187,6 +187,7 @@ const USAGE = `claude-ipc — cross-session messaging
   snooze <msg-id> --as <alias>  (defer without consuming — stays pending + owed)
   cancel <msg-id>               (abandon an outstanding query/request YOU sent)
   compose                    (interactive: pick a live peer + notes, then send)
+  -i | interactive           (full-screen dashboard: live roster, inbox, copy menu)
   tail                       (live monitor, full-screen redraw — for a human)
   prune  [--offline-for <30m|2h|1d>]   (drop peers offline past the window; default 1d)
   daemon status|start|stop`;
@@ -214,6 +215,8 @@ const COMMAND_FLAGS: Record<string, string[]> = {
   compose: ["from"],
   peers: [],
   projects: [],
+  "-i": [],
+  interactive: [],
 };
 
 export async function run(argv: string[], opts: { socketPath?: string } = {}): Promise<number> {
@@ -579,13 +582,8 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
           } catch {
             // down → start it
           }
-          // Relaunch ourselves as the broker: the compiled binary re-execs with
-          // `serve`; running from source falls back to bun on the broker entry.
-          const compiled = !/[\\/]bun$/.test(process.execPath);
-          const args = compiled ? [process.execPath, "serve"] : ["bun", "run", `${import.meta.dir}/broker/server.ts`];
-          const proc = Bun.spawn(args, { stdio: ["ignore", "ignore", "ignore"] });
-          proc.unref();
-          out(`broker starting (pid ${proc.pid})`);
+          const { spawnBroker } = await import("./daemonCtl.ts");
+          out(`broker starting (pid ${spawnBroker()})`);
           return 0;
         }
         if (sub === "stop") {
@@ -644,6 +642,16 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
           | "request";
         const body = prompt("notes: ") ?? "";
         out(await client.send({ from: cfrom, to: target.alias, kind, body }));
+        return 0;
+      }
+      case "-i":
+      case "interactive": {
+        if (!process.stdin.isTTY || !process.stdout.isTTY) {
+          console.error("interactive mode needs a terminal. For scripts, use the plain verbs (peers, inbox, log).");
+          return 2;
+        }
+        const { runDashboard } = await import("./tui/app.tsx");
+        await runDashboard(client);
         return 0;
       }
       case "tail": {
