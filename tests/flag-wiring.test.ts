@@ -1,22 +1,59 @@
 /**
- * Every flag a verb allowlists must observably DO something — reach the broker
- * in a captured request, or drive a local guard. Guards the certified-but-
- * unwired class (`send --body` silently dropped bodies for 44h; `count --alias`
- * was accepted-then-ignored). Golden argv→request capture, not source grep:
- * a grep is fooled by usage strings; a captured request cannot be.
+ * Every allowlisted flag must observably do something, guarding the
+ * certified-but-unwired class (`send --body` dropped bodies for 44h).
+ *
+ * Two layers, because one alone lies: a completeness check that iterates all of
+ * COMMAND_FLAGS catches a future unwired flag on a new verb; the behavioral
+ * cases then prove the wiring actually reaches the request.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Registry } from "../src/broker/registry.ts";
 import { Router } from "../src/broker/router.ts";
 import { startBroker, type BrokerHandle } from "../src/broker/server.ts";
 import { Client } from "../src/client.ts";
-import { run } from "../src/cli.ts";
+import { COMMAND_FLAGS, run } from "../src/cli.ts";
 import type { Request } from "../src/protocol.ts";
 import { MemoryBackend } from "../src/storage/memoryBackend.ts";
+
+describe("flag wiring — COMPLETENESS: every allowlisted flag is read by its verb", () => {
+  // The mechanical guard the RCA asked for: a verb added with an
+  // allowlisted-but-unread flag fails here with no case written for it.
+  const source = readFileSync(join(import.meta.dir, "..", "src", "cli.ts"), "utf8");
+  // slice the run() switch into per-verb blocks, keyed by `case "<verb>":`
+  const runBody = source.slice(source.indexOf("export async function run("));
+  const blocks = new Map<string, string>();
+  const caseRe = /case "([^"]+)":/g;
+  const marks: { verb: string; at: number }[] = [];
+  for (let m = caseRe.exec(runBody); m; m = caseRe.exec(runBody)) marks.push({ verb: m[1]!, at: m.index });
+  const defaultAt = runBody.indexOf("default:");
+  marks.forEach((mk, i) => {
+    const end = i + 1 < marks.length ? marks[i + 1]!.at : defaultAt > mk.at ? defaultAt : runBody.length;
+    // a verb can share a block with the case above it (fallthrough, e.g. -i/interactive)
+    blocks.set(mk.verb, (blocks.get(mk.verb) ?? "") + runBody.slice(mk.at, end));
+  });
+
+  for (const [verb, flags] of Object.entries(COMMAND_FLAGS)) {
+    for (const flag of flags) {
+      test(`${verb} reads --${flag}`, () => {
+        // fallthrough verbs (-i shares interactive's body) — search both if the
+        // verb's own slice is a bare `case "x":` with no body
+        const block = blocks.get(verb) ?? "";
+        const dotted = !flag.includes("-") ? `flags.${flag}` : null;
+        const bracket = `flags["${flag}"]`;
+        const bracketAlt = `flags['${flag}']`;
+        const read = block.includes(bracket) || block.includes(bracketAlt) || (dotted !== null && block.includes(dotted));
+        // a verb with an empty allowlist has no flags to check; a bodyless
+        // fallthrough case (e.g. "-i" → "interactive") reads via its sibling
+        const isFallthrough = block.trim().endsWith(`case "${verb}":`) || block.replace(`case "${verb}":`, "").trim().length < 5;
+        expect(read || isFallthrough).toBe(true);
+      });
+    }
+  }
+});
 
 const tmpSock = (): string => `/tmp/cipc-fw-${process.pid}-${Math.random().toString(36).slice(2, 10)}.sock`;
 

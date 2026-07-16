@@ -131,6 +131,12 @@ describe("rca fixes — router level", () => {
       expect(codeOf(call("reply", { from: "bob", corrId: id, body: "  " }, "bob"))).toBe("empty_reply");
     });
 
+    test("an error-status reply may be body-less — same exemption as the ask path", () => {
+      const id = seedInform();
+      const r = okOf(call("reply", { from: "bob", corrId: id, body: "", status: "error", errorCode: "internal" }, "bob"));
+      expect(r.msgId).toBeDefined();
+    });
+
     test("reply to a RESPONSE still steers to send (scope is informs only)", () => {
       const q = seedAsk("alice", "bob");
       const ans = okOf(call("reply", { from: "bob", corrId: q, body: "here" }, "bob"));

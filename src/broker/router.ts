@@ -186,7 +186,12 @@ export class Router {
     if (!a.from || !a.to) return fail("bad_args", "send needs from + to");
     const denied = this.requireOwner(req, a.from); // you may only send AS yourself
     if (denied) return denied;
-    this.registry.touchByAct(a.from); // an authorized send is proof of life
+    // Proof of life: this is a token-authenticated request from the alias's real
+    // owner, so the process IS alive right now — refresh liveness before the
+    // content guards below. A send refused for an empty body or bad kind still
+    // came from a live agent; requireOwner already blocked anyone who isn't it,
+    // so a dead session can't fake this.
+    this.registry.touchByAct(a.from);
     // Strict identity: an unregistered `from` can't send — closes the window
     // where you forge a message from an alias before its owner registers.
     if (this.strict && !this.registry.has(a.from)) {
@@ -585,7 +590,10 @@ export class Router {
     // only someone the inform was actually delivered to (or a project member) has standing
     const bad = this.notActable(a.corrId, a.from);
     if (bad) return bad;
-    if (!(a.body ?? "").trim()) {
+    // Same exemption as the ask path: an error reply may be body-less because
+    // its errorCode carries the meaning; a normal answer with no words is not
+    // an answer.
+    if (a.status !== "error" && !(a.body ?? "").trim()) {
       return fail("empty_reply", "a reply needs a body — nothing was delivered. (The body is positional: reply <id> --from <you> \"<answer>\")");
     }
     const resp = makeMessage({

@@ -128,6 +128,16 @@ function ageHint(oldestTs: number | null): string {
   return oldestTs ? `, oldest ${humanAge(oldestTs, Math.floor(Date.now() / 1000))} ago` : "";
 }
 
+/**
+ * "last seen 3h ago" vs "left explicitly" for an offline roster row. An alias
+ * that ran `leave` is backdated to lastSeen=0, so a raw age would read "56 years
+ * ago" and undercut the honest-status note it appears in — distinguish a
+ * deliberate departure from a decayed-quiet one.
+ */
+function offlineSince(lastSeen: number): string {
+  return lastSeen === 0 ? "they left the roster explicitly" : `last seen ${humanAge(lastSeen, Math.floor(Date.now() / 1000))} ago`;
+}
+
 /** Parse a duration like "30m", "2h", "1d" (or bare seconds) to seconds; null if malformed. */
 function parseDuration(s: string): number | null {
   const m = /^(\d+)\s*([smhd]?)$/.exec(s.trim());
@@ -200,7 +210,7 @@ const USAGE = `claude-ipc — cross-session messaging
 // silent no-op here, and the old flat allowlist waved it through. `body` appears on
 // send/reply so the "body is positional" hint fires instead of a generic rejection.
 // A command absent from this map (help, serve) skips the check.
-const COMMAND_FLAGS: Record<string, string[]> = {
+export const COMMAND_FLAGS: Record<string, string[]> = {
   register: ["as", "tty"],
   send: ["to", "to-project", "from", "kind", "ttl", "reply-by", "no-reply-expected", "body", "body-file"],
   reply: ["from", "corr", "status", "partial", "body", "body-file"],
@@ -429,7 +439,7 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
         // proceed blind — the two vb lanes lost hold-requests exactly this way.
         if (sent.recipient?.status === "offline") {
           console.error(
-            `note: ${to}'s roster status is offline (last seen ${humanAge(sent.recipient.lastSeen, Math.floor(Date.now() / 1000))} ago). ` +
+            `note: ${to}'s roster status is offline (${offlineSince(sent.recipient.lastSeen)}). ` +
               `Mail waits for them; successors in their cwd are told at register. This describes the roster, not whether their process is alive.`,
           );
         }
@@ -474,7 +484,7 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
         out(replied);
         if (replied.asker?.status === "offline") {
           console.error(
-            `note: the asker's roster status is offline (last seen ${humanAge(replied.asker.lastSeen, Math.floor(Date.now() / 1000))} ago). ` +
+            `note: the asker's roster status is offline (${offlineSince(replied.asker.lastSeen)}). ` +
               `Your answer waits in their mailbox; successors in their cwd are told at register.`,
           );
         }

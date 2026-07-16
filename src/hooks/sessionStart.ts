@@ -13,7 +13,7 @@ import { ttyForPid } from "../badge.ts";
 import { Client } from "../client.ts";
 import { config } from "../config.ts";
 import { humanAge } from "../models.ts";
-import { aliasFor, deliverContext, emitContext, formatRoster, readHookInput } from "./shared.ts";
+import { aliasFor, deliverContext, emitContext, formatRoster, markOrphanShown, readHookInput } from "./shared.ts";
 
 /** Transient/headless sessions shouldn't join the roster — sub-agents and
  *  `claude -p` runs (typically from a temp cwd) would pile up as dead peers. */
@@ -133,6 +133,11 @@ export async function main(): Promise<void> {
       orphanNote =
         `claude-ipc: dead sessions of this project still hold unread mail: ${shown.join(", ")}${more}` +
         ` — peek with: claude-ipc inbox <alias> (age shown; old mail may have been superseded — list: claude-ipc orphans --project)`;
+      // Claim the once-per-session marker the UPS fallback checks, so a session
+      // that DID get this note at start isn't told again on its first turn. A
+      // resume that never fired SessionStart leaves no marker, so the UPS hook
+      // still covers it — the two never both fire.
+      if (input.session_id) markOrphanShown(input.session_id);
     }
   } catch {
     // broker down — orphan surfacing is best-effort

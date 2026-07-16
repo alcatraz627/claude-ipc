@@ -85,4 +85,14 @@ describe("hook lifecycle — the wiring, not just the RPC", () => {
     const second = await runHook("userPromptSubmit.ts", { session_id: "sid-hl-ups", cwd: projDir });
     expect(second).not.toContain("dead mailbox"); // the marker holds
   });
+
+  test("a FRESH session is not told twice — SessionStart's note suppresses the UPS one", async () => {
+    // same session id through both hooks: SessionStart surfaces + claims the
+    // marker, so the following UPS turn must stay silent about orphans
+    const sid = "sid-hl-nodup";
+    const start = await runHook("sessionStart.ts", { session_id: sid, cwd: projDir, source: "startup", session_title: "nodup-lane" });
+    expect(start).toContain("hl-pred"); // SessionStart showed it
+    const ups = await runHook("userPromptSubmit.ts", { session_id: sid, cwd: projDir });
+    expect(ups).not.toContain("dead mailbox"); // ...so UPS doesn't repeat it
+  });
 });

@@ -6,26 +6,20 @@
  * silent rather than failing the turn.
  */
 
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { Client } from "../client.ts";
 import { config } from "../config.ts";
-import { aliasFor, deliverContext, emitContext, readHookInput } from "./shared.ts";
+import { aliasFor, deliverContext, emitContext, markOrphanShown, orphanAlreadyShown, readHookInput } from "./shared.ts";
 
 /**
- * Once per session, name the dead mailboxes still holding this project's mail —
- * the safety net under the register-time surfacing, which a session that never
- * fires a fresh SessionStart register (checkpoint resumes were the suspected
- * case) would otherwise miss entirely. The marker is written BEFORE the note is
- * built so a partial failure can never turn this into an every-turn nag.
+ * The fallback under the register-time orphan surfacing: a session that resumed
+ * without a fresh SessionStart never got that note, so name the dead mailboxes
+ * here instead. Skips when SessionStart already showed it (shared marker), so a
+ * fresh session is never told twice. The marker is claimed BEFORE building the
+ * note so a partial failure can't turn this into an every-turn nag.
  */
 async function orphanNoteOnce(client: Client, sessionId: string | undefined, cwd: string): Promise<string | null> {
-  if (!sessionId) return null;
-  const dir = join(config.metaDir, "orphan-shown");
-  const marker = join(dir, encodeURIComponent(sessionId));
-  if (existsSync(marker)) return null;
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(marker, String(Date.now()));
+  if (!sessionId || orphanAlreadyShown(sessionId)) return null;
+  markOrphanShown(sessionId);
   const list = (((await client.orphans(cwd)) as { orphans?: { alias: string; pending: number }[] }).orphans ?? []).filter(
     (o) => o.pending > 0,
   );
