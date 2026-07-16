@@ -186,10 +186,20 @@ export class Router {
     if (!a.from || !a.to) return fail("bad_args", "send needs from + to");
     const denied = this.requireOwner(req, a.from); // you may only send AS yourself
     if (denied) return denied;
+    this.registry.touchByAct(a.from); // an authorized send is proof of life
     // Strict identity: an unregistered `from` can't send — closes the window
     // where you forge a message from an alias before its owner registers.
     if (this.strict && !this.registry.has(a.from)) {
       return fail("not_registered", `${a.from} must register before sending (strict mode)`);
+    }
+    // A message with no words delivers nothing and reads as ghosting on the
+    // receiving end — refuse at the broker so EVERY client is covered, not just
+    // the CLI's own guard (a whole agent lane once talked in zero bytes).
+    if (!(a.body ?? "").trim()) {
+      return fail(
+        "empty_send",
+        `a message needs a body — nothing was sent. (The body is positional: send --to ${a.to} --from ${a.from} "<message>")`,
+      );
     }
     if (!a.kind || !SENDABLE.includes(a.kind)) {
       // "response" is the top confusion: it's a real kind, but you don't SEND one —
@@ -288,12 +298,17 @@ export class Router {
     // Hand the deadline back rather than letting the caller assume one: the broker is
     // the only party that knows what it will actually honour, and a CLI that guesses
     // would be telling the sender a number nothing enforces.
+    // For a direct send, say what the roster knows about the recipient — a send
+    // to a long-dark alias succeeds by design (mail waits), but the sender
+    // deserves to know it isn't talking to anyone right now.
+    const rec = a.to !== "*" && !isProjectAddress(a.to) ? this.registry.get(a.to) : null;
     return ok({
       msgId: msg.id,
       recipients: targets,
       conversationId,
       replyByS: replyBy,
       releaseAfterS: replyBy === null ? null : replyBy + this.finalGraceS,
+      recipient: rec ? { status: rec.status, lastSeen: rec.lastSeen } : undefined,
     });
   }
 
@@ -451,19 +466,26 @@ export class Router {
     if (!a.from || !a.corrId) return fail("bad_args", "reply needs from + corrId");
     const denied = this.requireOwner(req, a.from); // you may only reply AS yourself
     if (denied) return denied;
+    this.registry.touchByAct(a.from); // an authorized reply is proof of life
     const origin = this.backend.originOf(a.corrId);
     if (!origin) {
-      // The id may be a real message that simply isn't a repliable ASK — a response or
-      // an inform. You reply to answer an open question; to keep a thread going past
-      // that, you SEND. Say which it is and give the exact command, instead of the
-      // dead-end "no message" (the message is right there in their inbox).
       const msg = this.backend.get(a.corrId);
       if (msg) {
+        // An inform's RECIPIENT may reply — it threads a correlated response back
+        // to the author without any of the ask machinery (informs never open an
+        // awaiting, so nothing is owed, nudged, or chased). The author continuing
+        // their own inform, or a response, still steers to send.
+        if (msg.kind === "inform" && msg.fromAlias !== a.from) {
+          return this.replyToInform(
+            { from: a.from, corrId: a.corrId, body: a.body, status: a.status, errorCode: a.errorCode, terminal: a.terminal },
+            msg,
+          );
+        }
         const other = msg.fromAlias === a.from ? msg.toAlias : msg.fromAlias;
         return fail(
           "not_an_ask",
-          `${a.corrId} is ${msg.kind === "inform" ? "an" : "a"} ${msg.kind}, not a question — you reply to answer an ask, not to continue a thread. ` +
-            `To reply to ${other}, send them a new message: claude-ipc send --to ${other} --from ${a.from} "<your message>"`,
+          `${a.corrId} is ${msg.kind === "inform" ? "an" : "a"} ${msg.kind}${msg.kind === "inform" ? " you sent" : ""}, not a question you can answer — ` +
+            `to continue the thread, send: claude-ipc send --to ${other} --from ${a.from} "<your message>"`,
         );
       }
       return fail("no_origin", `no message with id ${a.corrId}`);
@@ -540,7 +562,63 @@ export class Router {
     // seeing an already-answered ask as pending.
     if (isProjectAddress(origin.toAlias)) this.backend.markConsumed(a.corrId, origin.toAlias);
     this.notify(origin.fromAlias);
-    return ok({ msgId: resp.id, terminal, late });
+    // Say who the answer is waiting on if the asker has gone dark — a reply into
+    // a dead session's mailbox reads as delivered while nobody may ever read it.
+    const asker = this.registry.get(origin.fromAlias);
+    return ok({
+      msgId: resp.id,
+      terminal,
+      late,
+      asker: asker ? { status: asker.status, lastSeen: asker.lastSeen } : undefined,
+    });
+  }
+
+  /**
+   * Thread an answer onto an inform (owner-ruled): the recipient's response is
+   * correlated and delivered, but nothing is owed — informs have no awaiting,
+   * so no deadline, nudge, or release machinery ever runs for these.
+   */
+  private replyToInform(
+    a: { from: string; corrId: string; body?: string; status?: Status; errorCode?: ErrorCode; terminal?: boolean },
+    origin: Message,
+  ): Response {
+    // only someone the inform was actually delivered to (or a project member) has standing
+    const bad = this.notActable(a.corrId, a.from);
+    if (bad) return bad;
+    if (!(a.body ?? "").trim()) {
+      return fail("empty_reply", "a reply needs a body — nothing was delivered. (The body is positional: reply <id> --from <you> \"<answer>\")");
+    }
+    const resp = makeMessage({
+      id: this.newId(),
+      kind: "response",
+      fromAlias: a.from,
+      toAlias: origin.fromAlias,
+      ts: this.now(),
+      corrId: a.corrId,
+      status: a.status ?? "ok",
+      errorCode: a.errorCode ?? null,
+      terminal: a.terminal ?? true,
+      body: a.body ?? "",
+      conversationId: origin.conversationId,
+    });
+    this.backend.append(resp);
+    this.backend.enqueue(resp.id, origin.fromAlias);
+    // The replier has acted on the inform — their own pending copy (and a sibling
+    // alias's) stops counting. Project copies stay: an inform to a directory is
+    // information for everyone, and one member answering claims nothing.
+    this.backend.markConsumed(a.corrId, a.from);
+    const fromSid = this.registry.get(a.from)?.sessionId ?? null;
+    if (fromSid && origin.toAlias !== a.from && !isProjectAddress(origin.toAlias)) {
+      if (this.registry.get(origin.toAlias)?.sessionId === fromSid) this.backend.markConsumed(a.corrId, origin.toAlias);
+    }
+    this.notify(origin.fromAlias);
+    const asker = this.registry.get(origin.fromAlias);
+    return ok({
+      msgId: resp.id,
+      terminal: resp.terminal,
+      late: false,
+      asker: asker ? { status: asker.status, lastSeen: asker.lastSeen } : undefined,
+    });
   }
 
   /** Defer a message without losing it: marked seen-and-deferred, still pending + owed. */
@@ -549,6 +627,7 @@ export class Router {
     if (!a.alias || !a.msgId) return fail("bad_args", "snooze needs alias + msgId");
     const denied = this.requireOwner(req, a.alias); // only the recipient defers
     if (denied) return denied;
+    this.registry.touchByAct(a.alias);
     const bad = this.notActable(a.msgId, a.alias);
     if (bad) return bad;
     this.backend.markSurfaced(a.msgId, a.alias);
@@ -589,6 +668,7 @@ export class Router {
     if (!a.alias || !a.msgId) return fail("bad_args", "accept needs alias + msgId");
     const denied = this.requireOwner(req, a.alias); // only the recipient consents
     if (denied) return denied;
+    this.registry.touchByAct(a.alias);
     const bad = this.notActable(a.msgId, a.alias);
     if (bad) return bad;
 
@@ -627,6 +707,7 @@ export class Router {
     if (!a.from || !a.msgId) return fail("bad_args", "decline needs from + msgId");
     const denied = this.requireOwner(req, a.from); // only the recipient declines
     if (denied) return denied;
+    this.registry.touchByAct(a.from);
     const bad = this.notActable(a.msgId, a.from);
     if (bad) return bad;
     const origin = this.backend.originOf(a.msgId);

@@ -399,9 +399,23 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
         out(res);
         // An ask now carries a deadline, so say what it bought. A sender that knows
         // when it will be released can plan around silence instead of guessing at it.
-        const sent = res as { msgId?: string; replyByS?: number | null; releaseAfterS?: number | null };
+        const sent = res as {
+          msgId?: string;
+          replyByS?: number | null;
+          releaseAfterS?: number | null;
+          recipient?: { status: string; lastSeen: number };
+        };
         if (sent.msgId && (kind === "query" || kind === "request")) {
           console.error(replyByContract(sent.msgId, to, sent.replyByS ?? null, sent.releaseAfterS ?? null));
+        }
+        // Delivered ≠ heard: a send to a dark alias succeeds by design (mail
+        // waits), so say what the roster shows rather than letting the sender
+        // proceed blind — the two vb lanes lost hold-requests exactly this way.
+        if (sent.recipient?.status === "offline") {
+          console.error(
+            `note: ${to}'s roster status is offline (last seen ${humanAge(sent.recipient.lastSeen, Math.floor(Date.now() / 1000))} ago). ` +
+              `Mail waits for them; successors in their cwd are told at register. This describes the roster, not whether their process is alive.`,
+          );
         }
         return 0;
       }
@@ -434,15 +448,20 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
           );
           return 2;
         }
-        out(
-          await client.reply({
-            from,
-            corrId,
-            body: replyBody,
-            status: flags.status === "error" ? "error" : "ok",
-            terminal: !flags.partial, // --partial → interim ack/update; default is the final reply
-          }),
-        );
+        const replied = (await client.reply({
+          from,
+          corrId,
+          body: replyBody,
+          status: flags.status === "error" ? "error" : "ok",
+          terminal: !flags.partial, // --partial → interim ack/update; default is the final reply
+        })) as { asker?: { status: string; lastSeen: number } };
+        out(replied);
+        if (replied.asker?.status === "offline") {
+          console.error(
+            `note: the asker's roster status is offline (last seen ${humanAge(replied.asker.lastSeen, Math.floor(Date.now() / 1000))} ago). ` +
+              `Your answer waits in their mailbox; successors in their cwd are told at register.`,
+          );
+        }
         return 0;
       }
       case "inbox": {

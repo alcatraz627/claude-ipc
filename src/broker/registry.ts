@@ -100,6 +100,21 @@ export class Registry {
   }
 
   /**
+   * An acting op (send/reply/consent) is proof of life right now — refresh the
+   * whole session. An explicitly-LEFT alias stays retired (same sticky rule as
+   * touchSiblings): register is the way back, an act must not resurrect it.
+   * Polling ops (check/deliver/count/list/await) must NEVER route here — a
+   * detached watcher polls forever and would keep a dead session alive.
+   */
+  touchByAct(alias: string): void {
+    const e = this.entries.get(alias);
+    if (!e || e.status === "offline") return;
+    e.lastSeen = this.now();
+    e.status = "live";
+    this.touchSiblings(e.sessionId, alias);
+  }
+
+  /**
    * A liveness signal through ANY of a session's aliases speaks for all of them.
    *
    * Sessions often hold several names; when only one heartbeated, a live session

@@ -189,6 +189,12 @@ export class Client {
     const db = new SqliteBackend(this.fallback!.dbPath);
     try {
       if (op === "send") {
+        // same fail-loud contract as the broker's empty_send — degraded mode is
+        // the one path that bypasses the router, and it must not re-open the
+        // zero-byte hole for MCP callers while the broker is down
+        if (!String(args.body ?? "").trim()) {
+          throw new Error(`empty_send: a message needs a body — nothing was sent (broker down, degraded mode)`);
+        }
         const id = `msg-${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`; // 64 bits — see server.mkId
         db.append(
           makeMessage({
