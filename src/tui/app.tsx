@@ -21,7 +21,9 @@ import { actingCandidates, sessionIdentity, type Identity } from "./identity.ts"
 import {
   actionsFor,
   copyFieldsForMessage,
+  copyFieldsForOrphan,
   copyFieldsForPeer,
+  copyFieldsForProject,
   filterRoster,
   groupRoster,
   lastMessageFor,
@@ -32,6 +34,7 @@ import {
   type CopyField,
   type RosterRow,
 } from "./model.ts";
+import { LogView, OrphansView, ProjectsView } from "./views/browse.tsx";
 import type { EditState } from "./widgets/textarea-ops.ts";
 import { AskInput, CopyMenu, Help, IdentityPicker, QuitGuard } from "./modals.tsx";
 import { theme } from "./theme.ts";
@@ -68,13 +71,6 @@ function followSelection(
   else if (vh > 0 && sel >= top + vh) sb.scrollTo(sel - vh + 1);
 }
 
-/** Where each not-yet-built view lives meanwhile — honesty beats a blank pane. */
-const PLACEHOLDER: Record<"projects" | "orphans" | "log", [phase: string, cli: string]> = {
-  projects: ["phase 4", "claude-ipc projects"],
-  orphans: ["phase 4", "claude-ipc orphans"],
-  log: ["phase 4", "claude-ipc log"],
-};
-
 function App({ client }: { client: Client }) {
   const { exit } = useApp();
   const [view, setView] = useState<View>("peers");
@@ -94,29 +90,49 @@ function App({ client }: { client: Client }) {
   const [thread, setThread] = useState<{ msgId: string; question: string | null; replies: number } | null>(null);
   const [editorBusy, setEditorBusy] = useState(false);
   const editorBusyRef = useRef(false);
+  const [projSel, setProjSel] = useState(0);
+  const [orphSel, setOrphSel] = useState(0);
+  const [logSel, setLogSel] = useState(0);
+  const [logOperator, setLogOperator] = useState(false);
+  const [peek, setPeek] = useState<{ key: string; messages: Message[] | null } | null>(null);
 
   const inFlight = useRef(false);
+  const rerun = useRef(false);
   type ScrollHandle = { scrollTo(y: number): void; getScrollTop(): number; getViewportHeight(): number };
   const scrollRef = useRef<ScrollHandle>(null);
   const inboxScrollRef = useRef<ScrollHandle>(null);
 
   async function refresh(): Promise<void> {
-    if (inFlight.current) return;
+    // A refresh requested mid-fetch runs AFTER the current one instead of being
+    // dropped — the operator toggle and post-action refetches must always land.
+    if (inFlight.current) {
+      rerun.current = true;
+      return;
+    }
     inFlight.current = true;
     try {
-      const snap = await fetchFabric(client, identity?.alias);
+      const snap = await fetchFabric(client, identity?.alias, logOperator);
       // while $EDITOR owns the terminal, any render would scribble over it
       if (!editorBusyRef.current) setSnapshot(snap);
     } finally {
       inFlight.current = false;
+      if (rerun.current) {
+        rerun.current = false;
+        void refreshRef.current();
+      }
     }
   }
+  // Latest-callback ref: the interval and the rerun chain must call the CURRENT
+  // refresh (fresh identity/operator params), never the closure they were born in.
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
 
   useEffect(() => {
     void refresh();
-    // identity changes what "my inbox" means — refetch under the new name
-  }, [identity?.alias]);
-  useInterval(() => void refresh(), editorBusy ? null : 5000);
+    // identity changes what "my inbox" means; the operator toggle changes
+    // which bodies history may show — both refetch
+  }, [identity?.alias, logOperator]);
+  useInterval(() => void refreshRef.current(), editorBusy ? null : 5000);
   useInterval(() => setNowS(Math.floor(Date.now() / 1000)), editorBusy ? null : 1000);
 
   // A bare shell has no session alias: once the roster is here, offer the
@@ -194,6 +210,32 @@ function App({ client }: { client: Client }) {
   }, [selectedMsg?.id, identity?.alias]);
 
   const threadFor = thread && thread.msgId === selectedMsg?.id ? thread : null;
+
+  const logSorted = [...snapshot.history].sort((a, b) => b.ts - a.ts);
+  const projClamped = Math.min(projSel, Math.max(0, snapshot.projects.length - 1));
+  const orphClamped = Math.min(orphSel, Math.max(0, snapshot.orphans.length - 1));
+  const logClamped = Math.min(logSel, Math.max(0, logSorted.length - 1));
+
+  // Peek the selected project/orphan mailbox — read-only, never consuming.
+  useEffect(() => {
+    const target =
+      view === "projects" && snapshot.projects[projClamped]
+        ? { key: `proj:${snapshot.projects[projClamped]!.path}`, fetch: () => client.checkProject(snapshot.projects[projClamped]!.path, false, identity?.alias) }
+        : view === "orphans" && snapshot.orphans[orphClamped]
+          ? { key: `orph:${snapshot.orphans[orphClamped]!.alias}`, fetch: () => client.check(snapshot.orphans[orphClamped]!.alias, false) }
+          : null;
+    if (!target) return;
+    let stale = false;
+    target
+      .fetch()
+      .then((r: { messages: Message[] }) => !stale && setPeek({ key: target.key, messages: r.messages ?? [] }))
+      .catch(() => !stale && setPeek({ key: target.key, messages: null }));
+    return () => {
+      stale = true;
+    };
+  }, [view, projClamped, orphClamped, snapshot.at]);
+
+  const peekFor = (key: string): Message[] | null => (peek?.key === key ? peek.messages : []);
 
   function openCopyMenu(): void {
     if (!selected) return;
@@ -494,6 +536,37 @@ function App({ client }: { client: Client }) {
       }
       return;
     }
+
+    // -- the read-only fabric views --
+    if (view === "projects" || view === "orphans" || view === "log") {
+      const [len, setSelFn] =
+        view === "projects"
+          ? ([snapshot.projects.length, setProjSel] as const)
+          : view === "orphans"
+            ? ([snapshot.orphans.length, setOrphSel] as const)
+            : ([logSorted.length, setLogSel] as const);
+      if (key.upArrow || input === "k") return setSelFn((s) => Math.max(0, Math.min(s, len - 1) - 1));
+      if (key.downArrow || input === "j") return setSelFn((s) => Math.min(len - 1, s + 1));
+      if (key.pageUp) return setSelFn((s) => Math.max(0, s - 10));
+      if (key.pageDown) return setSelFn((s) => Math.min(len - 1, s + 10));
+      if (input === "g") return setSelFn(0);
+      if (input === "G") return setSelFn(Math.max(0, len - 1));
+      if (input === "o" && view === "log") {
+        setLogOperator((v) => !v);
+        return setToast({ text: logOperator ? "bodies: party-scoped" : "bodies: OPERATOR — everything on this machine", kind: "ok" });
+      }
+      if (input === "y") {
+        if (view === "projects" && snapshot.projects[projClamped])
+          return setModal({ t: "copy", fields: copyFieldsForProject(snapshot.projects[projClamped]!), sel: 0 });
+        if (view === "orphans" && snapshot.orphans[orphClamped])
+          return setModal({ t: "copy", fields: copyFieldsForOrphan(snapshot.orphans[orphClamped]!), sel: 0 });
+        if (view === "log" && logSorted[logClamped])
+          return setModal({ t: "copy", fields: copyFieldsForMessage(logSorted[logClamped]!, identity?.alias), sel: 0 });
+        return setToast({ text: "nothing selected", kind: "err" });
+      }
+      if (key.escape) return setModal({ t: "quit" });
+      return;
+    }
     if (key.escape) return setModal({ t: "quit" });
   }
 
@@ -632,11 +705,24 @@ function App({ client }: { client: Client }) {
               <MessagePane msg={selectedMsg} nowS={nowS} thread={threadFor} />
             </Box>
           </Box>
+        ) : view === "projects" ? (
+          <ProjectsView
+            projects={snapshot.projects}
+            sel={projClamped}
+            nowS={nowS}
+            peeked={snapshot.projects[projClamped] ? peekFor(`proj:${snapshot.projects[projClamped]!.path}`) : []}
+            onSelect={setProjSel}
+          />
+        ) : view === "orphans" ? (
+          <OrphansView
+            orphans={snapshot.orphans}
+            sel={orphClamped}
+            nowS={nowS}
+            peeked={snapshot.orphans[orphClamped] ? peekFor(`orph:${snapshot.orphans[orphClamped]!.alias}`) : []}
+            onSelect={setOrphSel}
+          />
         ) : (
-          <Box flexGrow={1} alignItems="center" justifyContent="center" flexDirection="column">
-            <Text dim>{`${view.toUpperCase()} arrives in ${PLACEHOLDER[view][0]}`}</Text>
-            <Text dim>{`meanwhile: ${PLACEHOLDER[view][1]}`}</Text>
-          </Box>
+          <LogView history={logSorted} sel={logClamped} nowS={nowS} operator={logOperator} onSelect={setLogSel} />
         )}
 
         <Box paddingX={1}>
@@ -646,8 +732,10 @@ function App({ client }: { client: Client }) {
               : inboxFocused
                 ? "↑↓ move · r reply · a accept · d decline · s snooze · y copy · esc back · q quit"
                 : view === "peers"
-                  ? "↑↓ move · y copy · / filter · o offline · i/→ inbox · tab views · ? help · q quit"
-                  : "tab views · R refresh · ? help · q quit"}
+                  ? "↑↓ move · enter compose · y copy · / filter · o offline · i/→ inbox · ? help · q quit"
+                  : view === "log"
+                    ? "↑↓ move · o operator bodies · y copy · tab views · ? help · q quit"
+                    : "↑↓ move · y copy · tab views · R refresh · ? help · q quit"}
           </Text>
           <Spacer />
           {toast && (

@@ -15,13 +15,29 @@ export interface PeerCounts {
   owed: number;
 }
 
+export interface ProjectBox {
+  address: string;
+  path: string;
+  pending: number;
+}
+
+export interface OrphanBox {
+  alias: string;
+  cwd: string | null;
+  lastSeen: number | null;
+  pending: number;
+  oldestTs: number | null;
+}
+
 export interface FabricSnapshot {
   at: number; // epoch seconds of this pass
   brokerUp: boolean;
   peers: RegistryEntry[];
   myInbox: Message[]; // peeked, not consumed
   peerInboxes: Map<string, Message[] | null>; // alias → peeked pending mail (null = unreadable)
-  history: Message[]; // recent flow, party-scoped bodies
+  history: Message[]; // recent flow; bodies party-scoped unless operator was asked for
+  projects: ProjectBox[];
+  orphans: OrphanBox[];
 }
 
 /** How far back the flow view reaches. History is uncapped broker-side; always bound it. */
@@ -34,9 +50,11 @@ export const EMPTY_SNAPSHOT: FabricSnapshot = {
   myInbox: [],
   peerInboxes: new Map(),
   history: [],
+  projects: [],
+  orphans: [],
 };
 
-export async function fetchFabric(client: Client, selfAlias: string | undefined): Promise<FabricSnapshot> {
+export async function fetchFabric(client: Client, selfAlias: string | undefined, operator = false): Promise<FabricSnapshot> {
   const at = Math.floor(Date.now() / 1000);
   let peers: RegistryEntry[];
   try {
@@ -48,16 +66,24 @@ export async function fetchFabric(client: Client, selfAlias: string | undefined)
   // Count mailboxes only for sessions that can still act on them — peeking the
   // offline graveyard would be dozens of round trips for rows shown collapsed.
   const active = peers.filter((p) => p.status !== "offline").map((p) => p.alias);
-  const [myInbox, history, peeked] = await Promise.all([
+  const [myInbox, history, peeked, projects, orphans] = await Promise.all([
     selfAlias ? peek(client, selfAlias) : Promise.resolve<Message[] | null>([]),
     client
-      .history({ since: at - HISTORY_WINDOW_S }, selfAlias, false)
+      .history({ since: at - HISTORY_WINDOW_S }, selfAlias, operator)
       .then((r: { messages: Message[] }) => r.messages ?? [])
       .catch(() => [] as Message[]),
     Promise.all(active.map(async (alias) => [alias, await peek(client, alias)] as const)),
+    client
+      .projects()
+      .then((r: { projects: ProjectBox[] }) => r.projects ?? [])
+      .catch(() => [] as ProjectBox[]),
+    client
+      .orphans()
+      .then((r: { orphans: OrphanBox[] }) => r.orphans ?? [])
+      .catch(() => [] as OrphanBox[]),
   ]);
 
-  return { at, brokerUp: true, peers, myInbox: myInbox ?? [], peerInboxes: new Map(peeked), history };
+  return { at, brokerUp: true, peers, myInbox: myInbox ?? [], peerInboxes: new Map(peeked), history, projects, orphans };
 }
 
 /** Non-consuming inbox read; null when this alias's mailbox isn't ours to read. */

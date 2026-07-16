@@ -234,6 +234,37 @@ export function messagePreview(
   return { title: m.id, rows, body: sanitizeBlock(m.body) };
 }
 
+/** One LOG line: clock, route, kind, sanitized head — the `tail` line, as data. */
+export function logLine(m: Message, nowS: number): { age: string; route: string; kind: string; head: string; err: boolean } {
+  return {
+    age: ageLabel(m.ts, nowS),
+    route: `${sanitizeInline(m.fromAlias)}→${sanitizeInline(m.toAlias)}`,
+    kind: m.kind + (m.status === "error" ? `:${m.errorCode ?? "error"}` : ""),
+    head: inlineHead(m.body, 48),
+    err: m.status === "error",
+  };
+}
+
+/** Copy-menu fields for a project mailbox. */
+export function copyFieldsForProject(p: { address: string; path: string }): CopyField[] {
+  return [
+    { label: "path", value: p.path },
+    { label: "address", value: p.address },
+    { label: "peek command", value: `claude-ipc inbox --project ${p.path}` },
+    { label: "send command", value: `claude-ipc send --to-project ${p.path} "<message>"` },
+  ];
+}
+
+/** Copy-menu fields for a dead session still holding mail — the successor's toolkit. */
+export function copyFieldsForOrphan(o: { alias: string; cwd: string | null }): CopyField[] {
+  return [
+    { label: "alias", value: o.alias },
+    ...(o.cwd ? [{ label: "cwd", value: o.cwd }] : []),
+    { label: "peek command", value: `claude-ipc inbox ${o.alias}` },
+    { label: "claim command", value: `claude-ipc inbox ${o.alias} --consume` },
+  ];
+}
+
 /**
  * Send targets for the compose picker: one entry per peer session (never your
  * own — the broker refuses self-sends), plus this directory's project mailbox
