@@ -146,6 +146,24 @@ describe("rca fixes — router level", () => {
     });
   });
 
+  describe("party-scoping is sibling-aware (B12 — found in the post-deploy round-trip)", () => {
+    test("show/status renders the body for a message addressed to a SIBLING alias of the caller", () => {
+      reg("dream-main", "sid-dream");
+      reg("dream-alt", "sid-dream"); // same session, two names
+      // addressed to the SIBLING; caller presents dream-main's token
+      const sent = okOf(call("send", { from: "alice", to: "dream-alt", kind: "inform", body: "secret for the dream lane" }, "alice"));
+      const res = okOf(call("status", { msgId: sent.msgId as string }, "dream-main"));
+      expect((res.message as { body: string }).body).toBe("secret for the dream lane"); // not [hidden]
+    });
+
+    test("a true non-party (different session) still gets the body blanked", () => {
+      reg("stranger", "sid-stranger");
+      const sent = okOf(call("send", { from: "alice", to: "bob", kind: "inform", body: "not for strangers" }, "alice"));
+      const res = okOf(call("status", { msgId: sent.msgId as string }, "stranger"));
+      expect((res.message as { body: string }).body).toContain("hidden");
+    });
+  });
+
   describe("recipient/asker status on results (F3/F4)", () => {
     test("send reports the recipient's roster status; reply reports the asker's", () => {
       clock += 3600; // bob decays to offline

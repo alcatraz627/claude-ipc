@@ -902,9 +902,17 @@ export class Router {
     };
   }
 
-  /** Was this session either end of the message — or a member of the project it went to? */
+  /**
+   * Was the caller's SESSION either end of the message — or a member of the
+   * project it went to? Checked against every alias the session holds, not just
+   * the one whose token was presented: a session addressed under one name and
+   * reading under a sibling (i-dream / catch-audit-7f) is the same agent, and
+   * blanking its own mail's body as "not a party" was the sibling-blindness the
+   * obligation and liveness fixes already cured elsewhere.
+   */
   private involves(m: Message, self: string): boolean {
-    if (m.fromAlias === self || m.toAlias === self) return true;
+    const mine = new Set(this.registry.list().find((e) => e.alias === self)?.sessionAliases ?? [self]);
+    if (mine.has(m.fromAlias) || mine.has(m.toAlias)) return true;
     if (m.toAlias === "*") return true;
     if (!isProjectAddress(m.toAlias)) return false;
     const e = this.registry.get(self);
