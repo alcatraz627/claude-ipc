@@ -228,7 +228,17 @@ const COMMAND_FLAGS: Record<string, string[]> = {
 export async function run(argv: string[], opts: { socketPath?: string } = {}): Promise<number> {
   const { cmd, positional, flags } = parse(argv);
   const client = new Client(opts.socketPath ?? config.socketPath);
-  const out = (v: unknown): void => console.log(typeof v === "string" ? v : JSON.stringify(v, null, 2));
+  // Small output goes through console.log (test-capturable, human-normal). A
+  // large payload must use the process.stdout stream instead: Bun's console
+  // channel has no flush handle, and a piped payload past one 64KB buffer
+  // loses its tail at exit — nondeterministically (log/peers, live 07-16,
+  // three times). The entry tail awaits stdoutDrain before letting go.
+  const out = (v: unknown): void => {
+    const s = typeof v === "string" ? v : JSON.stringify(v, null, 2);
+    if (s.length > 32_768) {
+      stdoutDrain = new Promise((resolve) => process.stdout.write(s + "\n", () => resolve()));
+    } else console.log(s);
+  };
 
   const allowedFlags = COMMAND_FLAGS[cmd];
   if (allowedFlags) {
@@ -806,12 +816,17 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
   }
 }
 
+/** The last big stdout write's flush promise — the exit path must outlive it. */
+let stdoutDrain: Promise<void> | null = null;
+
 if (import.meta.main) {
-  // exitCode, never process.exit(): a hard exit races the async stdout flush
-  // and truncated any output past ~64KB mid-JSON (log/peers, found live 07-16).
-  // Every returning verb closes its sockets and timers, so the loop drains and
-  // exits on its own; serve/tail never reach here.
-  run(Bun.argv.slice(2)).then((code) => {
+  // exitCode + awaiting the big-write drain, never process.exit(): a hard exit
+  // truncated piped output past ~64KB, and Bun's console channel can drop a
+  // queued tail even at natural exit (nondeterministic — an earlier fix here
+  // "verified" on one lucky run and was falsified on the next; see the pipe
+  // drain test for the layer that actually proves it).
+  run(Bun.argv.slice(2)).then(async (code) => {
     process.exitCode = code;
+    if (stdoutDrain) await stdoutDrain;
   });
 }

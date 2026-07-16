@@ -103,16 +103,21 @@ orphaned() {
 # registry which aliases share our session id; broker down → empty, and the
 # side-file alias alone carries the tick.
 sibling_aliases() {
+  # A parse failure here must be LOUD in the log: this exact failure was silent
+  # (exit 0) while a truncated `peers` blob collapsed the watcher to one mailbox
+  # and a live session got ghosted on its public name (B10, 2026-07-16). The
+  # side-file alias still carries the tick either way — degraded, not deaf.
   "$CIPC" peers 2>/dev/null | "$PY" -c '
 import sys, json
 try:
     peers = json.load(sys.stdin).get("peers", [])
-except Exception:
+except Exception as e:
+    print(f"sibling-alias query FAILED ({e}) — watching the side-file alias only this tick", file=sys.stderr)
     sys.exit(0)
 for p in peers:
     if p.get("sessionId") == sys.argv[1] and p.get("alias") != sys.argv[2]:
         print(p.get("alias"))
-' "$SID" "$1" 2>/dev/null | sort -u
+' "$SID" "$1" 2>>"$LOG" | sort -u
 }
 
 # One snapshot of EVERY watched mailbox (all this session's aliases + the
