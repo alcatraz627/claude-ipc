@@ -146,6 +146,7 @@ const HELP_LINES: [string, string][] = [
   ["/", "filter the list (esc clears)"],
   ["y", "copy menu for the selection"],
   ["o", "expand / collapse offline peers"],
+  ["c / enter", "compose (enter on a peer prefills them)"],
   ["i / →", "focus the inbox pane (esc returns)"],
   ["r a d s", "reply · accept · decline · snooze (inbox)"],
   ["R", "refresh now (auto every 5s)"],

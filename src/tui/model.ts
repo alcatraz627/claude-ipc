@@ -234,6 +234,25 @@ export function messagePreview(
   return { title: m.id, rows, body: sanitizeBlock(m.body) };
 }
 
+/**
+ * Send targets for the compose picker: one entry per peer session (never your
+ * own — the broker refuses self-sends), plus this directory's project mailbox
+ * and the broadcast address. Same ordering as the roster.
+ */
+export function recipientOptions(rows: RosterRow[], cwd: string): { label: string; value: string }[] {
+  const peers = rows
+    .filter((r) => !r.you)
+    .map((r) => ({
+      label: `${r.alias}${r.also.length ? ` (+${r.also.length})` : ""} · ${r.cwd.split("/").pop() || "?"} · ${r.status}`,
+      value: r.alias,
+    }));
+  return [
+    ...peers,
+    { label: `proj: ${cwd}  (whoever works in this tree)`, value: `proj:${cwd}` },
+    { label: "* broadcast to all live peers", value: "*" },
+  ];
+}
+
 /** Preview-pane lines for a roster selection. Pure data; the component styles them. */
 export interface PreviewData {
   title: string;

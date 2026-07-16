@@ -73,6 +73,10 @@ export const config = {
     finalGraceS: envNum("CLAUDE_IPC_REPLY_FINAL_GRACE_S", 600),
   },
 
+  // The human's editor, for the dashboard's compose escalation. Standard
+  // VISUAL/EDITOR contract; vi is the POSIX-safe fallback.
+  editor: process.env.VISUAL || process.env.EDITOR || "vi",
+
   badge: (process.env.CLAUDE_IPC_BADGE ?? "1") !== "0", // broker→peer-TTY tab badge
   allowlist: parseAllowlist(process.env.CLAUDE_IPC_ALLOWLIST), // {target: [allowed senders]}
 } as const;

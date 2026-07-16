@@ -10,10 +10,13 @@ import { AlternateScreen, Box, render, Spacer, Text, useApp, useInput, useInterv
 import { useEffect, useRef, useState } from "react";
 import type { Client } from "../client.ts";
 import { spawnBroker } from "../daemonCtl.ts";
+import { BrokerError } from "../client.ts";
 import type { Message } from "../models.ts";
 import { acceptMsg, declineMsg, replyTo, snoozeMsg } from "./actions.ts";
 import { copyToClipboard } from "./clipboard.ts";
+import { ComposePanel, KINDS, REPLY_BY_OPTIONS, type ComposeState, type ComposeStep } from "./compose.tsx";
 import { EMPTY_SNAPSHOT, fetchFabric, type FabricSnapshot } from "./data.ts";
+import { editInEditor } from "./editor.ts";
 import { actingCandidates, sessionIdentity, type Identity } from "./identity.ts";
 import {
   actionsFor,
@@ -25,9 +28,11 @@ import {
   lastOpenAskFrom,
   peerPreview,
   pendingStats,
+  recipientOptions,
   type CopyField,
   type RosterRow,
 } from "./model.ts";
+import type { EditState } from "./widgets/textarea-ops.ts";
 import { AskInput, CopyMenu, Help, IdentityPicker, QuitGuard } from "./modals.tsx";
 import { theme } from "./theme.ts";
 import { InboxList, MessagePane } from "./views/inbox.tsx";
@@ -43,6 +48,7 @@ type Modal =
   | { t: "identity"; candidates: string[]; sel: number }
   | { t: "reply"; msg: Message; value: string }
   | { t: "decline"; msg: Message; value: string }
+  | ComposeState
   | null;
 
 interface Toast {
@@ -86,6 +92,8 @@ function App({ client }: { client: Client }) {
   const [inboxSel, setInboxSel] = useState(0);
   const [focusedPane, setFocusedPane] = useState<Pane>("roster");
   const [thread, setThread] = useState<{ msgId: string; question: string | null; replies: number } | null>(null);
+  const [editorBusy, setEditorBusy] = useState(false);
+  const editorBusyRef = useRef(false);
 
   const inFlight = useRef(false);
   type ScrollHandle = { scrollTo(y: number): void; getScrollTop(): number; getViewportHeight(): number };
@@ -96,7 +104,9 @@ function App({ client }: { client: Client }) {
     if (inFlight.current) return;
     inFlight.current = true;
     try {
-      setSnapshot(await fetchFabric(client, identity?.alias));
+      const snap = await fetchFabric(client, identity?.alias);
+      // while $EDITOR owns the terminal, any render would scribble over it
+      if (!editorBusyRef.current) setSnapshot(snap);
     } finally {
       inFlight.current = false;
     }
@@ -106,8 +116,8 @@ function App({ client }: { client: Client }) {
     void refresh();
     // identity changes what "my inbox" means — refetch under the new name
   }, [identity?.alias]);
-  useInterval(() => void refresh(), 5000);
-  useInterval(() => setNowS(Math.floor(Date.now() / 1000)), 1000);
+  useInterval(() => void refresh(), editorBusy ? null : 5000);
+  useInterval(() => setNowS(Math.floor(Date.now() / 1000)), editorBusy ? null : 1000);
 
   // A bare shell has no session alias: once the roster is here, offer the
   // registered identities we hold tokens for. Esc = browse read-only.
@@ -200,6 +210,82 @@ function App({ client }: { client: Client }) {
   /** The inbox has focus (home lower pane, or the INBOX tab). */
   const inboxFocused = (view === "peers" && focusedPane === "inbox") || view === "inbox";
 
+  function openCompose(prefillTo?: string): void {
+    if (!requireIdentity()) return;
+    const recipients = recipientOptions(grouped, process.cwd());
+    if (recipients.length === 0) return setToast({ text: "nobody to send to yet", kind: "err" });
+    setModal({
+      t: "compose",
+      step: prefillTo ? "kind" : "to",
+      recipients,
+      toSel: 0,
+      to: prefillTo ?? null,
+      kindSel: 0,
+      kind: "inform",
+      body: { text: "", cursor: 0 },
+      replyBySel: 0,
+    });
+  }
+
+  // Functional like every other incremental update: a fast key-run is one React
+  // batch, and a patch computed from the closure would collapse it.
+  const patchCompose = (patch: Partial<ComposeState> | ((m: ComposeState) => Partial<ComposeState>)) =>
+    setModal((m) => (m?.t === "compose" ? { ...m, ...(typeof patch === "function" ? patch(m) : patch) } : m));
+
+  /** Advance out of the body step; an empty body never proceeds toward send. */
+  function bodyDone(c: ComposeState): void {
+    if (!c.body.text.trim()) return setToast({ text: "the body is empty — nothing to send yet", kind: "err" });
+    patchCompose({ step: c.kind === "inform" ? "confirm" : "replyBy" });
+  }
+
+  /** Swap the whole screen for $EDITOR, then take its text back into the body. */
+  async function bodyEditor(c: ComposeState): Promise<void> {
+    editorBusyRef.current = true;
+    setEditorBusy(true);
+    await new Promise((r) => setTimeout(r, 120)); // let the fallback frame flush before the editor claims the tty
+    const edited = await editInEditor(c.body.text);
+    editorBusyRef.current = false;
+    setEditorBusy(false);
+    if (edited === null) return setToast({ text: "$EDITOR aborted — body unchanged", kind: "err" });
+    patchCompose({ body: { text: edited, cursor: edited.length } });
+  }
+
+  async function submitCompose(c: ComposeState): Promise<void> {
+    const from = requireIdentity();
+    if (!from || !c.to) return;
+    if (!c.body.text.trim()) return setToast({ text: "the body is empty — nothing was sent", kind: "err" });
+    try {
+      const replyByS = c.kind === "inform" ? undefined : REPLY_BY_OPTIONS[c.replyBySel]!.value;
+      const res = (await client.send({ from, to: c.to, kind: c.kind, body: c.body.text, replyByS })) as {
+        msgId: string;
+        replyByS: number | null;
+      };
+      setToast({
+        text: `sent ${res.msgId} to ${c.to}${res.replyByS ? ` — they get nudged at ${Math.round(res.replyByS / 60)}m` : ""}`,
+        kind: "ok",
+      });
+      setModal(null);
+      void refresh();
+    } catch (e) {
+      const text = e instanceof BrokerError ? `refused (${e.code}): ${e.message.slice(0, 90)}` : String(e).slice(0, 90);
+      setToast({ text, kind: "err" });
+    }
+  }
+
+  /** One step back in the compose flow — the anti-dead-end contract. */
+  function composeBack(c: ComposeState): void {
+    const back: Record<ComposeStep, ComposeStep | null> = {
+      to: null,
+      kind: "to",
+      body: "kind",
+      replyBy: "body",
+      confirm: c.kind === "inform" ? "body" : "replyBy",
+    };
+    const prev = back[c.step];
+    if (prev === null) setModal(null);
+    else patchCompose({ step: prev });
+  }
+
   function requireIdentity(): string | null {
     if (identity) return identity.alias;
     setToast({ text: "read-only — @ to pick an identity", kind: "err" });
@@ -281,6 +367,36 @@ function App({ client }: { client: Client }) {
     // -- modal level: an open modal owns every key --
     if (modal) {
       if (modal.t === "reply" || modal.t === "decline") return; // TextField owns these keys
+      if (modal.t === "compose") {
+        const c = modal;
+        if (c.step === "body") return; // TextArea owns the body step's keys
+        if (key.escape) return composeBack(c);
+        if (c.step === "to") {
+          if (key.upArrow || input === "k") return patchCompose((m) => ({ toSel: Math.max(0, m.toSel - 1) }));
+          if (key.downArrow || input === "j")
+            return patchCompose((m) => ({ toSel: Math.min(m.recipients.length - 1, m.toSel + 1) }));
+          if (key.pageUp) return patchCompose((m) => ({ toSel: Math.max(0, m.toSel - 9) }));
+          if (key.pageDown) return patchCompose((m) => ({ toSel: Math.min(m.recipients.length - 1, m.toSel + 9) }));
+          if (key.return) return patchCompose((m) => ({ to: m.recipients[m.toSel]!.value, step: "kind" }));
+          return;
+        }
+        if (c.step === "kind") {
+          if (key.upArrow || input === "k") return patchCompose((m) => ({ kindSel: Math.max(0, m.kindSel - 1) }));
+          if (key.downArrow || input === "j")
+            return patchCompose((m) => ({ kindSel: Math.min(KINDS.length - 1, m.kindSel + 1) }));
+          if (key.return) return patchCompose((m) => ({ kind: KINDS[m.kindSel]!, step: "body" }));
+          return;
+        }
+        if (c.step === "replyBy") {
+          if (key.upArrow || input === "k") return patchCompose((m) => ({ replyBySel: Math.max(0, m.replyBySel - 1) }));
+          if (key.downArrow || input === "j")
+            return patchCompose((m) => ({ replyBySel: Math.min(REPLY_BY_OPTIONS.length - 1, m.replyBySel + 1) }));
+          if (key.return) return patchCompose({ step: "confirm" });
+          return;
+        }
+        if (c.step === "confirm" && key.return) return void submitCompose(c);
+        return;
+      }
       if (modal.t === "quit") {
         if (input === "y" || key.return) exit();
         else if (input === "n" || key.escape || input === "q") setModal(null);
@@ -332,6 +448,7 @@ function App({ client }: { client: Client }) {
     if (input === "R") return void refresh();
     if (input === "q") return setModal({ t: "quit" });
     if (input === "@") return openIdentityPicker();
+    if (input === "c") return openCompose();
     if (input === "d" && !snapshot.brokerUp) return startBroker();
 
     // -- inbox keys, wherever the inbox has focus (home lower pane or INBOX tab) --
@@ -366,7 +483,11 @@ function App({ client }: { client: Client }) {
       if (input === "o") return setOfflineExpanded((v) => !v);
       if (input === "y") return openCopyMenu();
       if (input === "i" || key.rightArrow) return setFocusedPane("inbox");
-      if (key.return) return setToast({ text: "compose arrives in phase 3", kind: "err" });
+      if (key.return) {
+        if (!selected) return setToast({ text: "no peer selected", kind: "err" });
+        if (selected.you) return setToast({ text: "that's you — the broker refuses self-sends", kind: "err" });
+        return openCompose(selected.alias);
+      }
       if (key.escape) {
         if (filter) return setFilter("");
         return setModal({ t: "quit" });
@@ -391,6 +512,13 @@ function App({ client }: { client: Client }) {
   );
 
   const refreshedAgo = snapshot.at ? Math.max(0, nowS - snapshot.at) : null;
+
+  // While $EDITOR owns the terminal, unmounting AlternateScreen is what exits
+  // the alt screen and drains raw mode — the framework's own components do the
+  // terminal-state bookkeeping; remounting repaints the whole dashboard.
+  if (editorBusy) {
+    return <Text dim>editing in $EDITOR — the dashboard returns when it exits…</Text>;
+  }
 
   return (
     <AlternateScreen mouseTracking>
@@ -443,6 +571,15 @@ function App({ client }: { client: Client }) {
               onChange={(v) => setModal((m) => (m && (m.t === "reply" || m.t === "decline") ? { ...m, value: v } : m))}
               onSubmit={() => void submitAskModal(modal)}
               onCancel={() => setModal(null)}
+            />
+          ) : modal.t === "compose" ? (
+            <ComposePanel
+              c={modal}
+              onBodyChange={(e: EditState) => patchCompose({ body: e })}
+              onBodyDone={() => bodyDone(modal)}
+              onBodyCancel={() => composeBack(modal)}
+              onBodyEditor={() => void bodyEditor(modal)}
+              onPickRecipient={(i) => patchCompose({ toSel: i, to: modal.recipients[i]!.value, step: "kind" })}
             />
           ) : (
             <IdentityPicker candidates={modal.candidates} sel={modal.sel} />
