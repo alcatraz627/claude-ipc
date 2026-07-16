@@ -166,80 +166,111 @@ function App({ client }: { client: Client }) {
     setTimeout(() => void refresh(), 800);
   }
 
-  useInput(
-    (input, key) => {
-      // -- modal level: an open modal owns every key --
-      if (modal) {
-        if (modal.t === "quit") {
-          if (input === "y" || key.return) exit();
-          else if (input === "n" || key.escape || input === "q") setModal(null);
-          return;
-        }
-        if (modal.t === "help") {
-          if (key.escape || input === "?" || input === "q") setModal(null);
-          return;
-        }
-        if (modal.t === "copy") {
-          if (key.escape) return setModal(null);
-          if (key.upArrow || input === "k") return setModal({ ...modal, sel: Math.max(0, modal.sel - 1) });
-          if (key.downArrow || input === "j")
-            return setModal({ ...modal, sel: Math.min(modal.fields.length - 1, modal.sel + 1) });
-          if (key.return || input === "y") return void copyField(modal.fields, modal.sel);
-          const d = Number(input);
-          if (Number.isInteger(d) && d >= 1 && d <= modal.fields.length) return void copyField(modal.fields, d - 1);
-          return;
-        }
-        if (modal.t === "identity") {
-          if (key.escape) {
-            setIdentity(null);
-            setIdentitySettled(true);
-            setModal(null);
-            setToast({ text: "read-only — restart inside a session to act", kind: "err" });
-            return;
-          }
-          if (key.upArrow || input === "k") return setModal({ ...modal, sel: Math.max(0, modal.sel - 1) });
-          if (key.downArrow || input === "j")
-            return setModal({ ...modal, sel: Math.min(modal.candidates.length - 1, modal.sel + 1) });
-          if (key.return) {
-            const alias = modal.candidates[modal.sel]!;
-            setIdentity({ alias, mode: "acting-as" });
-            setIdentitySettled(true);
-            setModal(null);
-            setToast({ text: `acting as ${alias}`, kind: "ok" });
-          }
-          return;
-        }
+  function openIdentityPicker(): void {
+    const candidates = actingCandidates(snapshot.peers);
+    if (candidates.length === 0) return setToast({ text: "no registered identities to act as", kind: "err" });
+    setModal({ t: "identity", candidates, sel: 0 });
+  }
+
+  // Every incremental update is FUNCTIONAL: a burst of key-repeat events is
+  // processed in one React batch, so `setSel(selClamped + 1)` would collapse
+  // twenty moves into one. Same reason dispatchOne exists per character.
+  const moveSel = (delta: number) =>
+    setSel((s) => Math.max(0, Math.min(visible.length - 1, Math.min(s, visible.length - 1) + delta)));
+  const moveModalSel = (delta: number, max: number) =>
+    setModal((m) => (m && "sel" in m ? { ...m, sel: Math.max(0, Math.min(max, m.sel + delta)) } : m));
+
+  type KeyFlags = Parameters<Parameters<typeof useInput>[0]>[1];
+  const NO_FLAGS = {} as KeyFlags;
+
+  function dispatchOne(input: string, key: KeyFlags): void {
+    // -- modal level: an open modal owns every key --
+    if (modal) {
+      if (modal.t === "quit") {
+        if (input === "y" || key.return) exit();
+        else if (input === "n" || key.escape || input === "q") setModal(null);
+        return;
       }
-
-      // -- global chrome --
-      if (key.tab) return setView(VIEWS[(VIEWS.indexOf(view) + 1) % VIEWS.length]!);
-      const digit = Number(input);
-      if (Number.isInteger(digit) && digit >= 1 && digit <= VIEWS.length) return setView(VIEWS[digit - 1]!);
-      if (input === "?") return setModal({ t: "help" });
-      if (input === "R") return void refresh();
-      if (input === "q") return setModal({ t: "quit" });
-      if (input === "d" && !snapshot.brokerUp) return startBroker();
-
-      // -- the focused view --
-      if (view === "peers") {
-        if (key.upArrow || input === "k") return setSel(Math.max(0, selClamped - 1));
-        if (key.downArrow || input === "j") return setSel(Math.min(visible.length - 1, selClamped + 1));
-        if (key.pageUp) return setSel(Math.max(0, selClamped - 10));
-        if (key.pageDown) return setSel(Math.min(visible.length - 1, selClamped + 10));
-        if (input === "g") return setSel(0);
-        if (input === "G") return setSel(Math.max(0, visible.length - 1));
-        if (input === "/") return setFilterEditing(true);
-        if (input === "o") return setOfflineExpanded((v) => !v);
-        if (input === "y") return openCopyMenu();
-        if (key.return || input === "i")
-          return setToast({ text: "send/inbox actions arrive in phase 2/3", kind: "err" });
+      if (modal.t === "help") {
+        if (key.escape || input === "?" || input === "q") setModal(null);
+        return;
+      }
+      if (modal.t === "copy") {
+        if (key.escape) return setModal(null);
+        if (key.upArrow || input === "k") return moveModalSel(-1, modal.fields.length - 1);
+        if (key.downArrow || input === "j") return moveModalSel(1, modal.fields.length - 1);
+        if (key.return || input === "y") return void copyField(modal.fields, modal.sel);
+        const d = Number(input);
+        if (Number.isInteger(d) && d >= 1 && d <= modal.fields.length) return void copyField(modal.fields, d - 1);
+        return;
+      }
+      if (modal.t === "identity") {
         if (key.escape) {
-          if (filter) return setFilter("");
-          return setModal({ t: "quit" });
+          setIdentity(null);
+          setIdentitySettled(true);
+          setModal(null);
+          setToast({ text: "read-only — press a to pick an identity", kind: "err" });
+          return;
+        }
+        if (key.upArrow || input === "k") return moveModalSel(-1, modal.candidates.length - 1);
+        if (key.downArrow || input === "j") return moveModalSel(1, modal.candidates.length - 1);
+        if (key.pageUp) return moveModalSel(-10, modal.candidates.length - 1);
+        if (key.pageDown) return moveModalSel(10, modal.candidates.length - 1);
+        if (key.return) {
+          const alias = modal.candidates[modal.sel]!;
+          setIdentity({ alias, mode: "acting-as" });
+          setIdentitySettled(true);
+          setModal(null);
+          setToast({ text: `acting as ${alias}`, kind: "ok" });
         }
         return;
       }
-      if (key.escape) return setModal({ t: "quit" });
+    }
+
+    // -- global chrome --
+    if (key.tab || input === "\t")
+      return setView((v) => VIEWS[(VIEWS.indexOf(v) + 1) % VIEWS.length]!);
+    const digit = Number(input);
+    if (input !== "" && Number.isInteger(digit) && digit >= 1 && digit <= VIEWS.length)
+      return setView(VIEWS[digit - 1]!);
+    if (input === "?") return setModal({ t: "help" });
+    if (input === "R") return void refresh();
+    if (input === "q") return setModal({ t: "quit" });
+    if (input === "a") return openIdentityPicker();
+    if (input === "d" && !snapshot.brokerUp) return startBroker();
+
+    // -- the focused view --
+    if (view === "peers") {
+      if (key.upArrow || input === "k") return moveSel(-1);
+      if (key.downArrow || input === "j") return moveSel(1);
+      if (key.pageUp) return moveSel(-10);
+      if (key.pageDown) return moveSel(10);
+      if (input === "g") return setSel(0);
+      if (input === "G") return setSel(Math.max(0, visible.length - 1));
+      if (input === "/") return setFilterEditing(true);
+      if (input === "o") return setOfflineExpanded((v) => !v);
+      if (input === "y") return openCopyMenu();
+      if (key.return || input === "i")
+        return setToast({ text: "send/inbox actions arrive in phase 2/3", kind: "err" });
+      if (key.escape) {
+        if (filter) return setFilter("");
+        return setModal({ t: "quit" });
+      }
+      return;
+    }
+    if (key.escape) return setModal({ t: "quit" });
+  }
+
+  useInput(
+    (input, key) => {
+      // Key-repeat and fast typing coalesce into ONE event whose `input` is the
+      // whole run ("jjjj", "\t\t") with no flags set — replay it per character
+      // or held keys go dead (the parser only flags single keypresses).
+      if (input.length > 1 && !key.return && !key.escape && !key.tab) {
+        for (const ch of input) dispatchOne(ch, NO_FLAGS);
+        return;
+      }
+      dispatchOne(input, key);
     },
     { isActive: !filterEditing },
   );

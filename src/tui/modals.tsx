@@ -68,19 +68,29 @@ export function QuitGuard() {
   );
 }
 
+/** How many picker rows are visible at once — a real machine has 100+ registered
+ *  aliases, and an unwindowed list overflows the frame into an unreadable wall. */
+const PICKER_WINDOW = 9;
+
 export function IdentityPicker({ candidates, sel }: { candidates: string[]; sel: number }) {
+  const start = Math.max(0, Math.min(sel - Math.floor(PICKER_WINDOW / 2), candidates.length - PICKER_WINDOW));
+  const shown = candidates.slice(start, start + PICKER_WINDOW);
   return (
     <Frame title="act as which alias?">
       <Box flexDirection="column" marginTop={1}>
         <Text dim>This shell isn't a Claude session — pick a registered identity to act as.</Text>
-        {candidates.map((a, i) => (
-          <Text key={a} inverse={i === sel}>
+        {start > 0 && <Text dim>{`  ▲ ${start} more`}</Text>}
+        {shown.map((a, i) => (
+          <Text key={a} inverse={start + i === sel}>
             {` ${a} `}
           </Text>
         ))}
+        {start + shown.length < candidates.length && (
+          <Text dim>{`  ▼ ${candidates.length - start - shown.length} more`}</Text>
+        )}
       </Box>
       <Box marginTop={1}>
-        <Text dim>↑↓ move · enter pick · esc = read-only</Text>
+        <Text dim>{`${sel + 1}/${candidates.length} · ↑↓/pgup/pgdn move · enter pick · esc = read-only`}</Text>
       </Box>
     </Frame>
   );
@@ -93,6 +103,7 @@ const HELP_LINES: [string, string][] = [
   ["y", "copy menu for the selection"],
   ["o", "expand / collapse offline peers"],
   ["R", "refresh now (auto every 5s)"],
+  ["a", "act as a different identity"],
   ["d", "start the broker (when down)"],
   ["?", "this help"],
   ["q / esc", "quit (guarded)"],

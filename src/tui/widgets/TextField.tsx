@@ -28,8 +28,9 @@ export function TextField({ value, onChange, onSubmit, onCancel, active, prefix 
     (input, key) => {
       if (key.escape) return onCancel();
       if (key.return) return onSubmit();
-      if (key.leftArrow) return setCursor(Math.max(0, cursor - 1));
-      if (key.rightArrow) return setCursor(Math.min(value.length, cursor + 1));
+      // functional updates: key-repeat delivers several moves in one React batch
+      if (key.leftArrow) return setCursor((c) => Math.max(0, c - 1));
+      if (key.rightArrow) return setCursor((c) => Math.min(value.length, c + 1));
       if (key.home || (key.ctrl && input === "a")) return setCursor(0);
       if (key.end || (key.ctrl && input === "e")) return setCursor(value.length);
       if (key.backspace) {
