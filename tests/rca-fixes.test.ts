@@ -146,6 +146,40 @@ describe("rca fixes — router level", () => {
     });
   });
 
+  // Plan disposition #4: F2's exclusion must hold through the REAL client path
+  // the field runs (client.check / client.send → broker → registry), not only
+  // the router unit — that's the M1-honest layer the RCA is about.
+  describe("acting-op liveness through the real client path (F2, disposition #4)", () => {
+    test("a client.send refreshes liveness; a client.check poll-storm does not", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "ipc-f2c-"));
+      let clk = 1000;
+      const be = new MemoryBackend();
+      const rg2 = new Registry(be, () => clk, { idleS: 300, offlineS: 1800 });
+      let n = 0;
+      const rt = new Router(be, rg2, () => clk, () => `msg-${++n}`, null);
+      const { startBroker } = await import("../src/broker/server.ts");
+      const sk = `/tmp/cipc-f2c-${process.pid}-${Math.random().toString(36).slice(2, 8)}.sock`;
+      const broker = startBroker({ router: rt, socketPath: sk });
+      try {
+        const alice = new Client(sk, undefined, join(dir, "ta"));
+        const bob = new Client(sk, undefined, join(dir, "tb"));
+        await alice.register("f2c-alice", { sessionId: "s-a", cwd: "/a" });
+        await bob.register("f2c-bob", { sessionId: "s-b", cwd: "/b" });
+        clk += 600; // both decay to idle
+        // a poll storm from bob must NOT lift it off idle
+        for (let i = 0; i < 15; i++) await bob.check("f2c-bob", false);
+        let peers = (await alice.list()).peers as { alias: string; status: string }[];
+        expect(peers.find((p) => p.alias === "f2c-bob")!.status).toBe("idle");
+        // an actual send from bob DOES
+        await bob.send({ from: "f2c-bob", to: "f2c-alice", kind: "inform", body: "acting through the client" });
+        peers = (await alice.list()).peers as { alias: string; status: string }[];
+        expect(peers.find((p) => p.alias === "f2c-bob")!.status).toBe("live");
+      } finally {
+        broker.stop();
+      }
+    });
+  });
+
   describe("party-scoping is sibling-aware (B12 — found in the post-deploy round-trip)", () => {
     test("show/status renders the body for a message addressed to a SIBLING alias of the caller", () => {
       reg("dream-main", "sid-dream");

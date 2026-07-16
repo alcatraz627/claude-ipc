@@ -7,8 +7,8 @@
  */
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Registry } from "../src/broker/registry.ts";
 import { Router } from "../src/broker/router.ts";
@@ -20,9 +20,12 @@ const HOME = mkdtempSync(join(tmpdir(), "ipc-hooks-"));
 const sock = join(HOME, "ipc.sock");
 // The project dir must be NON-ephemeral: sessionStart's isEphemeral() rightly
 // skips /tmp and /var/folders (transient sub-agent cwds), so a tmp project dir
-// would make the hook a no-op and the test would pass vacuously. Under $HOME it
-// is a real project as far as the hook is concerned; cleaned up in afterAll.
-const projDir = mkdtempSync(join(homedir(), ".ipc-hooktest-"));
+// would make the hook a no-op and the test would pass vacuously. Use a
+// gitignored repo-local dir — non-ephemeral to the hook, and a crash-leaked
+// dir stays inside the repo's ignored space, never in the user's $HOME.
+const testTmp = join(import.meta.dir, "..", ".test-tmp");
+mkdirSync(testTmp, { recursive: true });
+const projDir = mkdtempSync(join(testTmp, "hooktest-"));
 
 async function runHook(script: string, input: Record<string, unknown>): Promise<string> {
   const proc = Bun.spawn(["bun", "run", `${import.meta.dir}/../src/hooks/${script}`], {

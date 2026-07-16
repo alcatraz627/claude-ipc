@@ -19,3 +19,6 @@ _*.claude.md
 
 # macOS
 .DS_Store
+
+# test scratch (hook lifecycle needs a NON-ephemeral project dir; isEphemeral skips /tmp)
+.test-tmp/

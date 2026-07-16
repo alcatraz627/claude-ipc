@@ -217,6 +217,29 @@ DISPROVEN by the reviewer (recorded for honesty): the out() console.log vs
 process.stdout.write split does NOT reorder or lose output (tested with a 300KB
 back-pressure repro, 5/5 clean).
 
+## Second hostile review (the revived first agent, over HEAD incl. B12+perf) — residuals
+
+No blocker, no MAJOR; both RCA mechanisms confirmed NOT re-committed; all four
+load-bearing guards independently mutation-proven red. Residuals, dispositioned:
+
+- **R1 — F2 disposition #4 (real-client lane) was dropped.** FIXED — a client→
+  broker→registry test now proves the poll-storm exclusion and acting-op refresh
+  at the field layer, not just the router unit. Honors the "no silent drops" rule
+  the drop violated.
+- **R2 — hookLifecycle littered $HOME with .ipc-hooktest-* on a mid-run crash.**
+  FIXED — the non-ephemeral test project dir moved to a gitignored repo-local
+  `.test-tmp/`; a leak now stays in the repo's ignored space, never $HOME.
+- **R3 — the flag completeness guard is source-text matching (the grep the
+  plan-review warned against).** DEFERRED with reason: it's the belt to the
+  behavioral golden layer's suspenders (the argv→request assertions are the
+  durable check); the text scan only adds new-verb coverage the behavioral cases
+  structurally can't. Hardening it to parse-per-verb is a nice-to-have, LOW.
+- **R4 — stdoutDrain tracks only the LAST large write.** DEFERRED (latent): no
+  verb emits two >32KB payloads in one run, so it can't fire today. Fix (chain
+  the drains) rides the next CLI build; noted so it isn't rediscovered as new.
+- **R5 — ccabcf8's "535KB parses" was a lucky-run M3 claim.** ACKNOWLEDGED — 293e649
+  already retracted it; the batch caught its own M3 mid-stream.
+
 ## Sequencing & verification
 
 Order: F9+F10 (guards first — they gate the rest) → F1, F5 (router, tested
