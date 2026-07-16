@@ -12,6 +12,7 @@ import { writeAliasForSession } from "../aliasStore.ts";
 import { ttyForPid } from "../badge.ts";
 import { Client } from "../client.ts";
 import { config } from "../config.ts";
+import { humanAge } from "../models.ts";
 import { aliasFor, deliverContext, emitContext, formatRoster, readHookInput } from "./shared.ts";
 
 /** Transient/headless sessions shouldn't join the roster — sub-agents and
