@@ -280,6 +280,77 @@ describe("CLI", () => {
     expect(lines.join("\n")).toContain("pred-chase-x holds 1 (+1 chase notice");
   });
 
+  // Friction F1 (vb-fable) — `show` prints human text while `inbox` prints JSON, so
+  // `show <id> | jq` silently emits nothing. A --json flag gives show a parseable shape.
+  test("show --json emits parseable JSON with the full body", async () => {
+    const c = new Client(sock);
+    await c.register("alice", { sessionId: "sA", cwd: "/a" });
+    await c.register("bob", { sessionId: "sB", cwd: "/b" });
+    const long = "BODY-START " + "x".repeat(300) + " BODY-END";
+    const q = await c.send({ from: "alice", to: "bob", kind: "query", body: long });
+    lines = [];
+    // --operator sees the body (party-scoping blanks it for a non-party caller,
+    // same as the human `show`); --json is the shape under test.
+    expect(await run(["show", q.msgId, "--json", "--operator"], { socketPath: sock })).toBe(0);
+    const parsed = JSON.parse(lines.join("\n")) as { message: { id: string; body: string; kind: string } };
+    expect(parsed.message.id).toBe(q.msgId);
+    expect(parsed.message.body).toBe(long); // full body, not truncated
+  });
+
+  // Friction F2 (vb-fable) — `peers` emits one row PER ALIAS, so a 3-alias session is
+  // three rows; you had to jq-dedupe by sessionId. --by-session collapses to one row
+  // per session with the aliases inline (the per-alias/per-session theme, on the roster).
+  test("peers --by-session gives one row per session with aliases inline", async () => {
+    const c = new Client(sock);
+    await c.register("multi-a", { sessionId: "s-multi", cwd: "/m" });
+    await c.register("multi-b", { sessionId: "s-multi", cwd: "/m" });
+    await c.register("multi-c", { sessionId: "s-multi", cwd: "/m" });
+    await c.register("solo", { sessionId: "s-solo", cwd: "/s" });
+    lines = [];
+    expect(await run(["peers", "--by-session"], { socketPath: sock })).toBe(0);
+    const parsed = JSON.parse(lines.join("\n")) as { peers: { sessionId: string; aliases: string[] }[] };
+    expect(parsed.peers.length).toBe(2); // two sessions, not four aliases
+    const multi = parsed.peers.find((p) => p.sessionId === "s-multi");
+    expect(multi?.aliases.sort()).toEqual(["multi-a", "multi-b", "multi-c"]);
+  });
+
+  // Friction F3 (vb-fable) — register printed the full dead-predecessor digest on EVERY
+  // call; three registers in a minute repeated the same 13 lines. Show it once per session.
+  test("register prints the predecessor digest only once per session", async () => {
+    const c = new Client(sock);
+    await c.register("pred-once", { sessionId: "s-pred-once", cwd: process.cwd() });
+    await c.register("mailer-once", { sessionId: "s-mailer-once", cwd: "/m" });
+    await c.send({ from: "mailer-once", to: "pred-once", kind: "request", body: "owner directive" });
+    await c.leave("pred-once");
+    process.env.CLAUDE_CODE_SESSION_ID = "sid-succ-repeat";
+    try {
+      lines = [];
+      await run(["register", "succ-once-a"], { socketPath: sock });
+      const first = lines.join("\n");
+      lines = [];
+      await run(["register", "succ-once-b"], { socketPath: sock }); // same session, second register
+      const second = lines.join("\n");
+      expect(first).toContain("pred-once holds 1"); // first shows the digest
+      expect(second).not.toContain("pred-once holds"); // second stays quiet
+    } finally {
+      delete process.env.CLAUDE_CODE_SESSION_ID;
+    }
+  });
+
+  // Friction F4 (vb-opus, 2nd to hit shell-quoting truncation) — the positional-body
+  // error must name --body-file, the byte-exact escape hatch that already exists.
+  test("the positional-body error points at --body-file", async () => {
+    const origErr = console.error;
+    const errs: string[] = [];
+    console.error = (...a: unknown[]): void => void errs.push(a.map(String).join(" "));
+    try {
+      expect(await run(["send", "--from", "alice", "--to", "bob", "--body", "x"], { socketPath: sock })).toBe(2);
+    } finally {
+      console.error = origErr;
+    }
+    expect(errs.join("\n")).toContain("--body-file");
+  });
+
   // Boot-survey U1 — the corrId=null trap, live-proven: a query row in the inbox
   // JSON gives no signal that `reply` keys on the MESSAGE id, so agents answer
   // with a fresh send and the contract dangles. Every query/request row now

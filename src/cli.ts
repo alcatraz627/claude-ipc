@@ -11,7 +11,7 @@ import { readFileSync } from "node:fs";
 import { readAliasForSession, writeAliasForSession } from "./aliasStore.ts";
 import { BrokerError, Client } from "./client.ts";
 import { config } from "./config.ts";
-import { TRUST_RAIL } from "./hooks/shared.ts";
+import { markOrphanShown, orphanAlreadyShown, TRUST_RAIL } from "./hooks/shared.ts";
 import { humanAge } from "./models.ts";
 import { monitorSnapshot } from "./monitor.ts";
 
@@ -177,7 +177,9 @@ const USAGE = `claude-ipc — cross-session messaging
 
   register <alias>           (claim a mailbox from the shell)
   send   --to <b> | --to-project <dir|name> [--from <a>] [--kind inform|query|request] [--ttl N]
-         [--reply-by 5m|90s|none] [--no-reply-expected] <body...>
+         [--reply-by 5m|90s|none] [--no-reply-expected] <body...> | --body-file <path>
+                             (--body-file: read the body from a file, byte-exact — use it when the
+                              body has backticks, quotes, or $() the shell would eat.)
                              (--reply-by: how long you'll wait before the ask is chased for you.
                               They get nudged at that mark; 10m later you're told nobody answered and
                               may act without one — the ask stays open and a late reply still reaches
@@ -187,13 +189,13 @@ const USAGE = `claude-ipc — cross-session messaging
   reply  <corr-id> [--from <alias>] [--status error] [--partial] <body...>
                              (--from auto-inferred; --partial = interim ack/update, omit for the final reply)
   inbox  <alias> [--consume] | --project [dir]   (project peek is open; consume needs membership)
-  peers
+  peers  [--by-session]      (roster; --by-session = one row per session, aliases inline)
   projects                   (project mailboxes with pending mail)
   orphans [--project [dir]]  (dead sessions' waiting mail — successors peek with: inbox <alias>)
   count  <alias>             (pending count — cheap, for tab-title segments)
   log    [--peer <a>] [--since <epoch>]
   status <msg-id>            (a message's delivery + response lifecycle)
-  show   <msg-id>            (one message, readable — headers, body, replies)
+  show   <msg-id> [--json]   (one message, readable — headers, body, replies; --json for pipelines)
   owed   [--as <alias>]      (every ask you still owe an answer, across ALL your aliases + this project)
   feedback <text...>         (file a report to the claude-ipc maintainers — works even when none are running)
   accept <msg-id> --as <alias>
@@ -221,7 +223,7 @@ export const COMMAND_FLAGS: Record<string, string[]> = {
   prune: ["offline-for"],
   log: ["peer", "since", "operator", "all"],
   status: ["operator", "all"],
-  show: ["operator", "all"],
+  show: ["operator", "all", "json"],
   owed: ["as"],
   feedback: ["from", "body-file"],
   tail: ["once", "operator", "all"],
@@ -230,7 +232,7 @@ export const COMMAND_FLAGS: Record<string, string[]> = {
   snooze: ["as"],
   cancel: ["corr"],
   compose: ["from"],
-  peers: [],
+  peers: ["by-session"],
   projects: [],
   "-i": [],
   interactive: [],
@@ -376,7 +378,12 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
             oldestTs: number | null;
           }[];
           const preds = list.filter((o) => o.alias !== alias && o.pending > 0);
-          if (preds.length) {
+          // Show the predecessor digest ONCE per session: re-registering (a second
+          // name, a rebind) used to reprint the whole block every call. Share the
+          // marker the boot digest uses, so a session is told once whichever surface
+          // gets there first.
+          if (preds.length && !orphanAlreadyShown(sid)) {
+            markOrphanShown(sid);
             const shown = preds.slice(0, 5);
             const tail =
               preds.length > shown.length ? [`  … +${preds.length - shown.length} more (claude-ipc orphans --project)`] : [];
@@ -455,10 +462,11 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
         const sendBody = fileBody ?? positional.join(" ");
         if (!sendBody.trim()) {
           console.error(
-            flags.body
+            (flags.body
               ? `the message body is positional, not a flag — put it after the flags:\n` +
                   `  claude-ipc send --to ${to} --from ${from} "${String(flags.body)}"`
-              : `send needs a body — NOTHING WAS SENT:\n  claude-ipc send --to ${to} --from ${from} "<message>"`,
+              : `send needs a body — NOTHING WAS SENT:\n  claude-ipc send --to ${to} --from ${from} "<message>"`) +
+              `\n  (a body with backticks, quotes, or $() goes byte-exact via: --body-file <path>)`,
           );
           return 2;
         }
@@ -623,9 +631,36 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
         railIfPeerMail(box);
         return 0;
       }
-      case "peers":
-        out(await client.list());
+      case "peers": {
+        const roster = ((await client.list()).peers ?? []) as {
+          alias: string;
+          sessionId: string;
+          sessionAliases?: string[];
+          status: string;
+          cwd: string;
+          lastSeen: number | null;
+        }[];
+        // --by-session: one row per session with aliases inline. The default is
+        // one row per ALIAS, so a 3-alias session reads as three near-identical
+        // rows — the per-alias/per-session split, on the roster display. Kept as
+        // a flag, not the default, so JSON consumers of the flat list don't break.
+        if (flags["by-session"] === true) {
+          const bySid = new Map<string, (typeof roster)[number]>();
+          for (const e of roster) if (!bySid.has(e.sessionId)) bySid.set(e.sessionId, e);
+          out({
+            peers: [...bySid.values()].map((e) => ({
+              sessionId: e.sessionId,
+              aliases: (e.sessionAliases ?? [e.alias]).slice().sort(),
+              status: e.status,
+              cwd: e.cwd,
+              lastSeen: e.lastSeen,
+            })),
+          });
+          return 0;
+        }
+        out({ peers: roster });
         return 0;
+      }
       case "count": {
         if (flags.project) {
           const dir = await resolveProjectDir(flags.project, client);
@@ -693,6 +728,12 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
           message: { id: string; kind: string; fromAlias: string; toAlias: string; body: string; ts: number; corrId: string | null; conversationId: string | null };
           responses: { id: string; fromAlias: string; terminal: boolean }[];
         };
+        // --json for pipelines: `inbox` is JSON but `show` was human-only, so a
+        // `show | jq` silently emitted nothing. Same object shape as status.
+        if (flags.json === true) {
+          out(st);
+          return 0;
+        }
         const m = st.message;
         const nowS = Math.floor(Date.now() / 1000);
         out(`${m.id} · ${m.kind} · ${m.fromAlias} → ${m.toAlias} · ${humanAge(m.ts, nowS)} ago`);
