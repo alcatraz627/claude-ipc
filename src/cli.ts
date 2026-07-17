@@ -600,16 +600,20 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
           }
           const roster = ((await client.list()).peers ?? []) as { alias: string; sessionAliases?: string[] }[];
           const mine = roster.find((p) => p.alias === self)?.sessionAliases ?? [self];
-          const merged: { id: string; kind: string; replyWith?: string }[] = [];
+          // Dedupe by id: a broadcast lands in EVERY sibling box, and double-counting
+          // it was a live incident class (wake counted one message twice, 2026-07-15).
+          const merged = new Map<string, { id: string; kind: string; replyWith?: string }>();
           for (const a of mine) {
             try {
               const box = (await client.check(a, consume)) as { messages?: { id: string; kind: string; replyWith?: string }[] };
-              merged.push(...(withReplyHints({ messages: box.messages ?? [] }, a).messages ?? []));
+              for (const m of withReplyHints({ messages: box.messages ?? [] }, a).messages ?? []) {
+                if (!merged.has(m.id)) merged.set(m.id, m);
+              }
             } catch {
               // an unreadable sibling box is skipped, not fatal — `owed` names it
             }
           }
-          const all = { messages: merged };
+          const all = { messages: [...merged.values()] };
           out(all);
           railIfPeerMail(all);
           return 0;

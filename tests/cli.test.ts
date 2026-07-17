@@ -239,6 +239,25 @@ describe("CLI", () => {
     expect(qRow?.replyWith).toContain("--from lane-a"); // reply identity matches the box
   });
 
+  // The 2026-07-15 gate's bug-class, re-checked here: a broadcast lands in BOTH
+  // sibling boxes of one session — the merged sweep must show it once, not twice.
+  test("bare inbox shows a broadcast once even when both sibling boxes hold it", async () => {
+    const c = new Client(sock);
+    await c.register("dup-a", { sessionId: "s-dup", cwd: "/w" });
+    await c.register("dup-b", { sessionId: "s-dup", cwd: "/w" });
+    await c.register("caster", { sessionId: "s-cast", cwd: "/q" });
+    await c.send({ from: "caster", to: "*", kind: "inform", body: "hear ye" });
+    lines = [];
+    process.env.CLAUDE_IPC_ALIAS = "dup-a";
+    try {
+      expect(await run(["inbox"], { socketPath: sock })).toBe(0);
+    } finally {
+      delete process.env.CLAUDE_IPC_ALIAS;
+    }
+    const parsed = JSON.parse(lines.join("\n")) as { messages: { body: string }[] };
+    expect(parsed.messages.filter((m) => m.body === "hear ye").length).toBe(1);
+  });
+
   // Boot-survey U2 — a successor's first look at a dead box must say how much is
   // real mail vs broker chase noise (an inherited box read 2:1 noise, live).
   test("register names a predecessor's real mail separately from stale chase notices", async () => {
