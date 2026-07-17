@@ -211,6 +211,27 @@ describe("CLI", () => {
     expect(errs.join("\n")).toBe("");
   });
 
+  // Boot-survey U1 — the corrId=null trap, live-proven: a query row in the inbox
+  // JSON gives no signal that `reply` keys on the MESSAGE id, so agents answer
+  // with a fresh send and the contract dangles. Every query/request row now
+  // carries the exact reply command; informs and responses stay bare.
+  test("inbox decorates queries with the exact reply command", async () => {
+    const c = new Client(sock);
+    await c.register("alice", { sessionId: "sA", cwd: "/a" });
+    await c.register("bob", { sessionId: "sB", cwd: "/b" });
+    const q = await c.send({ from: "alice", to: "bob", kind: "query", body: "need this?" });
+    await c.send({ from: "alice", to: "bob", kind: "inform", body: "fyi only" });
+    lines = [];
+    expect(await run(["inbox", "bob"], { socketPath: sock })).toBe(0);
+    const parsed = JSON.parse(lines.join("\n")) as {
+      messages: { id: string; kind: string; replyWith?: string }[];
+    };
+    const qRow = parsed.messages.find((m) => m.id === q.msgId);
+    expect(qRow?.replyWith).toBe(`claude-ipc reply ${q.msgId} --from bob`);
+    const iRow = parsed.messages.find((m) => m.kind === "inform");
+    expect(iRow?.replyWith).toBeUndefined();
+  });
+
   // Regression: --partial is a boolean flag and must NOT swallow the body that
   // follows it (it once consumed the first body word, leaving interim replies empty).
   test("reply --partial keeps the full body and is non-terminal", async () => {

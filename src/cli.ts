@@ -553,11 +553,27 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
       }
       case "inbox": {
         const consume = flags.consume === true || flags.consume === "true";
+        // A query's corrId is null by design (corrId belongs to the response), so
+        // nothing in the raw JSON says `reply` keys on the MESSAGE id — agents
+        // answered with a fresh send and left the contract dangling (boot survey,
+        // live-proven). Stamp the exact command on every row expecting an answer.
+        const withReplyHints = <T extends { messages?: { id: string; kind: string; replyWith?: string }[] }>(
+          box: T,
+          readerAlias: string | null | undefined,
+        ): T => {
+          for (const m of box.messages ?? []) {
+            if (m.kind === "query" || m.kind === "request") {
+              m.replyWith = `claude-ipc reply ${m.id}${readerAlias ? ` --from ${readerAlias}` : ""}`;
+            }
+          }
+          return box;
+        };
         if (flags.project) {
           const dir = await resolveProjectDir(flags.project, client);
           if (typeof dir !== "string") return 2;
-          const box = await client.checkProject(dir, consume, resolveSelfAlias());
-          out(box);
+          const self = resolveSelfAlias();
+          const box = await client.checkProject(dir, consume, self);
+          out(withReplyHints(box, self));
           railIfPeerMail(box);
           return 0;
         }
@@ -567,7 +583,7 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
           return 2;
         }
         const box = await client.check(alias, consume);
-        out(box);
+        out(withReplyHints(box, alias));
         railIfPeerMail(box);
         return 0;
       }
