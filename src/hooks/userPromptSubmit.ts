@@ -8,29 +8,39 @@
 
 import { Client } from "../client.ts";
 import { config } from "../config.ts";
-import { aliasFor, deliverContext, emitContext, markOrphanShown, orphanAlreadyShown, readHookInput } from "./shared.ts";
+import { aliasFor, bootDigest, deliverContext, emitContext, markOrphanShown, orphanAlreadyShown, readHookInput } from "./shared.ts";
 
 /**
- * The fallback under the register-time orphan surfacing: a session that resumed
- * without a fresh SessionStart never got that note, so name the dead mailboxes
- * here instead. Skips when SessionStart already showed it (shared marker), so a
- * fresh session is never told twice. The marker is claimed BEFORE building the
- * note so a partial failure can't turn this into an every-turn nag.
+ * The full boot briefing, delivered here when SessionStart never ran.
+ *
+ * Whether the platform re-fires SessionStart on a resume is an assumption we
+ * can't verify (B7) — so it no longer matters: whichever hook runs first claims
+ * the shared marker and delivers the same digest + orphan note. The marker is
+ * claimed BEFORE building so a partial failure can't become an every-turn nag.
  */
-async function orphanNoteOnce(client: Client, sessionId: string | undefined, cwd: string): Promise<string | null> {
+async function bootOnce(client: Client, input: { session_id?: string }, self: string, cwd: string): Promise<string | null> {
+  const sessionId = input.session_id;
   if (!sessionId || orphanAlreadyShown(sessionId)) return null;
   markOrphanShown(sessionId);
+  const pieces: string[] = [];
+  try {
+    pieces.push(await bootDigest(client, self, sessionId, cwd));
+  } catch {
+    // digest is broker-dependent past its first line; the orphan note below may still work
+  }
   // Chase notices don't count as mail: a box holding only the broker's own stale
   // nudges is not inherited work and doesn't earn a nag (it stays listed in the
   // orphans verb, labeled as chases).
   const rows = (((await client.orphans(cwd)) as { orphans?: { alias: string; pending: number; chases?: number }[] }).orphans ?? [])
     .map((o) => ({ alias: o.alias, real: o.pending - (o.chases ?? 0) }))
     .filter((o) => o.real > 0);
-  if (!rows.length) return null;
-  return (
-    `claude-ipc: ${rows.length} dead mailbox(es) in this project still hold mail ` +
-    `(e.g. ${rows[0]!.alias}, ${rows[0]!.real} msg${rows[0]!.real === 1 ? "" : "s"}) — see: claude-ipc orphans --project`
-  );
+  if (rows.length) {
+    pieces.push(
+      `claude-ipc: ${rows.length} dead mailbox(es) in this project still hold mail ` +
+        `(e.g. ${rows[0]!.alias}, ${rows[0]!.real} msg${rows[0]!.real === 1 ? "" : "s"}) — see: claude-ipc orphans --project`,
+    );
+  }
+  return pieces.length ? pieces.join("\n\n") : null;
 }
 
 export async function main(): Promise<void> {
@@ -41,10 +51,11 @@ export async function main(): Promise<void> {
     const client = new Client(config.socketPath, { dbPath: config.dbPath });
     const cwd = input.cwd ?? process.cwd();
     const parts: string[] = [];
-    const ctx = await deliverContext(client, aliasFor(input), "hook", cwd);
+    const self = aliasFor(input);
+    const ctx = await deliverContext(client, self, "hook", cwd);
     if (ctx) parts.push(ctx);
     try {
-      const note = await orphanNoteOnce(client, input.session_id, cwd);
+      const note = await bootOnce(client, input, self, cwd);
       if (note) parts.push(note);
     } catch {
       // advisory only — a down broker or unwritable marker never costs the turn

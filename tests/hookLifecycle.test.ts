@@ -81,6 +81,40 @@ describe("hook lifecycle — the wiring, not just the RPC", () => {
     expect(out).toContain("hl-pred");
   });
 
+  // Boot-survey U5 — 6/6 respondents: boot must lead with WHO I AM and WHAT I OWE,
+  // not a directory of who exists. Identity first; open asks with the exact reply
+  // command; the roster demoted to a count behind the peers verb.
+  test("sessionStart leads with identity and demotes the roster to a count", async () => {
+    const c = new Client(sock, undefined, join(HOME, "tokens"));
+    // Same session id + shared tokens dir, so the hook's own register keeps ownership.
+    await c.register("hl-digest-lane", { sessionId: "sid-hl-digest", cwd: projDir });
+    await c.send({ from: "hl-mailer", to: "hl-digest-lane", kind: "query", body: "what is the plan?" });
+    const out = await runHook("sessionStart.ts", {
+      session_id: "sid-hl-digest",
+      cwd: projDir,
+      source: "startup",
+      session_title: "hl-digest-lane",
+    });
+    const ctx = (JSON.parse(out) as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput
+      .additionalContext;
+    expect(ctx.startsWith("You are hl-digest-lane")).toBe(true); // identity is the FIRST line
+    expect(ctx).toContain("await YOUR reply"); // obligations, not inventory
+    expect(ctx).toContain(`claude-ipc reply`); // with the exact command
+    expect(ctx).toContain("full list: claude-ipc peers"); // roster demoted…
+    expect(ctx).not.toContain("(message one with"); // …the 12-row dump is gone
+  });
+
+  // Boot-survey U6 — B7 ("does SessionStart fire on platform-resume?") closes by
+  // design: the UPS fallback delivers the SAME digest once when no marker exists,
+  // so the wire being untrustworthy no longer matters.
+  test("UPS fallback delivers the full identity digest when SessionStart never ran", async () => {
+    const first = await runHook("userPromptSubmit.ts", { session_id: "sid-hl-upsdigest", cwd: projDir });
+    expect(first).toContain("You are"); // identity, not just the orphan note
+    expect(first).toContain("dead mailbox"); // orphan note still rides along
+    const second = await runHook("userPromptSubmit.ts", { session_id: "sid-hl-upsdigest", cwd: projDir });
+    expect(second).not.toContain("You are"); // once per session, marker holds
+  });
+
   test("UPS fallback notes the orphans exactly once per session", async () => {
     const first = await runHook("userPromptSubmit.ts", { session_id: "sid-hl-ups", cwd: projDir });
     expect(first).toContain("dead mailbox");

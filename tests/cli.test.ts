@@ -212,6 +212,33 @@ describe("CLI", () => {
     expect(errs.join("\n")).toBe("");
   });
 
+  // Boot-survey U5 — per-alias inbox reads hid sibling-alias mail (13 msgs sat
+  // unread while the holder polled another alias). Bare `inbox` now sweeps every
+  // alias this session holds, each row stamped with its own reply identity.
+  test("bare inbox sweeps all of this session's aliases", async () => {
+    const c = new Client(sock);
+    await c.register("lane-a", { sessionId: "s-sweep", cwd: "/w" });
+    await c.register("lane-b", { sessionId: "s-sweep", cwd: "/w" });
+    await c.register("asker2", { sessionId: "s-ask2", cwd: "/q" });
+    await c.send({ from: "asker2", to: "lane-a", kind: "query", body: "for a" });
+    await c.send({ from: "asker2", to: "lane-b", kind: "inform", body: "for b" });
+    lines = [];
+    process.env.CLAUDE_IPC_ALIAS = "lane-a";
+    try {
+      expect(await run(["inbox"], { socketPath: sock })).toBe(0);
+    } finally {
+      delete process.env.CLAUDE_IPC_ALIAS;
+    }
+    const parsed = JSON.parse(lines.join("\n")) as {
+      messages: { toAlias: string; body: string; replyWith?: string }[];
+    };
+    const bodies = parsed.messages.map((m) => m.body);
+    expect(bodies).toContain("for a");
+    expect(bodies).toContain("for b"); // the sibling alias's mail is not invisible
+    const qRow = parsed.messages.find((m) => m.body === "for a");
+    expect(qRow?.replyWith).toContain("--from lane-a"); // reply identity matches the box
+  });
+
   // Boot-survey U2 — a successor's first look at a dead box must say how much is
   // real mail vs broker chase noise (an inherited box read 2:1 noise, live).
   test("register names a predecessor's real mail separately from stale chase notices", async () => {

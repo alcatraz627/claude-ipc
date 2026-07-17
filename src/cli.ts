@@ -27,11 +27,12 @@ export function railIfPeerMail(box: unknown): void {
   if (msgs.some((m) => m.kind === "query" || m.kind === "request")) console.error(`\n${TRUST_RAIL}`);
 }
 
-/** This session's own ipc alias, from the side-file the SessionStart hook writes
- *  (keyed by CLAUDE_CODE_SESSION_ID). Undefined if the session never registered.
+/** This session's own ipc alias. The explicit CLAUDE_IPC_ALIAS override wins
+ *  (same precedence the hooks use), then the side-file the SessionStart hook
+ *  writes (keyed by CLAUDE_CODE_SESSION_ID). Undefined if never registered.
  *  Lets `send`/`reply` infer --from so a session never has to name itself. */
 function resolveSelfAlias(): string | undefined {
-  return readAliasForSession(process.env.CLAUDE_CODE_SESSION_ID);
+  return process.env.CLAUDE_IPC_ALIAS || readAliasForSession(process.env.CLAUDE_CODE_SESSION_ID);
 }
 
 type FlagValue = string | boolean;
@@ -589,8 +590,29 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
         }
         const alias = positional[0] ?? String(flags.alias ?? "");
         if (!alias) {
-          console.error("inbox needs an alias (or --project [dir])");
-          return 2;
+          // No alias named: sweep EVERY alias this session holds. Per-alias reads
+          // hid sibling-alias mail (13 msgs sat unread while the holder polled
+          // another name) — bare `inbox` makes "my inbox" mean the whole session.
+          const self = resolveSelfAlias();
+          if (!self) {
+            console.error("inbox needs an alias or --project [dir] — or register this session so bare inbox can find its aliases");
+            return 2;
+          }
+          const roster = ((await client.list()).peers ?? []) as { alias: string; sessionAliases?: string[] }[];
+          const mine = roster.find((p) => p.alias === self)?.sessionAliases ?? [self];
+          const merged: { id: string; kind: string; replyWith?: string }[] = [];
+          for (const a of mine) {
+            try {
+              const box = (await client.check(a, consume)) as { messages?: { id: string; kind: string; replyWith?: string }[] };
+              merged.push(...(withReplyHints({ messages: box.messages ?? [] }, a).messages ?? []));
+            } catch {
+              // an unreadable sibling box is skipped, not fatal — `owed` names it
+            }
+          }
+          const all = { messages: merged };
+          out(all);
+          railIfPeerMail(all);
+          return 0;
         }
         const box = await client.check(alias, consume);
         out(withReplyHints(box, alias));

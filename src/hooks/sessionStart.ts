@@ -13,7 +13,7 @@ import { ttyForPid } from "../badge.ts";
 import { Client } from "../client.ts";
 import { config } from "../config.ts";
 import { humanAge } from "../models.ts";
-import { aliasFor, deliverContext, emitContext, formatRoster, markOrphanShown, readHookInput } from "./shared.ts";
+import { aliasFor, bootDigest, deliverContext, emitContext, markOrphanShown, readHookInput } from "./shared.ts";
 
 /** Transient/headless sessions shouldn't join the roster — sub-agents and
  *  `claude -p` runs (typically from a temp cwd) would pile up as dead peers. */
@@ -105,14 +105,14 @@ export async function main(): Promise<void> {
     console.error("[claude-ipc] SessionStart drain:", e instanceof Error ? e.message : e);
   }
 
-  // Roster of who else is registered, so this session ambiently knows its peers.
-  // Silent when alone; needs the live broker (no roster in degraded mode).
-  let roster: string | null = null;
+  // Identity + obligations first (boot survey: who am I, what do I owe — never
+  // an inventory). Replaces the 12-row roster dump; the digest ends with the
+  // live count and points at the peers verb for the full list.
+  let digest: string | null = null;
   try {
-    const peers = (await client.list()).peers as { alias: string; cwd: string; status: string }[];
-    roster = formatRoster(peers, alias);
+    digest = await bootDigest(client, owned ? alias : (input.session_id ?? alias), input.session_id, cwd);
   } catch {
-    // broker down — skip the roster, the backlog drain above still works
+    // broker down — the backlog drain above still works
   }
 
   // Successor discoverability: dead sessions of THIS project may still hold
@@ -151,7 +151,7 @@ export async function main(): Promise<void> {
     // broker down — orphan surfacing is best-effort
   }
 
-  const parts = [collision, backlog, roster, orphanNote].filter((p): p is string => p !== null);
+  const parts = [digest, collision, backlog, orphanNote].filter((p): p is string => p !== null);
   if (parts.length) emitContext("SessionStart", parts.join("\n\n"));
 }
 

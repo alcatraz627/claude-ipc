@@ -20,7 +20,8 @@ export interface Identity {
 }
 
 export function sessionIdentity(): Identity | null {
-  const alias = readAliasForSession(process.env.CLAUDE_CODE_SESSION_ID);
+  // Mirrors cli.ts resolveSelfAlias (import would cycle): explicit override, then side-file.
+  const alias = process.env.CLAUDE_IPC_ALIAS || readAliasForSession(process.env.CLAUDE_CODE_SESSION_ID);
   return alias ? { alias, mode: "session" } : null;
 }
 

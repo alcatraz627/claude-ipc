@@ -173,6 +173,58 @@ export function formatMessages(messages: InMsg[], self: string): string {
   ].join("\n\n");
 }
 
+/**
+ * The identity + obligations digest a session gets once, at wake.
+ *
+ * The boot survey was unanimous: a fresh session needs "who am I, what do I
+ * owe" first, not a directory of who exists. Identity leads with the send
+ * command peers use; open asks follow with reply commands; the roster shrinks
+ * to a live count behind the peers verb. Broker down → identity line only.
+ */
+export async function bootDigest(client: Client, self: string, sessionId: string | undefined, cwd: string): Promise<string> {
+  const name = neutralizeFrame(self);
+  const lines: string[] = [
+    `You are ${name}${sessionId ? ` (session ${sessionId.slice(0, 8)})` : ""} — peers reach you with: claude-ipc send --to ${name} "<msg>"`,
+  ];
+  try {
+    const roster = ((await client.list()).peers ?? []) as {
+      alias: string;
+      sessionId?: string;
+      cwd?: string | null;
+      status?: string;
+      sessionAliases?: string[];
+    }[];
+    const mine = roster.find((p) => p.alias === self)?.sessionAliases ?? [self];
+    const owed: string[] = [];
+    for (const alias of mine) {
+      try {
+        const box = (await client.check(alias, false)) as { messages?: InMsg[] };
+        for (const m of box.messages ?? []) {
+          if (m.kind !== "query" && m.kind !== "request") continue;
+          owed.push(`  ${m.kind} from ${neutralizeFrame(m.fromAlias)} — reply with: claude-ipc reply ${m.id} --from ${alias}`);
+        }
+      } catch {
+        owed.push(`  (${alias}: mailbox unreadable — claude-ipc owed)`);
+      }
+    }
+    lines.push(
+      owed.length
+        ? `${owed.length} open ask(s) await YOUR reply:\n${owed.slice(0, 5).join("\n")}${owed.length > 5 ? `\n  … +${owed.length - 5} more: claude-ipc owed` : ""}`
+        : "Nothing awaits your reply.",
+    );
+    const mySession = roster.find((p) => p.alias === self)?.sessionId;
+    const liveOthers = roster.filter((p) => p.status === "live" && (!mySession || p.sessionId !== mySession));
+    const liveSessions = new Set(liveOthers.map((p) => p.sessionId ?? p.alias)).size;
+    const here = [...new Set(liveOthers.filter((p) => p.cwd === cwd).map((p) => neutralizeFrame(p.alias)))].slice(0, 3);
+    lines.push(
+      `${liveSessions} live peer session(s)${here.length ? ` — here with you: ${here.join(", ")}` : ""} (full list: claude-ipc peers)`,
+    );
+  } catch {
+    // broker down — the identity line above still orients the session
+  }
+  return lines.join("\n");
+}
+
 interface Peer {
   alias: string;
   cwd: string;
