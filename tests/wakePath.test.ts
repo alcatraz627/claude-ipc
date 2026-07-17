@@ -163,9 +163,10 @@ describe("the wake path wakes an idle session", () => {
 
   test("mail to a SIBLING alias of the same session wakes it (the vb-opus deafness)", async () => {
     // A session launched with --name registers that name; the session-id registration
-    // then rewrites the side-file. The watcher used to follow ONLY the side-file, so
-    // mail to the boot name never woke the session — deaf as its own public name,
-    // while the roster kept routing to it (live incident, 2026-07-14 evening).
+    // then rewrites the side-file. Mail to the boot name must still wake the session.
+    // The broker now session-scopes an inbox read, so the watcher reads its own
+    // (side-file) alias and the broker returns the sibling's mail too — the read hint
+    // points at that session box, which surfaces everything.
     await rig.client.register("vb-boot", { sessionId: "s-dual", cwd: "/w" });
     await rig.client.register("vb-current", { sessionId: "s-dual", cwd: "/w" });
     bindAlias("s-dual", "vb-current"); // the side-file names only the newer alias
@@ -175,7 +176,7 @@ describe("the wake path wakes an idle session", () => {
     await rig.client.send({ from: "alice", to: "vb-boot", kind: "query", body: "boot alias must wake" });
     const wake = await waitForWake(w, /boot alias must wake/);
     expect(wake).toBeTruthy();
-    expect(wake).toContain("claude-ipc inbox vb-boot"); // the read points at the box that holds it
+    expect(wake).toContain("claude-ipc inbox vb-current"); // read the session box (session-scoped, holds it)
   }, 30_000);
 
   test("a broadcast into a dual-aliased recipient wakes ONCE — one message, not one per mailbox", async () => {

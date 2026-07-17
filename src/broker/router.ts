@@ -354,11 +354,12 @@ export class Router {
     const denied = this.requireOwner(req, a.alias); // only the owner reads its inbox
     if (denied) return denied;
     const consume = a.consume ?? false;
-    const messages = this.backend.pending(a.alias, { consume });
+    const boxes = this.sessionBoxes(a.alias);
+    const messages = this.dedupeById(boxes.flatMap((addr) => this.backend.pending(addr, { consume })));
     // Only a read that CHANGED the mailbox is worth announcing. The inbox watcher peeks
     // every 10 seconds; notifying on a peek meant the broker repainted the session's tab
     // badge forever, fighting whatever the user had put there.
-    if (consume) this.notify(a.alias);
+    if (consume) for (const addr of boxes) this.notify(addr);
     return ok({ messages: this.annotateChases(messages) });
   }
 
@@ -394,8 +395,12 @@ export class Router {
     if (!a.alias) return fail("bad_args", "deliver needs alias");
     const denied = this.requireOwner(req, a.alias); // only the owner drains its queue
     if (denied) return denied;
-    const messages = this.backend.claimForDelivery(a.alias, a.via ?? "hook");
-    this.notify(a.alias);
+    // Session-scoped: the wake must claim EVERY box this session owns, or sibling-box
+    // mail never wakes it (vb-fable's expired-TTL bug). A broadcast lands in each box,
+    // so dedupe by id before handing it back.
+    const boxes = this.sessionBoxes(a.alias);
+    const messages = this.dedupeById(boxes.flatMap((addr) => this.backend.claimForDelivery(addr, a.via ?? "hook")));
+    for (const addr of boxes) this.notify(addr);
     return ok({ messages: this.annotateChases(messages) });
   }
 
@@ -464,6 +469,27 @@ export class Router {
     if (!req.token) return null;
     for (const e of this.registry.list()) if (this.registry.tokenOf(e.alias) === req.token) return e.alias;
     return null;
+  }
+
+  /**
+   * Every alias-addressed mailbox this session owns — the chokepoint that makes a
+   * personal mailbox belong to the SESSION, not a single name.
+   *
+   * Callers pass an anchor that already cleared requireOwner; its siblings share one
+   * session by the registry, so returning their boxes hands back only the caller's
+   * own mail. check/deliver/count route through here so no surface can be per-alias;
+   * the session-scope test enumerates them.
+   */
+  private sessionBoxes(anchorAlias: string): string[] {
+    const entry = this.registry.list().find((e) => e.alias === anchorAlias);
+    return entry?.sessionAliases ?? [anchorAlias];
+  }
+
+  /** Union of several boxes, deduped by message id — a broadcast lands in every
+   *  sibling box, so a naive concat would show or count it once per alias. */
+  private dedupeById(messages: Message[]): Message[] {
+    const seen = new Set<string>();
+    return messages.filter((m) => (seen.has(m.id) ? false : (seen.add(m.id), true)));
   }
 
   /**
@@ -888,7 +914,8 @@ export class Router {
     if (!a.alias) return fail("bad_args", "count needs alias");
     const denied = this.requireOwner(req, a.alias); // your own inbox size only
     if (denied) return denied;
-    return ok({ count: this.backend.pending(a.alias).length });
+    const messages = this.dedupeById(this.sessionBoxes(a.alias).flatMap((addr) => this.backend.pending(addr)));
+    return ok({ count: messages.length });
   }
 
   /** Drop offline peers idle past a window — clears the dead-session graveyard. */

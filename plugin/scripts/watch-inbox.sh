@@ -96,30 +96,6 @@ orphaned() {
   return 1
 }
 
-# A session may be addressable under MORE names than the side-file's: a launch
-# --name registered at boot, or an earlier register, stays routable in the broker.
-# Mail to any of them belongs to this session — watching only the side-file alias
-# left a session deaf as its own public name (the vb-opus incident). Ask the
-# registry which aliases share our session id; broker down → empty, and the
-# side-file alias alone carries the tick.
-sibling_aliases() {
-  # A parse failure here must be LOUD in the log: this exact failure was silent
-  # (exit 0) while a truncated `peers` blob collapsed the watcher to one mailbox
-  # and a live session got ghosted on its public name (B10, 2026-07-16). The
-  # side-file alias still carries the tick either way — degraded, not deaf.
-  "$CIPC" peers 2>/dev/null | "$PY" -c '
-import sys, json
-try:
-    peers = json.load(sys.stdin).get("peers", [])
-except Exception as e:
-    print(f"sibling-alias query FAILED ({e}) — watching the side-file alias only this tick", file=sys.stderr)
-    sys.exit(0)
-for p in peers:
-    if p.get("sessionId") == sys.argv[1] and p.get("alias") != sys.argv[2]:
-        print(p.get("alias"))
-' "$SID" "$1" 2>>"$LOG" | sort -u
-}
-
 # One snapshot of EVERY watched mailbox (all this session's aliases + the
 # project's) as flat lines: id<TAB>kind<TAB>from<TAB>box<TAB>one-line body head.
 # Exits non-zero when the PRIMARY box didn't come back as JSON (broker down, CLI
@@ -193,13 +169,14 @@ while :; do
     ALIAS="$now_alias"
   fi
 
-  # The full watch set: the side-file alias plus every sibling alias the registry
-  # binds to this session id. Aliases never contain whitespace (sanitizeAlias
-  # guarantees it), so the deliberate word-splitting below is safe.
-  SIBS="$(sibling_aliases "$ALIAS" | tr '\n' ' ')"
-  WATCH="$ALIAS ${SIBS}"
+  # Just the session's own alias box: the broker session-scopes a personal inbox
+  # read (Router.sessionBoxes), so reading one alias returns the whole session's
+  # mail — sibling boxes included. This used to be re-derived here in shell (a
+  # peers query + filter), the second implementation of session-scoping that could
+  # silently collapse to one box and ghost a live session (B10). One authority now.
+  WATCH="$ALIAS"
   if [ "$WATCH" != "$WATCHED" ]; then
-    log "watching mailboxes: $WATCH"
+    log "watching mailbox: $WATCH"
     WATCHED="$WATCH"
   fi
 
