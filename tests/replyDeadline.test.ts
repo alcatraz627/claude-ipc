@@ -38,6 +38,59 @@ const noticeTo = (backend: MemoryBackend, alias: string, marker: string) =>
 
 const sweep = (backend: MemoryBackend, at: number) => sweepReplyDeadlines(backend, () => at, mkId, GRACE);
 
+// Boot-survey U2 — a chase notice outlives the ask it chases: 3d-old NUDGEs sat
+// "pending" in inherited boxes long after the ask settled. Each recipient-facing
+// chase now carries the ask's fate (askState) so readers can fold the settled ones.
+// Sender-facing notices (terminal:true) are one-shot information, never annotated.
+describe("chase notices carry the fate of the ask they chase", () => {
+  const rig = () => {
+    const backend = new MemoryBackend();
+    const registry = new Registry(backend, () => 5000, { idleS: 300, offlineS: 1800 });
+    let n = 0;
+    const router = new Router(backend, registry, () => 5000, () => `msg-c${++n}`, 60);
+    const broker = startBroker({ router, socketPath: tmpSock() });
+    return { backend, broker, client: new Client(broker.socketPath) };
+  };
+  type Annotated = { body?: string; askState?: string };
+  const find = (msgs: Annotated[], marker: string): Annotated | undefined =>
+    msgs.find((m) => (m.body ?? "").includes(marker));
+
+  test("open ask reads open; a parked ask's chases read parked", async () => {
+    const { backend, broker, client } = rig();
+    try {
+      await client.register("alice", { sessionId: "sA", cwd: "/a" });
+      await client.register("bob", { sessionId: "sB", cwd: "/b" });
+      seedAsk(backend);
+      sweep(backend, SENT_AT + REPLY_BY); // NUDGE while the ask is still open
+      let msgs = (await client.check("bob")).messages as Annotated[];
+      expect(find(msgs, "NUDGE")?.askState).toBe("open");
+      sweep(backend, SENT_AT + REPLY_BY + GRACE); // LAST CALL + park
+      msgs = (await client.check("bob")).messages as Annotated[];
+      expect(find(msgs, "NUDGE")?.askState).toBe("parked");
+      expect(find(msgs, "LAST CALL")?.askState).toBe("parked");
+      const release = (await client.check("alice")).messages as Annotated[];
+      expect(find(release, "NO REPLY YET")?.askState).toBeUndefined(); // sender info, not a chase
+    } finally {
+      broker.stop();
+    }
+  });
+
+  test("once the ask is answered its chase reads responded", async () => {
+    const { backend, broker, client } = rig();
+    try {
+      await client.register("alice", { sessionId: "sA", cwd: "/a" });
+      await client.register("bob", { sessionId: "sB", cwd: "/b" });
+      seedAsk(backend);
+      sweep(backend, SENT_AT + REPLY_BY); // NUDGE, still open
+      await client.reply({ from: "bob", corrId: "ask-1", body: "here you go" });
+      const msgs = (await client.check("bob")).messages as Annotated[];
+      expect(find(msgs, "NUDGE")?.askState).toBe("responded");
+    } finally {
+      broker.stop();
+    }
+  });
+});
+
 describe("reply deadlines chase the ask, not the peer", () => {
   test("before the deadline, nobody is bothered", () => {
     const backend = new MemoryBackend();

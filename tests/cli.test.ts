@@ -14,10 +14,11 @@ describe("CLI", () => {
   let lines: string[] = [];
   const origLog = console.log;
   let idn = 0;
+  let backend: MemoryBackend;
 
   beforeEach(() => {
     idn = 0;
-    const backend = new MemoryBackend();
+    backend = new MemoryBackend();
     const registry = new Registry(backend, () => 1000, { idleS: 300, offlineS: 1800 });
     const router = new Router(backend, registry, () => 1000, () => `msg-${++idn}`, 60);
     sock = tmpSock();
@@ -209,6 +210,28 @@ describe("CLI", () => {
       delete process.env.CLAUDE_CODE_SESSION_ID;
     }
     expect(errs.join("\n")).toBe("");
+  });
+
+  // Boot-survey U2 — a successor's first look at a dead box must say how much is
+  // real mail vs broker chase noise (an inherited box read 2:1 noise, live).
+  test("register names a predecessor's real mail separately from stale chase notices", async () => {
+    const { makeMessage } = await import("../src/models.ts");
+    const { sweepReplyDeadlines } = await import("../src/broker/sweeper.ts");
+    const c = new Client(sock);
+    await c.register("pred-chase-x", { sessionId: "s-pc", cwd: process.cwd() });
+    const m = makeMessage({ id: "ask-c1", kind: "query", fromAlias: "someone", toAlias: "pred-chase-x", ts: 900, body: "?" });
+    backend.append(m);
+    backend.enqueue(m.id, "pred-chase-x");
+    backend.openAwaiting(m.id, null, 50, 900);
+    sweepReplyDeadlines(backend, () => 960, () => "msg-cc1", 200); // NUDGE joins the box
+    await c.leave("pred-chase-x");
+    process.env.CLAUDE_CODE_SESSION_ID = "sid-succ-chase";
+    try {
+      expect(await run(["register", "succ-chase-x"], { socketPath: sock })).toBe(0);
+    } finally {
+      delete process.env.CLAUDE_CODE_SESSION_ID;
+    }
+    expect(lines.join("\n")).toContain("pred-chase-x holds 1 (+1 chase notice");
   });
 
   // Boot-survey U1 — the corrId=null trap, live-proven: a query row in the inbox

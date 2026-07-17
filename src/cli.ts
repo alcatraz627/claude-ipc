@@ -371,6 +371,7 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
           const list = ((await client.orphans(process.cwd())).orphans ?? []) as {
             alias: string;
             pending: number;
+            chases?: number;
             oldestTs: number | null;
           }[];
           const preds = list.filter((o) => o.alias !== alias && o.pending > 0);
@@ -381,10 +382,19 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
             out(
               [
                 `predecessor mail in this project — dead sessions still hold unread messages (age is a staleness hint — old mail may have been superseded by a later correction):`,
-                ...shown.map(
-                  (o) =>
-                    `  ${o.alias} holds ${o.pending}${ageHint(o.oldestTs)} — peek: claude-ipc inbox ${o.alias} · claim: claude-ipc inbox ${o.alias} --consume`,
-                ),
+                ...shown.map((o) => {
+                  // Chase notices are broker bookkeeping — a successor triaging a dead
+                  // box needs the real-mail count, not noise dressed as obligations.
+                  const chases = o.chases ?? 0;
+                  const real = o.pending - chases;
+                  const held =
+                    chases > 0
+                      ? real > 0
+                        ? `holds ${real} (+${chases} chase notice${chases > 1 ? "s" : ""})`
+                        : `holds only ${chases} stale chase notice${chases > 1 ? "s" : ""}`
+                      : `holds ${o.pending}`;
+                  return `  ${o.alias} ${held}${ageHint(o.oldestTs)} — peek: claude-ipc inbox ${o.alias} · claim: claude-ipc inbox ${o.alias} --consume`;
+                }),
                 ...tail,
               ].join("\n"),
             );

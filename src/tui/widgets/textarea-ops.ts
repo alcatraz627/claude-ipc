@@ -28,7 +28,6 @@ export function forwardDelete(s: EditState): EditState {
   return { text: s.text.slice(0, s.cursor) + s.text.slice(s.cursor + 1), cursor: s.cursor };
 }
 
-/** Where the cursor sits in line/column terms — the rendering view of it. */
 export function cursorPos(s: EditState): { row: number; col: number } {
   const before = s.text.slice(0, s.cursor);
   const row = (before.match(/\n/g) ?? []).length;

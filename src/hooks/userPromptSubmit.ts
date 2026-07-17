@@ -20,13 +20,16 @@ import { aliasFor, deliverContext, emitContext, markOrphanShown, orphanAlreadySh
 async function orphanNoteOnce(client: Client, sessionId: string | undefined, cwd: string): Promise<string | null> {
   if (!sessionId || orphanAlreadyShown(sessionId)) return null;
   markOrphanShown(sessionId);
-  const list = (((await client.orphans(cwd)) as { orphans?: { alias: string; pending: number }[] }).orphans ?? []).filter(
-    (o) => o.pending > 0,
-  );
-  if (!list.length) return null;
+  // Chase notices don't count as mail: a box holding only the broker's own stale
+  // nudges is not inherited work and doesn't earn a nag (it stays listed in the
+  // orphans verb, labeled as chases).
+  const rows = (((await client.orphans(cwd)) as { orphans?: { alias: string; pending: number; chases?: number }[] }).orphans ?? [])
+    .map((o) => ({ alias: o.alias, real: o.pending - (o.chases ?? 0) }))
+    .filter((o) => o.real > 0);
+  if (!rows.length) return null;
   return (
-    `claude-ipc: ${list.length} dead mailbox(es) in this project still hold mail ` +
-    `(e.g. ${list[0]!.alias}, ${list[0]!.pending} msg${list[0]!.pending === 1 ? "" : "s"}) — see: claude-ipc orphans --project`
+    `claude-ipc: ${rows.length} dead mailbox(es) in this project still hold mail ` +
+    `(e.g. ${rows[0]!.alias}, ${rows[0]!.real} msg${rows[0]!.real === 1 ? "" : "s"}) — see: claude-ipc orphans --project`
   );
 }
 

@@ -124,11 +124,19 @@ export async function main(): Promise<void> {
     const list = ((await client.orphans(cwd)).orphans ?? []) as {
       alias: string;
       pending: number;
+      chases?: number;
       oldestTs: number | null;
     }[];
     if (list.length) {
       const nowS = Math.floor(Date.now() / 1000);
-      const shown = list.slice(0, 5).map((o) => `${o.alias} (${o.pending}${o.oldestTs ? `, ${humanAge(o.oldestTs, nowS)}` : ""})`);
+      const shown = list.slice(0, 5).map((o) => {
+        // Broker chase notices are bookkeeping, not obligations — show the split so
+        // a box holding only stale nudges doesn't read as real inherited work.
+        const chases = o.chases ?? 0;
+        const real = o.pending - chases;
+        const load = chases > 0 ? (real > 0 ? `${real} +${chases} chases` : `${chases} stale chases only`) : `${o.pending}`;
+        return `${o.alias} (${load}${o.oldestTs ? `, ${humanAge(o.oldestTs, nowS)}` : ""})`;
+      });
       const more = list.length > shown.length ? ` … +${list.length - shown.length} more` : "";
       orphanNote =
         `claude-ipc: dead sessions of this project still hold unread mail: ${shown.join(", ")}${more}` +

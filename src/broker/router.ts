@@ -330,7 +330,7 @@ export class Router {
       const messages = this.projectMailboxes(a.project, !consuming).flatMap((addr) =>
         this.backend.pending(addr, { consume: consuming }),
       );
-      return ok({ messages: this.stillOwedBy(messages, this.aliasOfToken(req)) });
+      return ok({ messages: this.annotateChases(this.stillOwedBy(messages, this.aliasOfToken(req))) });
     }
     if (!a.alias) return fail("bad_args", "check needs alias");
     const denied = this.requireOwner(req, a.alias); // only the owner reads its inbox
@@ -341,7 +341,24 @@ export class Router {
     // every 10 seconds; notifying on a peek meant the broker repainted the session's tab
     // badge forever, fighting whatever the user had put there.
     if (consume) this.notify(a.alias);
-    return ok({ messages });
+    return ok({ messages: this.annotateChases(messages) });
+  }
+
+  /**
+   * Stamp each recipient-facing chase notice with the fate of the ask it chases.
+   *
+   * A NUDGE outlives its ask: inherited boxes carried days-old chases for settled
+   * asks, indistinguishable from live obligations. askState lets readers fold the
+   * settled ones and keep parked ones visible (a parked ask is still answerable).
+   * Sender-facing notices (terminal:true) are one-shot info, never annotated.
+   */
+  private annotateChases(messages: Message[]): (Message & { askState?: string })[] {
+    return messages.map((m) => {
+      if (m.fromAlias !== "ipc" || !m.corrId || m.terminal !== false) return m;
+      const a = this.backend.getAwaiting(m.corrId);
+      const askState = !a || !a.closed ? "open" : (a.closedReason ?? "parked");
+      return { ...m, askState };
+    });
   }
 
   /** Hand a hook the alias's freshly-queued messages exactly once (idempotent inject). */
@@ -354,14 +371,14 @@ export class Router {
         this.backend.claimForDelivery(addr, a.via ?? "hook"),
       );
       // Don't hand a session work that somebody else already took, or work it passed on.
-      return ok({ messages: this.stillOwedBy(messages, this.aliasOfToken(req)) });
+      return ok({ messages: this.annotateChases(this.stillOwedBy(messages, this.aliasOfToken(req))) });
     }
     if (!a.alias) return fail("bad_args", "deliver needs alias");
     const denied = this.requireOwner(req, a.alias); // only the owner drains its queue
     if (denied) return denied;
     const messages = this.backend.claimForDelivery(a.alias, a.via ?? "hook");
     this.notify(a.alias);
-    return ok({ messages });
+    return ok({ messages: this.annotateChases(messages) });
   }
 
   /**
@@ -374,8 +391,14 @@ export class Router {
     const a = req.args as { project?: string };
     const dir = a.project ? normalizeProjectPath(a.project) : null;
     const entries = new Map(this.registry.list().map((e) => [e.alias, e]));
-    const out: { alias: string; cwd: string | null; lastSeen: number | null; pending: number; oldestTs: number | null }[] =
-      [];
+    const out: {
+      alias: string;
+      cwd: string | null;
+      lastSeen: number | null;
+      pending: number;
+      chases: number;
+      oldestTs: number | null;
+    }[] = [];
     for (const addr of this.backend.pendingAddresses()) {
       if (isProjectAddress(addr)) continue; // project mail is not orphaned — it waits by design
       const e = entries.get(addr);
@@ -387,6 +410,9 @@ export class Router {
         cwd: e?.cwd ?? null,
         lastSeen: e?.lastSeen ?? null,
         pending: msgs.length,
+        // Broker bookkeeping (nudges, last calls, park notices) is not real mail;
+        // successors read the split so noise can't masquerade as obligations.
+        chases: msgs.filter((m) => m.fromAlias === "ipc").length,
         // The oldest waiting message's age is the staleness signal: mail from several
         // lineages ago is the case most likely to have been superseded, so a successor
         // can weigh it before acting rather than treating a raw unread as fresh.

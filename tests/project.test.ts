@@ -102,6 +102,27 @@ describe("orphans", () => {
   });
   afterEach(() => broker.stop());
 
+  // Boot-survey U2 — an inherited dead box read 2:1 chase-noise over real mail, and
+  // successors triage the nudges first. The orphan row now says how much is broker
+  // bookkeeping (chases) so renderers can show "holds N real (+K chase notices)".
+  test("orphan rows split broker chase notices from real mail", async () => {
+    const { makeMessage } = await import("../src/models.ts");
+    const { sweepReplyDeadlines } = await import("../src/broker/sweeper.ts");
+    await client.register("dying", { sessionId: "d1", cwd: "/work/repo" });
+    await client.register("asker", { sessionId: "d2", cwd: "/work/repo" });
+    const m = makeMessage({ id: "ask-o1", kind: "query", fromAlias: "asker", toAlias: "dying", ts: clock, body: "still there?" });
+    backend.append(m);
+    backend.enqueue(m.id, "dying");
+    backend.openAwaiting(m.id, null, 100, clock);
+    sweepReplyDeadlines(backend, () => clock + 100, () => "msg-chase1", 200); // NUDGE lands in dying's box
+    clock += 2000;
+    await client.heartbeat("asker");
+    const rows = (await client.orphans("/work/repo")).orphans as { alias: string; pending: number; chases?: number }[];
+    expect(rows[0]!.alias).toBe("dying");
+    expect(rows[0]!.pending).toBe(2);
+    expect(rows[0]!.chases).toBe(1);
+  });
+
   test("mail for an offline session surfaces as a project-scoped orphan; live sessions don't", async () => {
     await client.register("dying", { sessionId: "d1", cwd: "/work/repo" });
     await client.register("sender", { sessionId: "d2", cwd: "/work/repo" });
