@@ -235,6 +235,39 @@ export const COMMAND_FLAGS: Record<string, string[]> = {
   interactive: [],
 };
 
+// True when two names are a single typo apart: one substitution, insertion,
+// deletion, or adjacent transposition ("opsu" for "opus"). Bounded on purpose —
+// distance 2+ names don't get confused in practice.
+export function withinOneEdit(a: string, b: string): boolean {
+  if (a === b) return false;
+  const [s, l] = a.length <= b.length ? [a, b] : [b, a];
+  if (l.length - s.length > 1) return false;
+  if (s.length === l.length) {
+    const diffs: number[] = [];
+    for (let i = 0; i < s.length; i++) if (s[i] !== l[i]) diffs.push(i);
+    if (diffs.length === 1) return true;
+    if (diffs.length === 2) {
+      const [i, j] = diffs as [number, number];
+      return j === i + 1 && s[i] === l[j] && s[j] === l[i];
+    }
+    return false;
+  }
+  let i = 0;
+  let j = 0;
+  let skipped = false;
+  while (i < s.length && j < l.length) {
+    if (s[i] === l[j]) {
+      i++;
+      j++;
+      continue;
+    }
+    if (skipped) return false;
+    skipped = true;
+    j++;
+  }
+  return true;
+}
+
 export async function run(argv: string[], opts: { socketPath?: string } = {}): Promise<number> {
   const { cmd, positional, flags } = parse(argv);
   const client = new Client(opts.socketPath ?? config.socketPath);
@@ -255,8 +288,14 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
     const unknown = Object.keys(flags).filter((f) => !allowedFlags.includes(f));
     if (unknown.length) {
       const plural = unknown.length > 1 ? "s" : "";
+      // `body` sits in the allowlist only so the "positional" redirect can fire
+      // (see COMMAND_FLAGS note) — advertising it here as a real flag taught
+      // agents to type --body and get rejected. Describe the documented
+      // interface instead.
+      const shown = allowedFlags.filter((f) => f !== "body");
+      const hint = shown.length < allowedFlags.length ? "; the message body itself is positional (after the flags)" : "";
       console.error(
-        `unknown flag${plural} for ${cmd}: ${unknown.map((f) => `--${f}`).join(", ")} — ${cmd} takes ${allowedFlags.length ? allowedFlags.map((f) => `--${f}`).join(", ") : "no flags"}. See: claude-ipc help`,
+        `unknown flag${plural} for ${cmd}: ${unknown.map((f) => `--${f}`).join(", ")} — ${cmd} takes ${shown.length ? shown.map((f) => `--${f}`).join(", ") : "no flags"}${hint}. See: claude-ipc help`,
       );
       return 2;
     }
@@ -301,6 +340,28 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
         // it in scrollback and any log that captures the command. It is already saved,
         // owner-only, to the token file; the CLI never needs to echo it.
         out(`registered as "${alias}"${res.replaced ? " (rebound from a prior name)" : ""} — peers can now reach you as ${alias}.`);
+        // Concern-6 belt: a name one edit from the CLI's own name or from another
+        // session's alias is the clade-ipc incident at birth — mail typed for one
+        // lands with the other. The register stands (warn, never block); the
+        // warning names the near-miss so the typo is caught now, not an hour in.
+        try {
+          const CLI_NAME = "claude-ipc";
+          const near: string[] = [];
+          if (alias === CLI_NAME) near.push(`it IS the CLI's own name — peers type "${CLI_NAME}" meaning the tool, not you`);
+          else if (withinOneEdit(alias, CLI_NAME)) near.push(`it is one edit away from "${CLI_NAME}" (the CLI's own name)`);
+          const roster = ((await client.list()).peers ?? []) as { alias: string; sessionId: string }[];
+          for (const p of roster) {
+            if (p.sessionId === sid) continue;
+            if (withinOneEdit(alias, p.alias)) near.push(`it is one edit away from "${p.alias}" (another session's alias)`);
+          }
+          if (near.length) {
+            console.error(
+              `warning about "${alias}": ${near.join("; also ")}. Mail addressed to either name may reach the wrong box. If unintended, rebind: claude-ipc register <other-name>`,
+            );
+          }
+        } catch {
+          // advisory; the registration above already succeeded
+        }
         // The moment a lane takes a name is the moment its predecessor's mail
         // matters: owner directives stranded in a dead alias's box were only ever
         // found when a peer said "go peek" by hand. Name the dead boxes still

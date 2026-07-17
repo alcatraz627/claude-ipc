@@ -141,6 +141,76 @@ describe("CLI", () => {
     expect(got.body).toBe(raw); // backticks and $() delivered verbatim
   });
 
+  // Boot-survey U4a — the unknown-flag error used to enumerate COMMAND_FLAGS
+  // verbatim, advertising --body as a real flag while the parser rejects it as
+  // positional. The error must describe the documented interface.
+  test("unknown-flag error does not advertise --body and names the positional body", async () => {
+    const origErr = console.error;
+    const errs: string[] = [];
+    console.error = (...a: unknown[]): void => void errs.push(a.map(String).join(" "));
+    try {
+      expect(await run(["send", "--nonsense", "hi"], { socketPath: sock })).toBe(2);
+    } finally {
+      console.error = origErr;
+    }
+    const out = errs.join("\n");
+    expect(out).toContain("unknown flag for send: --nonsense");
+    expect(out).not.toMatch(/--body[^-]/); // --body-file is real and may appear; bare --body must not
+    expect(out).toContain("positional");
+  });
+
+  // Boot-survey U4b / Concern-6 belt — a register within edit-distance 1 of the CLI
+  // name or another session's alias is the clade-ipc incident at birth. Warn (never
+  // block): the register still succeeds, the warning names the near-match.
+  test("register warns when the alias is one edit from the CLI name", async () => {
+    const origErr = console.error;
+    const errs: string[] = [];
+    console.error = (...a: unknown[]): void => void errs.push(a.map(String).join(" "));
+    process.env.CLAUDE_CODE_SESSION_ID = "sid-neartypo";
+    try {
+      expect(await run(["register", "clade-ipc"], { socketPath: sock })).toBe(0);
+    } finally {
+      console.error = origErr;
+      delete process.env.CLAUDE_CODE_SESSION_ID;
+    }
+    expect(lines.join("\n")).toContain('registered as "clade-ipc"');
+    const warn = errs.join("\n");
+    expect(warn).toContain("clade-ipc");
+    expect(warn).toContain("claude-ipc");
+    expect(warn).toContain("one edit");
+  });
+
+  test("register warns when the alias is one edit from a DIFFERENT session's alias", async () => {
+    await new Client(sock).register("vb-opus", { sessionId: "s-other", cwd: "/o" });
+    const origErr = console.error;
+    const errs: string[] = [];
+    console.error = (...a: unknown[]): void => void errs.push(a.map(String).join(" "));
+    process.env.CLAUDE_CODE_SESSION_ID = "sid-nearpeer";
+    try {
+      expect(await run(["register", "vb-opsu"], { socketPath: sock })).toBe(0);
+    } finally {
+      console.error = origErr;
+      delete process.env.CLAUDE_CODE_SESSION_ID;
+    }
+    expect(errs.join("\n")).toContain("vb-opus");
+  });
+
+  test("register does NOT warn on its own session's sibling alias or a distant name", async () => {
+    const origErr = console.error;
+    const errs: string[] = [];
+    console.error = (...a: unknown[]): void => void errs.push(a.map(String).join(" "));
+    process.env.CLAUDE_CODE_SESSION_ID = "sid-selfsib";
+    try {
+      expect(await run(["register", "lane-alpha"], { socketPath: sock })).toBe(0);
+      // rebind of the SAME session to a near name of its own alias: no warning
+      expect(await run(["register", "lane-alphb"], { socketPath: sock })).toBe(0);
+    } finally {
+      console.error = origErr;
+      delete process.env.CLAUDE_CODE_SESSION_ID;
+    }
+    expect(errs.join("\n")).toBe("");
+  });
+
   // Regression: --partial is a boolean flag and must NOT swallow the body that
   // follows it (it once consumed the first body word, leaving interim replies empty).
   test("reply --partial keeps the full body and is non-terminal", async () => {
