@@ -7,6 +7,7 @@
  * is synchronous — so it is trivially testable with an injected clock + id source.
  */
 
+import { sanitizeAlias } from "../aliasStore.ts";
 import { ttyForPid } from "../badge.ts";
 import { makeMessage, type DeliveredVia, type ErrorCode, type Kind, type Message, type Status } from "../models.ts";
 import {
@@ -127,6 +128,19 @@ export class Router {
     if (Router.RESERVED.has(a.alias)) {
       return fail("bad_args", `"${a.alias}" is reserved — the broker speaks under that name. Pick another.`);
     }
+    // An alias is interpolated raw into every rendered ⟨…⟩ frame and the boot digest,
+    // and it is the mailbox name the watcher polls. Frame-neutralization handles the
+    // brackets but not a newline or other control char, which would forge a whole
+    // extra line in a peer's context. Reject anything the slug wouldn't preserve, at
+    // this boundary (every entry point — CLI, MCP, hooks — passes through here).
+    if (sanitizeAlias(a.alias) !== a.alias) {
+      const safe = sanitizeAlias(a.alias);
+      return fail(
+        "bad_args",
+        `"${a.alias.replace(/[\n\r\t]/g, "·")}" isn't a safe alias — use lowercase letters, digits, dots, and dashes` +
+          (safe ? ` (e.g. "${safe}")` : "") + ".",
+      );
+    }
     const tty = a.tty ?? (a.pid ? ttyForPid(a.pid) : null);
     const result = this.registry.register(
       a.alias,
@@ -184,6 +198,10 @@ export class Router {
       contextPtr?: { sessionId: string; transcriptPath: string; cwd: string };
     };
     if (!a.from || !a.to) return fail("bad_args", "send needs from + to");
+    // "ipc" has no token, so requireOwner can't protect it — but it IS the broker's
+    // signature (nudges, park notices). Reject it as a sender unconditionally, not
+    // behind the disableable strict flag, or a peer can forge a broker notice.
+    if (Router.RESERVED.has(a.from)) return fail("bad_args", `"${a.from}" is reserved — you can't send as the broker.`);
     const denied = this.requireOwner(req, a.from); // you may only send AS yourself
     if (denied) return denied;
     // Proof of life: this is a token-authenticated request from the alias's real
@@ -495,6 +513,7 @@ export class Router {
       errorCode?: ErrorCode;
     };
     if (!a.from || !a.corrId) return fail("bad_args", "reply needs from + corrId");
+    if (Router.RESERVED.has(a.from)) return fail("bad_args", `"${a.from}" is reserved — you can't reply as the broker.`);
     const denied = this.requireOwner(req, a.from); // you may only reply AS yourself
     if (denied) return denied;
     this.registry.touchByAct(a.from); // an authorized reply is proof of life

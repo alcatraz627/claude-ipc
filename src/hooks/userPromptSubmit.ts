@@ -28,17 +28,22 @@ async function bootOnce(client: Client, input: { session_id?: string }, self: st
   } catch {
     // digest is broker-dependent past its first line; the orphan note below may still work
   }
-  // Chase notices don't count as mail: a box holding only the broker's own stale
-  // nudges is not inherited work and doesn't earn a nag (it stays listed in the
-  // orphans verb, labeled as chases).
-  const rows = (((await client.orphans(cwd)) as { orphans?: { alias: string; pending: number; chases?: number }[] }).orphans ?? [])
-    .map((o) => ({ alias: o.alias, real: o.pending - (o.chases ?? 0) }))
-    .filter((o) => o.real > 0);
-  if (rows.length) {
-    pieces.push(
-      `claude-ipc: ${rows.length} dead mailbox(es) in this project still hold mail ` +
-        `(e.g. ${rows[0]!.alias}, ${rows[0]!.real} msg${rows[0]!.real === 1 ? "" : "s"}) — see: claude-ipc orphans --project`,
-    );
+  // The orphan note is best-effort on its own: this whole briefing is marker-gated
+  // and fires once, so an orphans() failure must NOT discard a digest already built.
+  try {
+    // Chase notices don't count as mail: a box holding only the broker's own stale
+    // nudges is not inherited work and doesn't earn a nag (it stays in the orphans verb).
+    const rows = (((await client.orphans(cwd)) as { orphans?: { alias: string; pending: number; chases?: number }[] }).orphans ?? [])
+      .map((o) => ({ alias: o.alias, real: o.pending - (o.chases ?? 0) }))
+      .filter((o) => o.real > 0);
+    if (rows.length) {
+      pieces.push(
+        `claude-ipc: ${rows.length} dead mailbox(es) in this project still hold mail ` +
+          `(e.g. ${rows[0]!.alias}, ${rows[0]!.real} msg${rows[0]!.real === 1 ? "" : "s"}) — see: claude-ipc orphans --project`,
+      );
+    }
+  } catch {
+    // orphan discovery failed — the digest already in pieces still ships
   }
   return pieces.length ? pieces.join("\n\n") : null;
 }

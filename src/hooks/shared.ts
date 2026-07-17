@@ -30,9 +30,12 @@ export function orphanAlreadyShown(sessionId: string): boolean {
 export function markOrphanShown(sessionId: string): void {
   try {
     mkdirSync(join(config.metaDir, "orphan-shown"), { recursive: true });
-    writeFileSync(orphanMarker(sessionId), String(Date.now()));
+    // Exclusive create: two concurrent same-session hooks racing this claim would
+    // both pass an existsSync check and both briefs. "wx" makes the winner unique;
+    // the loser's EEXIST is swallowed as "already claimed".
+    writeFileSync(orphanMarker(sessionId), String(Date.now()), { flag: "wx" });
   } catch {
-    // best-effort — a missing marker at worst repeats the note once, never drops it
+    // already claimed (EEXIST) or unwritable — at worst the note repeats once, never drops
   }
 }
 
