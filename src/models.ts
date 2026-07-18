@@ -92,6 +92,14 @@ export interface RegistryEntry {
   // list(), so readers can tell "two names, one session" from two sessions.
   // Absent on stored snapshots; purely a read-time annotation.
   sessionAliases?: string[];
+  // Seconds since this session last showed a sign of life (D3). Read-time annotation
+  // that makes "live" legibly a heartbeat inference, not a process check — a reader
+  // can weigh freshness ("live, but seen 280s ago") instead of trusting a binary chip.
+  sinceSeenS?: number;
+  // The sessionId this alias was taken over FROM, when a different session rebound a
+  // name a now-dead one held (D3 succession). Absent on a fresh claim or a same-session
+  // reconnect; present marks a takeover so "two names, one lane" is legible.
+  succeededSid?: string;
   // The capability secret that proves ownership of this alias. Issued at register
   // time, held by the owner in a 0600 file; required to act as the alias. Never
   // sent over the wire except in the register response to the owner — strip it

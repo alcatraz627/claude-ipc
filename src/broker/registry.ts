@@ -72,6 +72,9 @@ export class Registry {
       tty: info.tty ?? prev?.tty ?? null,
       lastSeen: this.now(),
       status: "live",
+      // A takeover of a different session's alias is marked, so "two names, one
+      // lane" is legible instead of a same-name-two-liveness-states puzzle (D3).
+      ...(replaced && prev ? { succeededSid: prev.sessionId } : {}),
       token,
     });
     this.touchSiblings(info.sessionId, alias); // registering IS a liveness signal for the whole session
@@ -161,6 +164,9 @@ export class Registry {
       status: this.statusOf(e),
       token: null, // never expose tokens in the public roster
       sessionAliases: [...(bySid.get(e.sessionId) ?? [e.alias])].sort(),
+      // Liveness is heartbeat recency, never a process check — hand the reader the
+      // age so "live" is a legible inference, not a claim about a running process.
+      sinceSeenS: Math.max(0, this.now() - e.lastSeen),
     }));
   }
 

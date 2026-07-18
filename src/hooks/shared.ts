@@ -220,7 +220,7 @@ export async function bootDigest(client: Client, self: string, sessionId: string
     const liveSessions = new Set(liveOthers.map((p) => p.sessionId ?? p.alias)).size;
     const here = [...new Set(liveOthers.filter((p) => p.cwd === cwd).map((p) => neutralizeFrame(p.alias)))].slice(0, 3);
     lines.push(
-      `${liveSessions} live peer session(s)${here.length ? ` — here with you: ${here.join(", ")}` : ""} (full list: claude-ipc peers)`,
+      `${liveSessions} peer session(s) live by recent heartbeat${here.length ? ` — here with you: ${here.join(", ")}` : ""} (heartbeat, not a process check; full list: claude-ipc peers)`,
     );
   } catch {
     // broker down — the identity line above still orients the session

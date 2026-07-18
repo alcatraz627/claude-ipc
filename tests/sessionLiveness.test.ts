@@ -51,3 +51,40 @@ describe("A1 · heartbeats and registration refresh the whole session, not one a
     expect(stranger?.sessionAliases).toEqual(["stranger"]);
   });
 });
+
+// D3 — the roster tells the truth about WHAT it knows: liveness is heartbeat
+// recency, not a process check, and a takeover of a dead session's alias is marked.
+describe("D3 · roster liveness honesty", () => {
+  let registry: Registry;
+  let now: number;
+
+  beforeEach(() => {
+    now = 1000;
+    registry = new Registry(new MemoryBackend(), () => now, { idleS: 300, offlineS: 1800 });
+  });
+
+  test("list() carries heartbeat age (sinceSeenS), so 'live' is legibly an inference", () => {
+    registry.register("alice", { sessionId: "sA", cwd: "/w" });
+    now = 1200; // 200s since last heartbeat — still 'live', but not fresh
+    const e = registry.list().find((r) => r.alias === "alice");
+    expect(e?.status).toBe("live");
+    expect(e?.sinceSeenS).toBe(200); // the reader can judge freshness, not just the binary chip
+  });
+
+  test("a takeover of a DIFFERENT session's alias is marked as succession", () => {
+    registry.register("vb-fable-c4", { sessionId: "old-sid", cwd: "/w" }); // predecessor holds it
+    const tok = registry.tokenOf("vb-fable-c4")!; // the token lives in the shared per-user dir
+    // the successor rebinds the name, presenting the token it found there (the real rebind)
+    registry.register("vb-fable-c4", { sessionId: "new-sid", cwd: "/w" }, tok);
+    const e = registry.list().find((r) => r.alias === "vb-fable-c4");
+    expect(e?.sessionId).toBe("new-sid"); // the live holder
+    expect(e?.succeededSid).toBe("old-sid"); // and it's marked as a takeover, not a fresh claim
+  });
+
+  test("re-registering your OWN alias is NOT a succession (same session)", () => {
+    registry.register("solo", { sessionId: "sS", cwd: "/w" });
+    const tok = registry.tokenOf("solo")!;
+    registry.register("solo", { sessionId: "sS", cwd: "/w" }, tok); // same session, reconnect
+    expect(registry.list().find((r) => r.alias === "solo")?.succeededSid).toBeUndefined();
+  });
+});

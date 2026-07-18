@@ -647,6 +647,8 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
           status: string;
           cwd: string;
           lastSeen: number | null;
+          sinceSeenS?: number;
+          succeededSid?: string;
         }[];
         // --by-session: one row per session with aliases inline. The default is
         // one row per ALIAS, so a 3-alias session reads as three near-identical
@@ -660,6 +662,15 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
               sessionId: e.sessionId,
               aliases: (e.sessionAliases ?? [e.alias]).slice().sort(),
               status: e.status,
+              // Liveness is heartbeat recency, never a process check (D3): hand back
+              // the age so "live" reads as an inference the caller can weigh.
+              sinceSeenS: e.sinceSeenS,
+              livenessBasis: "heartbeat",
+              // Marked when this session took a name over from a now-dead one — "one
+              // lane, a successor" instead of a same-name-two-liveness-states puzzle.
+              ...(roster.find((r) => r.sessionId === e.sessionId && r.succeededSid)?.succeededSid
+                ? { succeededSid: roster.find((r) => r.sessionId === e.sessionId && r.succeededSid)!.succeededSid }
+                : {}),
               cwd: e.cwd,
               lastSeen: e.lastSeen,
             })),
