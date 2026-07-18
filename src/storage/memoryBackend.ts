@@ -126,6 +126,15 @@ export class MemoryBackend implements StorageBackend {
 
   private claims = new Map<string, string>();
   private passes = new Set<string>();
+  private supersededByMap = new Map<string, string>();
+
+  markSuperseded(supersededId: string, bySupersedingId: string): void {
+    this.supersededByMap.set(supersededId, bySupersedingId);
+  }
+
+  supersededBy(msgId: string): string | null {
+    return this.supersededByMap.get(msgId) ?? null;
+  }
 
   claimProject(msgId: string, alias: string): boolean {
     if (this.claims.has(msgId)) return false; // somebody already has it

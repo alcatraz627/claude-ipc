@@ -179,6 +179,17 @@ function backendSuite(name: string, make: () => StorageBackend): void {
       expect(deliveries.map((d) => d.msgId)).toEqual(["r1"]);
       expect(awaiting.map((a) => a.originId)).toEqual(["aw1"]);
     });
+
+    // D2 — a later message can be recorded as superseding an earlier one, so a
+    // successor triaging inherited mail can fold the countermanded arc.
+    test("supersession is recorded and read back; unset reads null; survives nothing extra", () => {
+      db.append(m("old-1"));
+      db.append(m("new-1"));
+      expect(db.supersededBy("old-1")).toBeNull();
+      db.markSuperseded("old-1", "new-1");
+      expect(db.supersededBy("old-1")).toBe("new-1");
+      expect(db.supersededBy("new-1")).toBeNull(); // the superseding message is not itself superseded
+    });
   });
 }
 

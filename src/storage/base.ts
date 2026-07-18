@@ -51,6 +51,11 @@ export interface StorageBackend {
   passProject(msgId: string, alias: string): void;
   /** Has this member already claimed or passed on this ask? */
   projectStanding(msgId: string, alias: string): "claimed" | "passed" | null;
+  /** Record that a later message supersedes an earlier one (D2 — mail order is not
+   *  truth order). Advisory: it changes triage display, never delivery. */
+  markSuperseded(supersededId: string, bySupersedingId: string): void;
+  /** The message that superseded this one, or null. */
+  supersededBy(msgId: string): string | null;
   isAwaitingOpen(originId: string): boolean;
   getAwaiting(originId: string): Awaiting | null;
   awaitingPastTtl(now: number): Awaiting[]; // only records with a deadline that has passed

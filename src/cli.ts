@@ -191,7 +191,8 @@ const USAGE = `claude-ipc — cross-session messaging
   inbox  <alias> [--consume] | --project [dir]   (project peek is open; consume needs membership)
   peers  [--by-session]      (roster; --by-session = one row per session, aliases inline)
   projects                   (project mailboxes with pending mail)
-  orphans [--project [dir]]  (dead sessions' waiting mail — successors peek with: inbox <alias>)
+  orphans [--project [dir]] [--triage]  (dead sessions' waiting mail; --triage folds superseded/stale arcs)
+  supersede <old-id> --by <new-id> [--from <a>]  (your later message replaces an earlier one — successors fold it)
   count  <alias>             (pending count — cheap, for tab-title segments)
   log    [--peer <a>] [--since <epoch>]
   status <msg-id>            (a message's delivery + response lifecycle)
@@ -220,7 +221,8 @@ export const COMMAND_FLAGS: Record<string, string[]> = {
   reply: ["from", "corr", "status", "partial", "body", "body-file"],
   inbox: ["alias", "consume", "project"],
   count: ["alias", "project"],
-  orphans: ["project"],
+  orphans: ["project", "triage"],
+  supersede: ["by", "from"],
   prune: ["offline-for"],
   log: ["peer", "since", "operator", "all"],
   status: ["operator", "all"],
@@ -692,8 +694,38 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
           dir = await resolveProjectDir(flags.project, client);
           if (dir === null) return 2;
         }
-        out(await client.orphans(dir ?? undefined));
+        out(await client.orphans(dir ?? undefined, flags.triage === true));
         return 0;
+      }
+      case "supersede": {
+        // "This later message replaces that earlier one." Advisory — a successor
+        // triaging inherited mail folds the countermanded arc, but the old message
+        // stays in its box and a late reply still lands (D2, folds-never-drops).
+        const old = positional[0] ?? "";
+        const by = String(flags.by ?? "");
+        const from = flags.from ? String(flags.from) : resolveSelfAlias();
+        if (!old || !by) {
+          console.error(
+            "supersede <old-msg-id> --by <new-msg-id> [--from <alias>]\n" +
+              "  records that your later message (--by) replaces an earlier one, so successors fold it.",
+          );
+          return 2;
+        }
+        if (!from) {
+          console.error("supersede can't tell who you are — register this session, or pass --from <alias>");
+          return 2;
+        }
+        try {
+          await client.supersede(old, by, from);
+          out(`recorded: ${by} supersedes ${old}. Successors triaging inherited mail will fold ${old}.`);
+          return 0;
+        } catch (e) {
+          if (e instanceof BrokerError) {
+            console.error(`supersede refused: ${e.message}`);
+            return 2;
+          }
+          throw e;
+        }
       }
       case "prune": {
         const window = parseDuration(String(flags["offline-for"] ?? "1d"));

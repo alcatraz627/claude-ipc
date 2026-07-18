@@ -51,6 +51,11 @@ CREATE TABLE IF NOT EXISTS project_passes (
 CREATE TABLE IF NOT EXISTS registry_snapshot (
   alias TEXT PRIMARY KEY, session_id TEXT, cwd TEXT, caps TEXT,
   pid INTEGER, tty TEXT, last_seen REAL, status TEXT, token TEXT);
+
+-- A later message can supersede an earlier one (D2): the successor triaging
+-- inherited mail folds the countermanded arc. Advisory — display, not delivery.
+CREATE TABLE IF NOT EXISTS supersessions (
+  msg_id TEXT PRIMARY KEY, by_msg_id TEXT NOT NULL, ts REAL);
 `;
 
 interface MsgRow {
@@ -351,6 +356,19 @@ export class SqliteBackend implements StorageBackend {
     if (this.projectClaim(msgId) === alias) return "claimed";
     const p = this.db.query(`SELECT 1 FROM project_passes WHERE msg_id=? AND alias=?`).get(msgId, alias);
     return p ? "passed" : null;
+  }
+
+  markSuperseded(supersededId: string, bySupersedingId: string): void {
+    this.db
+      .query(`INSERT OR REPLACE INTO supersessions (msg_id, by_msg_id, ts) VALUES (?,?,?)`)
+      .run(supersededId, bySupersedingId, Date.now() / 1000);
+  }
+
+  supersededBy(msgId: string): string | null {
+    const r = this.db.query(`SELECT by_msg_id FROM supersessions WHERE msg_id = ?`).get(msgId) as
+      | { by_msg_id: string }
+      | undefined;
+    return r?.by_msg_id ?? null;
   }
 
   isAwaitingOpen(originId: string): boolean {

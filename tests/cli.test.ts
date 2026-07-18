@@ -280,6 +280,26 @@ describe("CLI", () => {
     expect(lines.join("\n")).toContain("pred-chase-x holds 1 (+1 chase notice");
   });
 
+  // Design D2 — the CLI must forward --triage so the fold reaches the caller (the
+  // router computes it; this pins the wiring the live smoke couldn't reach on the
+  // old deployed broker).
+  test("orphans --triage surfaces the folded/open split from the CLI", async () => {
+    const c = new Client(sock);
+    await c.register("d2boss", { sessionId: "s-d2boss", cwd: process.cwd() });
+    await c.register("d2dead", { sessionId: "s-d2dead", cwd: process.cwd() });
+    const old = await c.send({ from: "d2boss", to: "d2dead", kind: "request", body: "ship it" });
+    const fresh = await c.send({ from: "d2boss", to: "d2dead", kind: "request", body: "hold" });
+    await c.supersede(old.msgId, fresh.msgId, "d2boss");
+    await c.leave("d2dead");
+    lines = [];
+    expect(await run(["orphans", "--project", process.cwd(), "--triage"], { socketPath: sock })).toBe(0);
+    const parsed = JSON.parse(lines.join("\n")) as { orphans: { alias: string; pending: number; folded: number; open: number }[] };
+    const row = parsed.orphans.find((o) => o.alias === "d2dead");
+    expect(row?.pending).toBe(2);
+    expect(row?.folded).toBe(1); // the superseded "ship it"
+    expect(row?.open).toBe(1); // the live "hold"
+  });
+
   // Design D1 (vb-opus, "the category I most want") — send-success proves the broker
   // took it, not that the peer got/woke on it, so senders hand-annotate every message
   // "sent not received." `sent <id>` surfaces the delivery-state ladder the broker

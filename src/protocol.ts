@@ -25,6 +25,7 @@ export type Op =
   | "list"
   | "projects"
   | "orphans"
+  | "supersede"
   | "history"
   | "status"
   | "count"

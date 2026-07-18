@@ -97,6 +97,8 @@ export class Router {
         }
         case "orphans":
           return this.orphans(req);
+        case "supersede":
+          return this.supersede(req);
         default:
           return fail("bad_op", `unsupported op: ${req.op}`);
       }
@@ -380,6 +382,33 @@ export class Router {
     });
   }
 
+  /**
+   * Record that a later message supersedes an earlier one (D2). Advisory: it changes
+   * how a successor triages inherited mail, never delivery — the superseded message
+   * stays in its box and a late reply still lands. Only a party to the SUPERSEDING
+   * message may assert it (you speak for your own later word), and it must actually
+   * be later — a message cannot supersede one newer than itself.
+   */
+  private supersede(req: Request): Response {
+    const a = req.args as { old?: string; by?: string; from?: string };
+    if (!a.old || !a.by) return fail("bad_args", "supersede needs old + by (message ids)");
+    const oldMsg = this.backend.get(a.old);
+    const byMsg = this.backend.get(a.by);
+    if (!oldMsg || !byMsg) return fail("not_found", "both the superseded and superseding messages must exist");
+    if (byMsg.ts < oldMsg.ts) {
+      return fail("bad_args", "a message cannot supersede one newer than itself — check the argument order");
+    }
+    // The caller must be a party to the SUPERSEDING message: you may retire an earlier
+    // instruction with YOUR later one, not mark up two messages you have no part in.
+    const self = this.aliasOfToken(req);
+    const mine = new Set(self ? this.sessionBoxes(self) : []);
+    if (!(mine.has(byMsg.fromAlias) || mine.has(byMsg.toAlias))) {
+      return fail("unauthorized", "only a party to the superseding message may mark a supersession");
+    }
+    this.backend.markSuperseded(a.old, a.by);
+    return ok({ superseded: a.old, by: a.by });
+  }
+
   /** Hand a hook the alias's freshly-queued messages exactly once (idempotent inject). */
   private deliver(req: Request): Response {
     const a = req.args as { alias?: string; via?: DeliveredVia; project?: string };
@@ -411,7 +440,7 @@ export class Router {
    * is unknown (pruned from the registry) only shows in the global listing.
    */
   private orphans(req: Request): Response {
-    const a = req.args as { project?: string };
+    const a = req.args as { project?: string; triage?: boolean };
     const dir = a.project ? normalizeProjectPath(a.project) : null;
     const entries = new Map(this.registry.list().map((e) => [e.alias, e]));
     const out: {
@@ -421,6 +450,8 @@ export class Router {
       pending: number;
       chases: number;
       oldestTs: number | null;
+      folded?: number;
+      open?: number;
     }[] = [];
     for (const addr of this.backend.pendingAddresses()) {
       if (isProjectAddress(addr)) continue; // project mail is not orphaned — it waits by design
@@ -428,7 +459,7 @@ export class Router {
       if (e && e.status !== "offline") continue; // owner can still wake — not an orphan
       if (dir && (!e?.cwd || !withinProject(e.cwd, dir))) continue;
       const msgs = this.backend.pending(addr);
-      out.push({
+      const row: (typeof out)[number] = {
         alias: addr,
         cwd: e?.cwd ?? null,
         lastSeen: e?.lastSeen ?? null,
@@ -440,10 +471,30 @@ export class Router {
         // lineages ago is the case most likely to have been superseded, so a successor
         // can weigh it before acting rather than treating a raw unread as fresh.
         oldestTs: msgs.length ? Math.min(...msgs.map((m) => m.ts)) : null,
-      });
+      };
+      if (a.triage) {
+        const folded = msgs.filter((m) => this.isSuperseded(m, msgs)).length;
+        row.folded = folded;
+        row.open = msgs.length - folded;
+      }
+      out.push(row);
     }
     out.sort((x, y) => y.pending - x.pending);
     return ok({ orphans: out });
+  }
+
+  /**
+   * Is this message a countermanded arc a successor can fold? Two signals, honest
+   * about strength: STRONG is an explicit `supersede` marker; WEAK is a later turn in
+   * the SAME thread and box (a likely-stale earlier turn, never a cross-thread guess).
+   * Folding only hides it from the summary count — it stays in the box, answerable.
+   */
+  private isSuperseded(msg: Message, boxPeers: Message[]): boolean {
+    if (this.backend.supersededBy(msg.id) !== null) return true; // strong: explicit
+    if (!msg.conversationId) return false;
+    return boxPeers.some(
+      (p) => p.id !== msg.id && p.conversationId === msg.conversationId && p.ts > msg.ts,
+    ); // weak: a later turn in the same thread, same box
   }
 
   /** Project addresses whose path shares lineage with the given directory. */

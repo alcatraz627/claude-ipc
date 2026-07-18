@@ -259,8 +259,11 @@ export class Client {
   projects(): Promise<any> {
     return this.call("projects", {});
   }
-  orphans(dir?: string): Promise<any> {
-    return this.call("orphans", dir ? { project: dir } : {});
+  orphans(dir?: string, triage = false): Promise<any> {
+    return this.call("orphans", { ...(dir ? { project: dir } : {}), ...(triage ? { triage: true } : {}) });
+  }
+  supersede(old: string, by: string, from: string): Promise<any> {
+    return this.call("supersede", { old, by, from }, from);
   }
   list(): Promise<any> {
     return this.call("list", {});
