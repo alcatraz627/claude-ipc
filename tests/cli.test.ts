@@ -280,6 +280,40 @@ describe("CLI", () => {
     expect(lines.join("\n")).toContain("pred-chase-x holds 1 (+1 chase notice");
   });
 
+  // Design D1 (vb-opus, "the category I most want") — send-success proves the broker
+  // took it, not that the peer got/woke on it, so senders hand-annotate every message
+  // "sent not received." `sent <id>` surfaces the delivery-state ladder the broker
+  // already tracks, per recipient, with honest labels (surfaced ≠ read).
+  test("sent <id> reports per-recipient delivery state with honest labels", async () => {
+    const c = new Client(sock);
+    await c.register("alice", { sessionId: "sA", cwd: "/a" });
+    await c.register("bob", { sessionId: "sB", cwd: "/b" });
+    const q = await c.send({ from: "alice", to: "bob", kind: "query", body: "did you get this?" });
+    // bob's wake claims it → delivered (not yet surfaced/read)
+    await c.deliver("bob", "hook");
+    lines = [];
+    expect(await run(["sent", q.msgId], { socketPath: sock })).toBe(0);
+    const outText = lines.join("\n");
+    expect(outText).toContain("bob"); // the recipient
+    expect(outText).toMatch(/delivered/i); // the state the broker tracked
+    expect(outText.toLowerCase()).not.toMatch(/\bread\b/); // delivered is NOT read — honest
+  });
+
+  test("sent <id> distinguishes an unclaimed (queued) recipient from a delivered one", async () => {
+    const c = new Client(sock);
+    await c.register("alice", { sessionId: "sA", cwd: "/a" });
+    await c.register("bob", { sessionId: "sB", cwd: "/b" });
+    await c.register("carol", { sessionId: "sC", cwd: "/c" });
+    const m = await c.send({ from: "alice", to: "bob", kind: "inform", body: "for bob only" });
+    await c.deliver("bob", "hook"); // bob claims; carol was never a recipient here
+    // a separate message to carol that she never claims → stays queued
+    const m2 = await c.send({ from: "alice", to: "carol", kind: "inform", body: "for carol" });
+    lines = [];
+    await run(["sent", m2.msgId], { socketPath: sock });
+    expect(lines.join("\n")).toMatch(/queued|waits/i); // carol hasn't woken; honest, not "delivered"
+    void m;
+  });
+
   // Friction F1 (vb-fable) — `show` prints human text while `inbox` prints JSON, so
   // `show <id> | jq` silently emits nothing. A --json flag gives show a parseable shape.
   test("show --json emits parseable JSON with the full body", async () => {

@@ -195,6 +195,7 @@ const USAGE = `claude-ipc — cross-session messaging
   count  <alias>             (pending count — cheap, for tab-title segments)
   log    [--peer <a>] [--since <epoch>]
   status <msg-id>            (a message's delivery + response lifecycle)
+  sent   <msg-id> [--json]   (delivery state of a message YOU sent, per recipient — did they see it?)
   show   <msg-id> [--json]   (one message, readable — headers, body, replies; --json for pipelines)
   owed   [--as <alias>]      (every ask you still owe an answer, across ALL your aliases + this project)
   feedback <text...>         (file a report to the claude-ipc maintainers — works even when none are running)
@@ -224,6 +225,7 @@ export const COMMAND_FLAGS: Record<string, string[]> = {
   log: ["peer", "since", "operator", "all"],
   status: ["operator", "all"],
   show: ["operator", "all", "json"],
+  sent: ["json"],
   owed: ["as"],
   feedback: ["from", "body-file"],
   tail: ["once", "operator", "all"],
@@ -514,6 +516,10 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
         if (sent.msgId && (kind === "query" || kind === "request")) {
           console.error(replyByContract(sent.msgId, to, sent.replyByS ?? null, sent.releaseAfterS ?? null));
         }
+        // send-success means the broker took it, not that they saw it. Point at the
+        // delivery view so the sender can check rather than hand-annotate "sent not
+        // received" (D1). stderr so it doesn't pollute a JSON-parsed stdout.
+        if (sent.msgId) console.error(`track delivery: claude-ipc sent ${sent.msgId}`);
         // Delivered ≠ heard: a send to a dark alias succeeds by design (mail
         // waits), so say what the roster shows rather than letting the sender
         // proceed blind — the two vb lanes lost hold-requests exactly this way.
@@ -714,6 +720,57 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
           return 2;
         }
         out(await client.status(msgId, resolveSelfAlias(), flags.operator === true || flags.all === true));
+        return 0;
+      }
+      case "sent": {
+        // What became of a message YOU sent, per recipient. send-success only means
+        // the broker took it; this reads the delivery ladder the broker already
+        // tracks so a sender can tell "never saw it" from "saw it, hasn't answered"
+        // — the difference between waiting and escalating (D1, vb-opus).
+        const msgId = positional[0] ?? "";
+        if (!msgId) {
+          console.error("sent <msg-id>  (delivery state of a message you sent, per recipient)");
+          return 2;
+        }
+        const self = resolveSelfAlias();
+        const st = (await client.status(msgId, self, true)) as {
+          message?: { id: string; toAlias: string };
+          deliveries?: { toAlias: string; state: string; ts: number }[];
+          responses?: { fromAlias: string; terminal: boolean }[];
+        };
+        if (!st.message) {
+          console.error(`no message ${msgId}`);
+          return 2;
+        }
+        const roster = ((await client.list()).peers ?? []) as { alias: string; status: string; lastSeen: number | null }[];
+        const liveness = (alias: string): string => {
+          const p = roster.find((r) => r.alias === alias);
+          if (!p) return "not on the roster";
+          return p.status === "offline" ? `offline${p.lastSeen ? ", " + offlineSince(p.lastSeen) : ""}` : p.status;
+        };
+        // Honest labels: the broker knows delivery, never cognition. "surfaced" is the
+        // strongest it can assert — placed in their context, NOT confirmed read.
+        const label: Record<string, string> = {
+          queued: "queued — not yet claimed by their session",
+          delivered: "delivered — claimed by their wake, not yet shown",
+          surfaced: "surfaced — placed in their context (NOT confirmed read)",
+          consumed: "read — they consumed/accepted/declined it",
+          accepted: "accepted",
+          declined: "declined",
+        };
+        const answered = new Set((st.responses ?? []).map((r) => r.fromAlias));
+        if (flags.json === true) {
+          out(st);
+          return 0;
+        }
+        const deliveries = st.deliveries ?? [];
+        out(`sent ${st.message.id} → ${deliveries.length} recipient${deliveries.length === 1 ? "" : "s"}:`);
+        for (const d of deliveries) {
+          const note = d.state === "queued" ? " · waits for their next wake" : "";
+          const replied = answered.has(d.toAlias) ? " · REPLIED" : "";
+          out(`  ${d.toAlias} (${liveness(d.toAlias)}) — ${label[d.state] ?? d.state}${note}${replied}`);
+        }
+        if (!deliveries.length) out("  (no delivery records — was it sent to a project mailbox or a broadcast?)");
         return 0;
       }
       case "show": {
