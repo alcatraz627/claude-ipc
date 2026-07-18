@@ -385,25 +385,28 @@ export class Router {
   /**
    * Record that a later message supersedes an earlier one (D2). Advisory: it changes
    * how a successor triages inherited mail, never delivery — the superseded message
-   * stays in its box and a late reply still lands. Only a party to the SUPERSEDING
-   * message may assert it (you speak for your own later word), and it must actually
-   * be later — a message cannot supersede one newer than itself.
+   * stays in its box and a late reply still lands. You may retire only YOUR OWN
+   * earlier word with YOUR OWN later one: the caller's session must have SENT both,
+   * so nobody can fold an obligation they never issued (a peer can't hide the asks it
+   * owes from a successor). And it must be later — no superseding a newer message.
    */
   private supersede(req: Request): Response {
     const a = req.args as { old?: string; by?: string; from?: string };
     if (!a.old || !a.by) return fail("bad_args", "supersede needs old + by (message ids)");
+    if (a.old === a.by) return fail("bad_args", "a message can't supersede itself");
     const oldMsg = this.backend.get(a.old);
     const byMsg = this.backend.get(a.by);
     if (!oldMsg || !byMsg) return fail("not_found", "both the superseded and superseding messages must exist");
     if (byMsg.ts < oldMsg.ts) {
       return fail("bad_args", "a message cannot supersede one newer than itself — check the argument order");
     }
-    // The caller must be a party to the SUPERSEDING message: you may retire an earlier
-    // instruction with YOUR later one, not mark up two messages you have no part in.
+    // Sender of BOTH: you retire your own earlier instruction with your own later one.
+    // Checking only the superseding message let a caller fold mail it merely received
+    // — including pre-folding the asks it owes so a successor never chases them.
     const self = this.aliasOfToken(req);
     const mine = new Set(self ? this.sessionBoxes(self) : []);
-    if (!(mine.has(byMsg.fromAlias) || mine.has(byMsg.toAlias))) {
-      return fail("unauthorized", "only a party to the superseding message may mark a supersession");
+    if (!(mine.has(oldMsg.fromAlias) && mine.has(byMsg.fromAlias))) {
+      return fail("unauthorized", "supersede retires YOUR earlier message with YOUR later one — you must have sent both");
     }
     this.backend.markSuperseded(a.old, a.by);
     return ok({ superseded: a.old, by: a.by });
@@ -490,11 +493,15 @@ export class Router {
    * Folding only hides it from the summary count — it stays in the box, answerable.
    */
   private isSuperseded(msg: Message, boxPeers: Message[]): boolean {
-    if (this.backend.supersededBy(msg.id) !== null) return true; // strong: explicit
+    if (this.backend.supersededBy(msg.id) !== null) return true; // strong: explicit, folds anything
+    // The weak signal NEVER folds an obligation — an unanswered query/request drops out
+    // of `open` only on an explicit marker, or a benign later message in the thread would
+    // silently hide live work (the exact hazard the design set out to avoid).
+    if (msg.kind === "query" || msg.kind === "request") return false;
     if (!msg.conversationId) return false;
     return boxPeers.some(
       (p) => p.id !== msg.id && p.conversationId === msg.conversationId && p.ts > msg.ts,
-    ); // weak: a later turn in the same thread, same box
+    ); // weak: a later turn in the same thread, same box — only for non-obligation kinds
   }
 
   /** Project addresses whose path shares lineage with the given directory. */

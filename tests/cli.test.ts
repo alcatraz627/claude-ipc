@@ -312,11 +312,37 @@ describe("CLI", () => {
     // bob's wake claims it → delivered (not yet surfaced/read)
     await c.deliver("bob", "hook");
     lines = [];
-    expect(await run(["sent", q.msgId], { socketPath: sock })).toBe(0);
+    process.env.CLAUDE_IPC_ALIAS = "alice"; // sent is for messages YOU sent — run as the sender
+    try {
+      expect(await run(["sent", q.msgId], { socketPath: sock })).toBe(0);
+    } finally {
+      delete process.env.CLAUDE_IPC_ALIAS;
+    }
     const outText = lines.join("\n");
     expect(outText).toContain("bob"); // the recipient
     expect(outText).toMatch(/delivered/i); // the state the broker tracked
     expect(outText.toLowerCase()).not.toMatch(/\bread\b/); // delivered is NOT read — honest
+  });
+
+  // Fix #9 (skeptical review) — `sent` is for messages YOU sent; a non-sender is refused
+  // (and can't read a stranger's recipient list / delivery ladder through it).
+  test("sent refuses a message you didn't send, pointing at status", async () => {
+    const c = new Client(sock);
+    await c.register("alice", { sessionId: "sA", cwd: "/a" });
+    await c.register("bob", { sessionId: "sB", cwd: "/b" });
+    const q = await c.send({ from: "alice", to: "bob", kind: "query", body: "secret" });
+    const origErr = console.error;
+    const errs: string[] = [];
+    console.error = (...a: unknown[]): void => void errs.push(a.map(String).join(" "));
+    process.env.CLAUDE_IPC_ALIAS = "bob"; // bob is the RECIPIENT, not the sender
+    try {
+      expect(await run(["sent", q.msgId], { socketPath: sock })).toBe(2);
+    } finally {
+      console.error = origErr;
+      delete process.env.CLAUDE_IPC_ALIAS;
+    }
+    expect(errs.join("\n")).toContain("YOU sent");
+    expect(errs.join("\n")).toContain("status"); // pointed at the right verb
   });
 
   test("sent <id> distinguishes an unclaimed (queued) recipient from a delivered one", async () => {
@@ -329,7 +355,12 @@ describe("CLI", () => {
     // a separate message to carol that she never claims → stays queued
     const m2 = await c.send({ from: "alice", to: "carol", kind: "inform", body: "for carol" });
     lines = [];
-    await run(["sent", m2.msgId], { socketPath: sock });
+    process.env.CLAUDE_IPC_ALIAS = "alice"; // run as the sender
+    try {
+      await run(["sent", m2.msgId], { socketPath: sock });
+    } finally {
+      delete process.env.CLAUDE_IPC_ALIAS;
+    }
     expect(lines.join("\n")).toMatch(/queued|waits/i); // carol hasn't woken; honest, not "delivered"
     void m;
   });

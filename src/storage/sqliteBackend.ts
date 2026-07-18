@@ -50,7 +50,7 @@ CREATE TABLE IF NOT EXISTS project_passes (
 
 CREATE TABLE IF NOT EXISTS registry_snapshot (
   alias TEXT PRIMARY KEY, session_id TEXT, cwd TEXT, caps TEXT,
-  pid INTEGER, tty TEXT, last_seen REAL, status TEXT, token TEXT);
+  pid INTEGER, tty TEXT, last_seen REAL, status TEXT, token TEXT, succeeded_sid TEXT);
 
 -- A later message can supersede an earlier one (D2): the successor triaging
 -- inherited mail folds the countermanded arc. Advisory — display, not delivery.
@@ -103,6 +103,7 @@ interface RegRow {
   last_seen: number;
   status: string;
   token: string | null;
+  succeeded_sid: string | null;
 }
 
 function toMessage(r: MsgRow): Message {
@@ -165,6 +166,11 @@ export class SqliteBackend implements StorageBackend {
     }
     try {
       this.db.run("ALTER TABLE registry_snapshot ADD COLUMN token TEXT");
+    } catch {
+      // column already present on an existing DB — fine
+    }
+    try {
+      this.db.run("ALTER TABLE registry_snapshot ADD COLUMN succeeded_sid TEXT");
     } catch {
       // column already present on an existing DB — fine
     }
@@ -406,11 +412,11 @@ export class SqliteBackend implements StorageBackend {
     const tx = this.db.transaction((rows: RegistryEntry[]) => {
       this.db.run("DELETE FROM registry_snapshot");
       const stmt = this.db.query(
-        `INSERT INTO registry_snapshot (alias, session_id, cwd, caps, pid, tty, last_seen, status, token)
-         VALUES (?,?,?,?,?,?,?,?,?)`,
+        `INSERT INTO registry_snapshot (alias, session_id, cwd, caps, pid, tty, last_seen, status, token, succeeded_sid)
+         VALUES (?,?,?,?,?,?,?,?,?,?)`,
       );
       for (const e of rows) {
-        stmt.run(e.alias, e.sessionId, e.cwd, JSON.stringify(e.caps), e.pid, e.tty, e.lastSeen, e.status, e.token);
+        stmt.run(e.alias, e.sessionId, e.cwd, JSON.stringify(e.caps), e.pid, e.tty, e.lastSeen, e.status, e.token, e.succeededSid ?? null);
       }
     });
     tx(entries);
@@ -428,6 +434,7 @@ export class SqliteBackend implements StorageBackend {
       lastSeen: r.last_seen,
       status: r.status as RegistryEntry["status"],
       token: r.token ?? null,
+      ...(r.succeeded_sid ? { succeededSid: r.succeeded_sid } : {}),
     }));
   }
 

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { Registry } from "../src/broker/registry.ts";
 import { MemoryBackend } from "../src/storage/memoryBackend.ts";
+import { SqliteBackend } from "../src/storage/sqliteBackend.ts";
 
 // A1 — liveness is a property of the SESSION, not of whichever alias last wrote.
 // One live session used to read `idle` under its new alias and `offline` under its
@@ -86,5 +87,31 @@ describe("D3 · roster liveness honesty", () => {
     const tok = registry.tokenOf("solo")!;
     registry.register("solo", { sessionId: "sS", cwd: "/w" }, tok); // same session, reconnect
     expect(registry.list().find((r) => r.alias === "solo")?.succeededSid).toBeUndefined();
+  });
+
+  // Review fix #3 — the succession marker must not evaporate: a same-session re-register
+  // carries it forward instead of wiping it (the successor's next heartbeat-register).
+  test("the succession marker survives the successor's own next re-register", () => {
+    registry.register("lane", { sessionId: "old-sid", cwd: "/w" });
+    const tok = registry.tokenOf("lane")!;
+    registry.register("lane", { sessionId: "new-sid", cwd: "/w" }, tok); // takeover → succeededSid=old-sid
+    registry.register("lane", { sessionId: "new-sid", cwd: "/w" }, registry.tokenOf("lane")!); // same session again
+    expect(registry.list().find((r) => r.alias === "lane")?.succeededSid).toBe("old-sid");
+  });
+});
+
+// Review fix #3 — the marker must round-trip through the SQLite snapshot (a warm
+// broker restart). The prior test used MemoryBackend, which masked the sqlite drop.
+describe("D3 · succession marker survives a sqlite warm restart", () => {
+  test("succeededSid is present after loading a fresh Registry from the same sqlite backend", () => {
+    const backend = new SqliteBackend(":memory:");
+    let now = 1000;
+    const reg1 = new Registry(backend, () => now, { idleS: 300, offlineS: 1800 });
+    reg1.register("lane", { sessionId: "old-sid", cwd: "/w" });
+    reg1.register("lane", { sessionId: "new-sid", cwd: "/w" }, reg1.tokenOf("lane")!); // takeover, snapshots
+    // a fresh Registry warm-starts from the SAME backend snapshot (the restart path)
+    const reg2 = new Registry(backend, () => now, { idleS: 300, offlineS: 1800 });
+    expect(reg2.list().find((r) => r.alias === "lane")?.succeededSid).toBe("old-sid");
+    backend.close();
   });
 });

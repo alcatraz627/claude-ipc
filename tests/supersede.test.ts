@@ -74,6 +74,41 @@ describe("supersede + triage — router level", () => {
     expect(backend.supersededBy(old)).toBeNull();
   });
 
+  // Review fix #2 — the caller must have SENT BOTH, not merely be a party to the
+  // superseding one. This is the auth hole the gate found: folding mail you didn't send.
+  test("you cannot supersede a message you did not SEND (only received)", () => {
+    // boss asks worker (worker is a party as recipient, but did NOT send it)
+    const owed = send("boss", "worker", "please ship");
+    clock += 60;
+    const workerLater = send("worker", "boss", "unrelated later note"); // worker's own later message
+    // worker tries to fold the ask it OWES using its own later message → refused
+    expect(codeOf(call("supersede", { old: owed, by: workerLater, from: "worker" }, "worker"))).toBe("unauthorized");
+    expect(backend.supersededBy(owed)).toBeNull(); // the owed ask stays visible to a successor
+  });
+
+  // Review fix #6 — a message cannot supersede itself (would fold out of its own triage).
+  test("a message cannot supersede itself", () => {
+    const m = send("boss", "worker", "solo");
+    expect(codeOf(call("supersede", { old: m, by: m, from: "boss" }, "boss"))).toBe("bad_args");
+    expect(backend.supersededBy(m)).toBeNull();
+  });
+
+  // Review fix #4 — the WEAK fold must never hide an obligation: a later benign message
+  // in a thread does NOT fold an earlier UNANSWERED request out of `open`.
+  test("weak fold does not hide an unanswered request behind a later inform", () => {
+    // two turns in ONE conversation: a request, then a later inform
+    const ask = okOf(call("send", { from: "boss", to: "worker", kind: "request", body: "do X", conversationId: "thread-1" }, "boss")).msgId as string;
+    clock += 60;
+    okOf(call("send", { from: "boss", to: "worker", kind: "inform", body: "fyi, context", conversationId: "thread-1" }, "boss"));
+    okOf(call("leave", { alias: "worker" }, "worker"));
+    clock += 3000;
+    const rows = okOf(call("orphans", { project: "/work", triage: true })).orphans as { alias: string; open: number; folded: number }[];
+    const w = rows.find((r) => r.alias === "worker");
+    expect(w?.folded).toBe(0); // the unanswered request is NOT weak-folded
+    expect(w?.open).toBe(2); // both stay in the open count
+    void ask;
+  });
+
   test("orphans --triage folds an explicitly-superseded message and counts it apart", () => {
     // worker dies holding two messages, the first superseded by the second
     const old = send("boss", "worker", "ship it");

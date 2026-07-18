@@ -668,9 +668,10 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
               livenessBasis: "heartbeat",
               // Marked when this session took a name over from a now-dead one — "one
               // lane, a successor" instead of a same-name-two-liveness-states puzzle.
-              ...(roster.find((r) => r.sessionId === e.sessionId && r.succeededSid)?.succeededSid
-                ? { succeededSid: roster.find((r) => r.sessionId === e.sessionId && r.succeededSid)!.succeededSid }
-                : {}),
+              ...(() => {
+                const took = roster.find((r) => r.sessionId === e.sessionId && r.succeededSid)?.succeededSid;
+                return took ? { succeededSid: took } : {};
+              })(),
               cwd: e.cwd,
               lastSeen: e.lastSeen,
             })),
@@ -776,8 +777,11 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
           return 2;
         }
         const self = resolveSelfAlias();
-        const st = (await client.status(msgId, self, true)) as {
-          message?: { id: string; toAlias: string };
+        // operator=false: this reads YOUR OWN sent message, and the sender is already
+        // a party — so the strip layer shows your body while still hiding non-parties'.
+        // operator=true here dumped ANY message's body, defeating stripForCaller.
+        const st = (await client.status(msgId, self, false)) as {
+          message?: { id: string; fromAlias: string; toAlias: string };
           deliveries?: { toAlias: string; state: string; ts: number }[];
           responses?: { fromAlias: string; terminal: boolean }[];
         };
@@ -785,32 +789,52 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
           console.error(`no message ${msgId}`);
           return 2;
         }
-        const roster = ((await client.list()).peers ?? []) as { alias: string; status: string; lastSeen: number | null }[];
+        const roster = ((await client.list()).peers ?? []) as {
+          alias: string;
+          status: string;
+          lastSeen: number | null;
+          sessionAliases?: string[];
+        }[];
+        // `sent` is for messages YOU sent — enforce it (the verb's name promises it, and
+        // it stops a non-party from reading a stranger's recipient list + delivery ladder).
+        const myAliases = new Set(roster.find((r) => r.alias === self)?.sessionAliases ?? (self ? [self] : []));
+        if (!myAliases.has(st.message.fromAlias)) {
+          console.error(
+            `sent shows delivery of messages YOU sent; ${msgId} was sent by ${st.message.fromAlias}. For any message's lifecycle: claude-ipc status ${msgId}`,
+          );
+          return 2;
+        }
         const liveness = (alias: string): string => {
           const p = roster.find((r) => r.alias === alias);
           if (!p) return "not on the roster";
           return p.status === "offline" ? `offline${p.lastSeen ? ", " + offlineSince(p.lastSeen) : ""}` : p.status;
         };
         // Honest labels: the broker knows delivery, never cognition. "surfaced" is the
-        // strongest it can assert — placed in their context, NOT confirmed read.
+        // strongest it can assert; "consumed" covers system settles (cancel too), so it
+        // never claims "read" for a message the recipient may never have seen.
         const label: Record<string, string> = {
           queued: "queued — not yet claimed by their session",
           delivered: "delivered — claimed by their wake, not yet shown",
           surfaced: "surfaced — placed in their context (NOT confirmed read)",
-          consumed: "read — they consumed/accepted/declined it",
+          consumed: "settled — read, accepted, declined, or cancelled",
           accepted: "accepted",
           declined: "declined",
         };
-        const answered = new Set((st.responses ?? []).map((r) => r.fromAlias));
         if (flags.json === true) {
           out(st);
           return 0;
         }
+        // REPLIED is session-aware: a reply from a SIBLING alias of the recipient still
+        // counts (the session answered under another of its names).
+        const sessionOf = (alias: string): Set<string> =>
+          new Set(roster.find((r) => r.alias === alias)?.sessionAliases ?? [alias]);
+        const responders = (st.responses ?? []).map((r) => r.fromAlias);
         const deliveries = st.deliveries ?? [];
         out(`sent ${st.message.id} → ${deliveries.length} recipient${deliveries.length === 1 ? "" : "s"}:`);
         for (const d of deliveries) {
           const note = d.state === "queued" ? " · waits for their next wake" : "";
-          const replied = answered.has(d.toAlias) ? " · REPLIED" : "";
+          const theirNames = sessionOf(d.toAlias);
+          const replied = responders.some((fromAlias) => theirNames.has(fromAlias)) ? " · REPLIED" : "";
           out(`  ${d.toAlias} (${liveness(d.toAlias)}) — ${label[d.state] ?? d.state}${note}${replied}`);
         }
         if (!deliveries.length) out("  (no delivery records — was it sent to a project mailbox or a broadcast?)");

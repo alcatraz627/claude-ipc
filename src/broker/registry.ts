@@ -72,9 +72,11 @@ export class Registry {
       tty: info.tty ?? prev?.tty ?? null,
       lastSeen: this.now(),
       status: "live",
-      // A takeover of a different session's alias is marked, so "two names, one
-      // lane" is legible instead of a same-name-two-liveness-states puzzle (D3).
-      ...(replaced && prev ? { succeededSid: prev.sessionId } : {}),
+      // A takeover of a different session's alias is marked, so "two names, one lane"
+      // is legible instead of a same-name-two-liveness-states puzzle (D3). A takeover
+      // sets it; the successor's own later re-registers CARRY IT FORWARD (else the
+      // marker would evaporate on the next heartbeat-register).
+      ...(replaced && prev ? { succeededSid: prev.sessionId } : prev?.succeededSid ? { succeededSid: prev.succeededSid } : {}),
       token,
     });
     this.touchSiblings(info.sessionId, alias); // registering IS a liveness signal for the whole session
