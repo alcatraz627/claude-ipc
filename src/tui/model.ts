@@ -236,11 +236,15 @@ export function messagePreview(
 
 /** One LOG line: clock, route, kind, sanitized head — the `tail` line, as data. */
 export function logLine(m: Message, nowS: number): { age: string; route: string; kind: string; head: string; err: boolean } {
+  // Display-only: the broker substitutes this boilerplate body for non-parties,
+  // and repeating it 20 times per screen drowns the route/kind signal. A short
+  // marker says the same thing. (Never drives behavior — that needs a real flag.)
+  const hidden = m.body.startsWith("[hidden — you are not a party");
   return {
     age: ageLabel(m.ts, nowS),
     route: `${sanitizeInline(m.fromAlias)}→${sanitizeInline(m.toAlias)}`,
     kind: m.kind + (m.status === "error" ? `:${m.errorCode ?? "error"}` : ""),
-    head: inlineHead(m.body, 48),
+    head: hidden ? "· hidden" : inlineHead(m.body, 48),
     err: m.status === "error",
   };
 }
@@ -305,8 +309,13 @@ export function peerPreview(
     {
       label: "inbox",
       // counts are read with the peer's own token from the shared per-user tokens
-      // dir; a miss (token pruned, broker refused) renders "?" — never a crash.
-      value: counts ? `${counts.unread} unread · ${counts.owed} owed` : "?",
+      // dir; offline sessions are never peeked, and a live peer can still miss
+      // (token pruned, broker refused). Say which — a bare "?" explains nothing.
+      value: counts
+        ? `${counts.unread} unread · ${counts.owed} owed`
+        : row.status === "offline"
+          ? "unknown — offline sessions aren't peeked"
+          : "unknown — no token to peek with",
       accent: Boolean(counts && counts.owed > 0),
     },
   ];

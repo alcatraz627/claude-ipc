@@ -74,8 +74,9 @@ export function ComposePanel({
         {c.step === "kind" && (
           <Box flexDirection="column" marginTop={1}>
             {KINDS.map((k, i) => (
-              <Text key={k} inverse={i === c.kindSel}>
-                {` ${k}${k === "inform" ? "  (no reply expected)" : k === "query" ? "  (a question)" : "  (asks them to act)"} `}
+              <Text key={k}>
+                <Text bold color={theme.accent}>{i === c.kindSel ? "› " : "  "}</Text>
+                {`${k}${k === "inform" ? "  (no reply expected)" : k === "query" ? "  (a question)" : "  (asks them to act)"}`}
               </Text>
             ))}
           </Box>
@@ -96,8 +97,9 @@ export function ComposePanel({
         {c.step === "replyBy" && (
           <Box flexDirection="column" marginTop={1}>
             {REPLY_BY_OPTIONS.map((o, i) => (
-              <Text key={o.label} inverse={i === c.replyBySel}>
-                {` ${o.label} `}
+              <Text key={o.label}>
+                <Text bold color={theme.accent}>{i === c.replyBySel ? "› " : "  "}</Text>
+                {o.label}
               </Text>
             ))}
           </Box>
@@ -121,7 +123,10 @@ function RecipientStep({ c, onPick }: { c: ComposeState; onPick: (i: number) => 
       {start > 0 && <Text dim>{`  ▲ ${start} more`}</Text>}
       {shown.map((r, i) => (
         <Box key={r.value} onClick={() => onPick(start + i)}>
-          <Text inverse={start + i === c.toSel}>{` ${r.label} `}</Text>
+          <Text wrap="truncate-end">
+            <Text bold color={theme.accent}>{start + i === c.toSel ? "› " : "  "}</Text>
+            {r.label}
+          </Text>
         </Box>
       ))}
       {start + shown.length < c.recipients.length && (

@@ -38,10 +38,11 @@ export function CopyMenu({
       <Box flexDirection="column" marginTop={1}>
         {fields.map((f, i) => (
           <Box key={f.label} onClick={() => onPick(i)}>
-            <Text inverse={i === sel}>
-              {` ${i + 1} `}
-              <Text bold={i === sel}>{f.label.padEnd(14)}</Text>
-              <Text dim> {inlineHead(f.value, 48)} </Text>
+            <Text>
+              <Text bold color={theme.accent}>{i === sel ? "›" : " "}</Text>
+              <Text color={theme.accent}>{` ${i + 1} `}</Text>
+              <Text dim>{f.label.padEnd(14)}</Text>
+              <Text> {inlineHead(f.value, 48)} </Text>
             </Text>
           </Box>
         ))}
@@ -83,8 +84,9 @@ export function IdentityPicker({ candidates, sel }: { candidates: string[]; sel:
         <Text dim>This shell isn't a Claude session — pick a registered identity to act as.</Text>
         {start > 0 && <Text dim>{`  ▲ ${start} more`}</Text>}
         {shown.map((a, i) => (
-          <Text key={a} inverse={start + i === sel}>
-            {` ${a} `}
+          <Text key={a}>
+            <Text bold color={theme.accent}>{start + i === sel ? "› " : "  "}</Text>
+            {a}
           </Text>
         ))}
         {start + shown.length < candidates.length && (

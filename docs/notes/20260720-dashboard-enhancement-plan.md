@@ -62,6 +62,17 @@ capture via the tmux+freeze pipeline (promote `capture.sh` into `scripts/`) with
 before/after PNGs read visually · full manual never-trap walk after wave 3 ·
 adversarial review gate (phase-4b, still owed) after the waves land.
 
+**Capture-pipeline limits (measured 2026-07-20):** freeze DROPS background SGR
+(a bg-colored cell renders as nothing) and tints dim-after-color spans with the
+preceding span's color — so PNG color judgments are only trustworthy for
+foreground structure; backgrounds and dim-tones need the raw ANSI codes (tmux
+`capture-pane -e`) or a real terminal. tmux `capture-pane` also archives
+per-cell attr archaeology during rapid interaction (transient repaint states) —
+capture at steady state (≥6s settle) before judging color. Renderer facts:
+ink-terminal `inverse` renders as nothing; attr-only cell changes can skip the
+damage diff (first-painted row) — selection/carets must be printed characters
+or explicit fg+bg colors.
+
 ## Constraints carried forward
 
 Client-only data, no new broker endpoints · peek-don't-consume · no fabricated

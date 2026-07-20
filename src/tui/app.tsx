@@ -59,6 +59,23 @@ interface Toast {
   kind: "ok" | "err";
 }
 
+/** The footer keybar: accented key, dim label — the same convention as the help overlay. */
+function KeyHints({ pairs }: { pairs: [string, string][] }) {
+  return (
+    <Text dim wrap="truncate-end">
+      {pairs.map(([k, label], i) => (
+        <Text key={k}>
+          {i > 0 ? " · " : ""}
+          <Text bold color={theme.accent}>
+            {k}
+          </Text>
+          {` ${label}`}
+        </Text>
+      ))}
+    </Text>
+  );
+}
+
 /** Scroll a list pane so its keyboard selection stays visible. */
 function followSelection(
   sb: { scrollTo(y: number): void; getScrollTop(): number; getViewportHeight(): number } | null,
@@ -725,23 +742,30 @@ function App({ client }: { client: Client }) {
           <LogView history={logSorted} sel={logClamped} nowS={nowS} operator={logOperator} onSelect={setLogSel} />
         )}
 
-        <Box paddingX={1}>
-          <Text dim wrap="truncate-end">
-            {modal
-              ? " "
-              : inboxFocused
-                ? "↑↓ move · r reply · a accept · d decline · s snooze · y copy · esc back · q quit"
-                : view === "peers"
-                  ? "↑↓ move · enter compose · y copy · / filter · o offline · i/→ inbox · ? help · q quit"
-                  : view === "log"
-                    ? "↑↓ move · o operator bodies · y copy · tab views · ? help · q quit"
-                    : "↑↓ move · y copy · tab views · R refresh · ? help · q quit"}
-          </Text>
+        <Box paddingX={1} gap={1}>
+          {/* help+quit are pinned right so narrow terminals truncate hints, never the exits */}
+          {modal ? (
+            <Text dim> </Text>
+          ) : (
+            <KeyHints
+              pairs={
+                inboxFocused
+                  ? [["↑↓", "move"], ["r", "reply"], ["a", "accept"], ["d", "decline"], ["s", "snooze"], ["y", "copy"], ["esc", "back"]]
+                  : view === "peers"
+                    ? [["↑↓", "move"], ["enter", "compose"], ["y", "copy"], ["/", "filter"], ["o", "offline"], ["i/→", "inbox"]]
+                    : view === "log"
+                      ? [["↑↓", "move"], ["o", "operator bodies"], ["y", "copy"], ["tab", "views"]]
+                      : [["↑↓", "move"], ["y", "copy"], ["tab", "views"], ["R", "refresh"]]
+              }
+            />
+          )}
           <Spacer />
-          {toast && (
+          {toast ? (
             <Text bold color={toast.kind === "ok" ? theme.ok : theme.err}>
               {toast.text}
             </Text>
+          ) : (
+            <KeyHints pairs={[["?", "help"], ["q", "quit"]]} />
           )}
         </Box>
       </Box>

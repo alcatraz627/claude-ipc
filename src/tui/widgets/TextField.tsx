@@ -7,6 +7,7 @@
 
 import { Text, useInput } from "ink-terminal";
 import { useEffect, useState } from "react";
+import { theme } from "../theme.ts";
 
 export interface TextFieldProps {
   value: string;
@@ -71,7 +72,7 @@ export function TextField({ value, onChange, onSubmit, onCancel, active, prefix 
     <Text>
       {prefix}
       {value.slice(0, cursor)}
-      {active ? <Text inverse>{at}</Text> : null}
+      {active ? <Text backgroundColor={theme.accent} color="ansi:black">{at}</Text> : null}
       {active ? value.slice(cursor + 1) : value.slice(cursor)}
     </Text>
   );

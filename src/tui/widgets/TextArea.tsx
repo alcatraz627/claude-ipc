@@ -6,6 +6,7 @@
  */
 
 import { Box, ScrollBox, Text, useInput } from "ink-terminal";
+import { theme } from "../theme.ts";
 import {
   backspace,
   cursorPos,
@@ -59,7 +60,8 @@ export function TextArea({ state, onChange, onDone, onCancel, onEditor, active, 
             {active && i === row ? (
               <>
                 {line.slice(0, col)}
-                <Text inverse>{line[col] ?? " "}</Text>
+                {/* caret is an explicit accent block — `inverse` renders as nothing in this renderer */}
+                <Text backgroundColor={theme.accent} color="ansi:black">{line[col] ?? " "}</Text>
                 {line.slice(col + 1)}
               </>
             ) : (

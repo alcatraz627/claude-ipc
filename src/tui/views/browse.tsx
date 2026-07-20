@@ -107,17 +107,24 @@ export function OrphansView({
       list={
         <ScrollBox flexGrow={1}>
           {orphans.length === 0 && <Text dim>no dead sessions are holding mail — clean fabric</Text>}
-          {orphans.map((o, i) => (
-            <Box key={o.alias} onClick={() => onSelect(i)}>
-              <Text wrap="truncate-end">
-                <Text bold color={theme.accent}>{i === sel ? "› " : "  "}</Text>
-                <Text>{sanitizeInline(o.alias)}</Text>
-                <Text dim>
-                  {`  ${o.pending} waiting${o.oldestTs ? ` · oldest ${ageLabel(o.oldestTs, nowS)}` : ""}${o.cwd ? ` · ${o.cwd.split("/").pop()}` : ""}`}
+          {orphans.map((o, i) => {
+            // an auto-registered session leaves its full sid as the alias; 36 chars
+            // of hex at body contrast bury the NAMED rows that carry the ranking
+            const sid = /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(o.alias);
+            const name = sid ? `${o.alias.slice(0, 8)}…` : sanitizeInline(o.alias);
+            return (
+              <Box key={o.alias} onClick={() => onSelect(i)}>
+                <Text wrap="truncate-end">
+                  <Text bold color={theme.accent}>{i === sel ? "› " : "  "}</Text>
+                  <Text dim={sid}>{name.padEnd(26)}</Text>
+                  <Text>{`${o.pending} waiting`}</Text>
+                  <Text dim>
+                    {`${o.oldestTs ? ` · oldest ${ageLabel(o.oldestTs, nowS)}` : ""}${o.cwd ? ` · ${o.cwd.split("/").pop()}` : ""}`}
+                  </Text>
                 </Text>
-              </Text>
-            </Box>
-          ))}
+              </Box>
+            );
+          })}
         </ScrollBox>
       }
       detail={
