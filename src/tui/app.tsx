@@ -613,7 +613,7 @@ function App({ client }: { client: Client }) {
           <Text dim>
             {identity ? (identity.mode === "acting-as" ? `acting as ${identity.alias}` : identity.alias) : "read-only"}
           </Text>
-          <Text dim>{refreshedAgo === null ? "…" : `↻ ${refreshedAgo}s`}</Text>
+          <Text dim>{refreshedAgo === null ? "…" : `· ${refreshedAgo}s`}</Text>
         </Box>
 
         {!snapshot.brokerUp && snapshot.at > 0 && (
@@ -689,7 +689,7 @@ function App({ client }: { client: Client }) {
           />
         ) : view === "inbox" ? (
           <Box flexGrow={1} gap={1}>
-            <Box flexDirection="column" width="55%">
+            <Box flexDirection="column" width="55%" flexShrink={0}>
               <InboxList
                 messages={inbox}
                 sel={inboxSelClamped}

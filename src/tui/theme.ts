@@ -11,9 +11,11 @@ import type { Color } from "ink-terminal/core";
 
 export type PeerStatus = "live" | "idle" | "offline";
 
+// Glyphs must render in the common mono fonts (Menlo, SF Mono, JetBrains Mono);
+// U+25D0 ◐ was tofu outside the dev terminal, so idle is U+25E6 ◦.
 export const STATUS_GLYPH: Record<PeerStatus, string> = {
   live: "●",
-  idle: "◐",
+  idle: "◦",
   offline: "○",
 };
 

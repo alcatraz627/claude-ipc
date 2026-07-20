@@ -44,7 +44,7 @@ export function HomeView(p: HomeViewProps) {
   const rosterFocused = p.focusedPane === "roster";
   return (
     <Box flexGrow={1} gap={1}>
-      <Box flexDirection="column" width="55%">
+      <Box flexDirection="column" width="60%" flexShrink={0}>
         <Box
           flexDirection="column"
           flexGrow={3}
@@ -80,7 +80,8 @@ export function HomeView(p: HomeViewProps) {
             )}
           </ScrollBox>
         </Box>
-        <Box flexGrow={2} flexDirection="column">
+        {/* an empty inbox earns 3 rows, not half the column (the roster absorbs the rest) */}
+        <Box flexGrow={p.inbox.length === 0 ? 0 : 2} height={p.inbox.length === 0 ? 4 : undefined} flexDirection="column">
           <InboxList
             messages={p.inbox}
             sel={p.inboxSel}
@@ -113,11 +114,16 @@ function RosterLine({ row, selected, nowS }: { row: RosterRow; selected: boolean
   const color = STATUS_COLOR[row.status];
   const name = row.also.length ? `${row.alias} (+${row.also.length})` : row.alias;
   return (
-    <Text inverse={selected} wrap="truncate-end">
+    <Text wrap="truncate-end">
+      {/* cursor is a printed character, not an attribute — the renderer's damage
+          diff misses attribute-only changes on the first-painted row */}
+      <Text bold color={theme.accent}>{selected ? "› " : "  "}</Text>
       <Text color={color} dim={row.status === "offline"}>
         {glyph}
       </Text>
-      <Text bold={row.you || selected}>{` ${inlineHead(name, 28).padEnd(29)}`}</Text>
+      {/* selection lives in the prefix ONLY: a bold toggle here is an attr-only
+          cell change, which the renderer's damage diff repaints with stale colors */}
+      <Text bold={row.you}>{` ${inlineHead(name, 28).padEnd(29)}`}</Text>
       <Text dim>{`${inlineHead(basename(row.cwd) || "?", 16).padEnd(17)}${ageLabel(row.lastSeen, nowS)}`}</Text>
       {row.you ? <Text color={theme.accent}> you</Text> : null}
     </Text>

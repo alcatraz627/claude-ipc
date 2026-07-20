@@ -39,7 +39,8 @@ export function InboxList(p: InboxListProps) {
           const line = inboxLine(m, p.nowS);
           return (
             <Box key={m.id} onClick={() => p.onSelect(i)}>
-              <Text inverse={p.focused && i === p.sel} wrap="truncate-end">
+              <Text wrap="truncate-end">
+                <Text bold color={theme.accent}>{p.focused && i === p.sel ? "› " : "  "}</Text>
                 <Text color={kindColor(m.kind, m.status)}>{line.tag}</Text>
                 <Text dim>{`  ${line.age}  `}</Text>
                 <Text>{line.head}</Text>

@@ -14,7 +14,7 @@ import { kindColor, theme } from "../theme.ts";
 function Split({ list, detail }: { list: React.ReactNode; detail: React.ReactNode }) {
   return (
     <Box flexGrow={1} gap={1}>
-      <Box flexDirection="column" width="55%" borderStyle="single" borderColor={theme.accent} paddingX={1}>
+      <Box flexDirection="column" width="55%" flexShrink={0} borderStyle="single" borderColor={theme.accent} paddingX={1}>
         {list}
       </Box>
       <Box flexDirection="column" flexGrow={1} borderStyle="single" paddingX={1}>
@@ -64,8 +64,9 @@ export function ProjectsView({
           {projects.map((p, i) => (
             <Box key={p.address} onClick={() => onSelect(i)}>
               {/* basename first — a deep path truncates at the end, and the leaf is the part a human recognizes */}
-              <Text inverse={i === sel} wrap="truncate-end">
-                <Text bold={i === sel}>{p.path.split("/").pop() || p.path}</Text>
+              <Text wrap="truncate-end">
+                <Text bold color={theme.accent}>{i === sel ? "› " : "  "}</Text>
+                <Text>{p.path.split("/").pop() || p.path}</Text>
                 <Text dim>{`  ${p.pending} pending · ${p.path}`}</Text>
               </Text>
             </Box>
@@ -108,8 +109,9 @@ export function OrphansView({
           {orphans.length === 0 && <Text dim>no dead sessions are holding mail — clean fabric</Text>}
           {orphans.map((o, i) => (
             <Box key={o.alias} onClick={() => onSelect(i)}>
-              <Text inverse={i === sel} wrap="truncate-end">
-                <Text bold={i === sel}>{sanitizeInline(o.alias)}</Text>
+              <Text wrap="truncate-end">
+                <Text bold color={theme.accent}>{i === sel ? "› " : "  "}</Text>
+                <Text>{sanitizeInline(o.alias)}</Text>
                 <Text dim>
                   {`  ${o.pending} waiting${o.oldestTs ? ` · oldest ${ageLabel(o.oldestTs, nowS)}` : ""}${o.cwd ? ` · ${o.cwd.split("/").pop()}` : ""}`}
                 </Text>
@@ -160,9 +162,10 @@ export function LogView({
               const l = logLine(msg, nowS);
               return (
                 <Box key={msg.id} onClick={() => onSelect(i)}>
-                  <Text inverse={i === sel} wrap="truncate-end">
+                  <Text wrap="truncate-end">
+                    <Text bold color={theme.accent}>{i === sel ? "› " : "  "}</Text>
                     <Text dim>{l.age.padStart(4)} </Text>
-                    <Text bold={i === sel}>{l.route}</Text>
+                    <Text>{l.route}</Text>
                     <Text color={kindColor(msg.kind, msg.status)}>{` ${l.kind} `}</Text>
                     <Text dim>{l.head}</Text>
                   </Text>
