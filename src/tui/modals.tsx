@@ -6,7 +6,7 @@
 
 import { Box, Text } from "ink-terminal";
 import type { Message } from "../models.ts";
-import type { CopyField } from "./model.ts";
+import type { CopyField, PreviewData } from "./model.ts";
 import { inlineHead } from "./model.ts";
 import { theme } from "./theme.ts";
 import { TextField } from "./widgets/TextField.tsx";
@@ -49,6 +49,25 @@ export function CopyMenu({
       </Box>
       <Box marginTop={1}>
         <Text dim>↑↓ move · enter/1-9 copy · esc back</Text>
+      </Box>
+    </Frame>
+  );
+}
+
+/** The `v` card: the whole fabric at a glance. Data comes from fabricOverview. */
+export function Overview({ data }: { data: PreviewData }) {
+  return (
+    <Frame title={data.title}>
+      <Box flexDirection="column" marginTop={1}>
+        {data.rows.map((r, i) => (
+          <Text key={`${r.label}-${i}`}>
+            <Text dim>{r.label.padEnd(10)}</Text>
+            <Text color={r.accent ? theme.warn : undefined}>{r.value}</Text>
+          </Text>
+        ))}
+      </Box>
+      <Box marginTop={1}>
+        <Text dim>esc / v close</Text>
       </Box>
     </Frame>
   );
@@ -145,8 +164,11 @@ export function AskInput({
 const HELP_LINES: [string, string][] = [
   ["tab / 1-5", "switch view"],
   ["↑↓ / jk", "move selection"],
-  ["/", "filter the list (esc clears)"],
+  ["/", "filter the list (! = regex · esc clears)"],
   ["y", "copy menu for the selection"],
+  ["v", "fabric overview"],
+  ["u", "pause / resume the auto-refresh"],
+  ["+ / -", "slower / faster auto-refresh"],
   ["o", "expand / collapse offline peers"],
   ["c / enter", "compose (enter on a peer prefills them)"],
   ["i / →", "focus the inbox pane (esc returns)"],

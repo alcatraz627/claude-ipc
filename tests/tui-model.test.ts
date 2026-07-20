@@ -10,6 +10,7 @@ import {
   actionsFor,
   copyFieldsForMessage,
   copyFieldsForPeer,
+  fabricOverview,
   filterRoster,
   groupRoster,
   inboxLine,
@@ -214,14 +215,75 @@ describe("messagePreview", () => {
 
 describe("peerPreview", () => {
   const row = groupRoster([peer({ alias: "vb", sessionId: "sid-vb" })])[0]!;
-  test("unknown counts render as ? — never a crash, never a fake zero", () => {
+  test("unknown counts say WHY they're unknown — never a crash, never a fake zero", () => {
     const data = peerPreview(row, 2000, null, undefined);
-    expect(data.rows.find((r) => r.label === "inbox")!.value).toBe("?");
+    expect(data.rows.find((r) => r.label === "inbox")!.value).toBe("unknown — no token to peek with");
+    const offline = groupRoster([peer({ alias: "vb", sessionId: "sid-vb", status: "offline" })])[0]!;
+    const dataOff = peerPreview(offline, 2000, null, undefined);
+    expect(dataOff.rows.find((r) => r.label === "inbox")!.value).toBe("unknown — offline sessions aren't peeked");
   });
   test("owed > 0 flags the inbox line", () => {
     const data = peerPreview(row, 2000, { unread: 3, owed: 2 }, undefined);
     const inbox = data.rows.find((r) => r.label === "inbox")!;
     expect(inbox.value).toBe("3 unread · 2 owed");
     expect(inbox.accent).toBe(true);
+  });
+});
+
+describe("filterRoster regex mode", () => {
+  const rows = groupRoster([
+    peer({ alias: "vb-fable", sessionId: "s1" }),
+    peer({ alias: "catch-b7", sessionId: "s2", cwd: "/x/claude-ipc" }),
+  ]);
+  test("a leading ! switches to regex", () => {
+    expect(filterRoster(rows, "!^vb-").map((r) => r.alias)).toEqual(["vb-fable"]);
+  });
+  test("regex is case-insensitive and matches cwd", () => {
+    expect(filterRoster(rows, "!CLAUDE-IPC$").map((r) => r.alias)).toEqual(["catch-b7"]);
+  });
+  test("an invalid regex matches nothing (honest mid-typing state)", () => {
+    expect(filterRoster(rows, "!(")).toEqual([]);
+  });
+  test("a bare ! matches everything", () => {
+    expect(filterRoster(rows, "!").length).toBe(2);
+  });
+});
+
+describe("fabricOverview", () => {
+  test("counts sessions, peeked pending, projects, orphans, traffic", () => {
+    const snap = {
+      brokerUp: true,
+      peers: [peer({ alias: "a", sessionId: "s1" }), peer({ alias: "b", sessionId: "s2", status: "offline" as const })],
+      peerInboxes: new Map([
+        [
+          "a",
+          [
+            msg({ id: "m1", kind: "query", fromAlias: "x", toAlias: "a", ts: 1 }),
+            msg({ id: "m2", kind: "inform", fromAlias: "x", toAlias: "a", ts: 2 }),
+          ],
+        ],
+      ]),
+      projects: [{ pending: 3 }],
+      orphans: [{ pending: 2 }, { pending: 5 }],
+      history: [msg({ id: "m3", kind: "inform", fromAlias: "x", toAlias: "y", ts: 3 })],
+    };
+    const o = fabricOverview(snap, undefined);
+    const val = (label: string) => o.rows.find((r) => r.label === label)!.value;
+    expect(val("broker")).toBe("up");
+    expect(val("sessions")).toContain("2 (1 live · 0 idle · 1 offline)");
+    expect(val("pending")).toContain("2 unread · 1 owed");
+    expect(val("pending")).toContain("1 peekable inbox");
+    expect(val("projects")).toContain("3 pending");
+    expect(val("orphans")).toContain("2 dead sessions · 7 held");
+    expect(val("traffic")).toContain("1 message in the last 24h");
+  });
+  test("a down broker is accented, never hidden", () => {
+    const o = fabricOverview(
+      { brokerUp: false, peers: [], peerInboxes: new Map(), projects: [], orphans: [], history: [] },
+      undefined,
+    );
+    const broker = o.rows.find((r) => r.label === "broker")!;
+    expect(broker.value).toBe("DOWN");
+    expect(broker.accent).toBe(true);
   });
 });

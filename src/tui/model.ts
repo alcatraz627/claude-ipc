@@ -89,10 +89,26 @@ export function groupRoster(peers: RegistryEntry[], selfAlias?: string): RosterR
   return rows;
 }
 
-/** Case-insensitive substring match over alias, sibling aliases, and cwd. */
+/**
+ * Case-insensitive substring match over alias, sibling aliases, and cwd.
+ * A leading `!` switches to a regex (btop's convention); while the regex is
+ * still invalid mid-typing, nothing matches — the empty state says so.
+ */
 export function filterRoster(rows: RosterRow[], query: string): RosterRow[] {
-  const q = query.trim().toLowerCase();
-  if (!q) return rows;
+  const raw = query.trim();
+  if (!raw) return rows;
+  if (raw.startsWith("!")) {
+    const pat = raw.slice(1);
+    if (!pat) return rows;
+    let re: RegExp;
+    try {
+      re = new RegExp(pat, "i");
+    } catch {
+      return [];
+    }
+    return rows.filter((r) => re.test(r.alias) || r.also.some((a) => re.test(a)) || re.test(r.cwd));
+  }
+  const q = raw.toLowerCase();
   return rows.filter(
     (r) =>
       r.alias.toLowerCase().includes(q) ||
@@ -286,6 +302,56 @@ export function recipientOptions(rows: RosterRow[], cwd: string): { label: strin
     { label: `proj: ${cwd}  (whoever works in this tree)`, value: `proj:${cwd}` },
     { label: "* broadcast to all live peers", value: "*" },
   ];
+}
+
+/**
+ * The `v` overview: the whole fabric on one card. Everything derives from the
+ * snapshot the views already render — nothing here fetches. The pending line
+ * covers only the inboxes the dashboard could peek (live/idle peers whose
+ * token it holds), and says so instead of passing a partial count off as the
+ * total.
+ */
+export function fabricOverview(
+  snap: {
+    brokerUp: boolean;
+    peers: RegistryEntry[];
+    peerInboxes: Map<string, Message[] | null>;
+    projects: { pending: number }[];
+    orphans: { pending: number }[];
+    history: Message[];
+  },
+  selfAlias: string | undefined,
+): PreviewData {
+  const sessions = groupRoster(snap.peers, selfAlias);
+  const live = sessions.filter((r) => r.status === "live").length;
+  const idle = sessions.filter((r) => r.status === "idle").length;
+  const offline = sessions.length - live - idle;
+  // null = a peek that failed; it is not a peeked inbox and must not count as one
+  const peeked = [...snap.peerInboxes.values()].filter((b): b is Message[] => Array.isArray(b));
+  const stats = pendingStats(peeked.flat());
+  const projPending = snap.projects.reduce((n, p) => n + p.pending, 0);
+  const orphHeld = snap.orphans.reduce((n, o) => n + o.pending, 0);
+  return {
+    title: "fabric overview",
+    rows: [
+      { label: "broker", value: snap.brokerUp ? "up" : "DOWN", accent: !snap.brokerUp },
+      { label: "sessions", value: `${sessions.length} (${live} live · ${idle} idle · ${offline} offline)` },
+      {
+        label: "pending",
+        value: `${stats.unread} unread · ${stats.owed} owed  (across ${peeked.length} peekable inbox${peeked.length === 1 ? "" : "es"})`,
+        accent: stats.owed > 0,
+      },
+      {
+        label: "projects",
+        value: `${snap.projects.length} mailbox${snap.projects.length === 1 ? "" : "es"} · ${projPending} pending`,
+      },
+      {
+        label: "orphans",
+        value: `${snap.orphans.length} dead session${snap.orphans.length === 1 ? "" : "s"} · ${orphHeld} held`,
+      },
+      { label: "traffic", value: `${snap.history.length} message${snap.history.length === 1 ? "" : "s"} in the last 24h` },
+    ],
+  };
 }
 
 /** Preview-pane lines for a roster selection. Pure data; the component styles them. */

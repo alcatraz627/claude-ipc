@@ -24,6 +24,7 @@ import {
   copyFieldsForOrphan,
   copyFieldsForPeer,
   copyFieldsForProject,
+  fabricOverview,
   filterRoster,
   groupRoster,
   lastMessageFor,
@@ -36,7 +37,7 @@ import {
 } from "./model.ts";
 import { LogView, OrphansView, ProjectsView } from "./views/browse.tsx";
 import type { EditState } from "./widgets/textarea-ops.ts";
-import { AskInput, CopyMenu, Help, IdentityPicker, QuitGuard } from "./modals.tsx";
+import { AskInput, CopyMenu, Help, IdentityPicker, Overview, QuitGuard } from "./modals.tsx";
 import { theme } from "./theme.ts";
 import { InboxList, MessagePane } from "./views/inbox.tsx";
 import { HomeView, type Pane } from "./views/peers.tsx";
@@ -44,9 +45,14 @@ import { HomeView, type Pane } from "./views/peers.tsx";
 const VIEWS = ["peers", "inbox", "projects", "orphans", "log"] as const;
 type View = (typeof VIEWS)[number];
 
+/** Auto-refresh ladder, ms. `+`/`-` walk it (btop's timer keys); 5s is D6's default. */
+const CADENCES = [1000, 2000, 3000, 5000, 10000, 15000, 30000] as const;
+const DEFAULT_CADENCE = 3; // index of 5000
+
 type Modal =
   | { t: "quit" }
   | { t: "help" }
+  | { t: "overview" }
   | { t: "copy"; fields: CopyField[]; sel: number }
   | { t: "identity"; candidates: string[]; sel: number }
   | { t: "reply"; msg: Message; value: string }
@@ -107,6 +113,8 @@ function App({ client }: { client: Client }) {
   const [thread, setThread] = useState<{ msgId: string; question: string | null; replies: number } | null>(null);
   const [editorBusy, setEditorBusy] = useState(false);
   const editorBusyRef = useRef(false);
+  const [paused, setPaused] = useState(false);
+  const [refreshIdx, setRefreshIdx] = useState(DEFAULT_CADENCE);
   const [projSel, setProjSel] = useState(0);
   const [orphSel, setOrphSel] = useState(0);
   const [logSel, setLogSel] = useState(0);
@@ -149,7 +157,7 @@ function App({ client }: { client: Client }) {
     // identity changes what "my inbox" means; the operator toggle changes
     // which bodies history may show — both refetch
   }, [identity?.alias, logOperator]);
-  useInterval(() => void refreshRef.current(), editorBusy ? null : 5000);
+  useInterval(() => void refreshRef.current(), editorBusy || paused ? null : CADENCES[refreshIdx]!);
   useInterval(() => setNowS(Math.floor(Date.now() / 1000)), editorBusy ? null : 1000);
 
   // A bare shell has no session alias: once the roster is here, offer the
@@ -465,6 +473,10 @@ function App({ client }: { client: Client }) {
         if (key.escape || input === "?" || input === "q") setModal(null);
         return;
       }
+      if (modal.t === "overview") {
+        if (key.escape || input === "v" || input === "q") setModal(null);
+        return;
+      }
       if (modal.t === "copy") {
         if (key.escape) return setModal(null);
         if (key.upArrow || input === "k") return moveModalSel(-1, modal.fields.length - 1);
@@ -505,6 +517,16 @@ function App({ client }: { client: Client }) {
       return setView(VIEWS[digit - 1]!);
     if (input === "?") return setModal({ t: "help" });
     if (input === "R") return void refresh();
+    if (input === "u") {
+      const next = !paused;
+      setPaused(next);
+      if (next) setToast({ text: "refresh paused — u resumes, R refreshes once", kind: "ok" });
+      else void refresh();
+      return;
+    }
+    if (input === "+" || input === "=") return setRefreshIdx((i) => Math.min(CADENCES.length - 1, i + 1));
+    if (input === "-") return setRefreshIdx((i) => Math.max(0, i - 1));
+    if (input === "v") return setModal({ t: "overview" });
     if (input === "q") return setModal({ t: "quit" });
     if (input === "@") return openIdentityPicker();
     if (input === "c") return openCompose();
@@ -603,6 +625,19 @@ function App({ client }: { client: Client }) {
 
   const refreshedAgo = snapshot.at ? Math.max(0, nowS - snapshot.at) : null;
 
+  // Where the keyboard cursor sits in the focused list — the long-list
+  // orientation cue (a ScrollBox draws no scrollbar of its own).
+  const [posAt, posTotal] =
+    view === "peers" && !inboxFocused
+      ? [selClamped + 1, visible.length]
+      : inboxFocused
+        ? [inboxSelClamped + 1, inbox.length]
+        : view === "projects"
+          ? [projClamped + 1, snapshot.projects.length]
+          : view === "orphans"
+            ? [orphClamped + 1, snapshot.orphans.length]
+            : [logClamped + 1, logSorted.length];
+
   // While $EDITOR owns the terminal, unmounting AlternateScreen is what exits
   // the alt screen and drains raw mode — the framework's own components do the
   // terminal-state bookkeeping; remounting repaints the whole dashboard.
@@ -626,11 +661,24 @@ function App({ client }: { client: Client }) {
               </Box>
             ))}
           </Box>
+          {/* mode tokens: the two states that are otherwise invisible from the frame */}
+          {paused && (
+            <Text bold color={theme.warn}>
+              paused
+            </Text>
+          )}
+          {logOperator && (
+            <Text bold color={theme.err}>
+              operator-bodies
+            </Text>
+          )}
           <Spacer />
           <Text dim>
             {identity ? (identity.mode === "acting-as" ? `acting as ${identity.alias}` : identity.alias) : "read-only"}
           </Text>
-          <Text dim>{refreshedAgo === null ? "…" : `· ${refreshedAgo}s`}</Text>
+          <Text dim>
+            {paused ? "paused" : refreshedAgo === null ? "…" : `every ${CADENCES[refreshIdx]! / 1000}s · ${refreshedAgo}s`}
+          </Text>
         </Box>
 
         {!snapshot.brokerUp && snapshot.at > 0 && (
@@ -651,6 +699,8 @@ function App({ client }: { client: Client }) {
             <QuitGuard />
           ) : modal.t === "help" ? (
             <Help />
+          ) : modal.t === "overview" ? (
+            <Overview data={fabricOverview(snapshot, identity?.alias)} />
           ) : modal.t === "copy" ? (
             <CopyMenu fields={modal.fields} sel={modal.sel} onPick={(i) => void copyField(modal.fields, i)} />
           ) : modal.t === "reply" || modal.t === "decline" ? (
@@ -744,6 +794,7 @@ function App({ client }: { client: Client }) {
 
         <Box paddingX={1} gap={1}>
           {/* help+quit are pinned right so narrow terminals truncate hints, never the exits */}
+          {!modal && posTotal > 0 && <Text dim>{`[${posAt}/${posTotal}]`}</Text>}
           {modal ? (
             <Text dim> </Text>
           ) : (
