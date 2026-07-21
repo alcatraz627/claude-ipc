@@ -27,6 +27,10 @@ export interface OrphanBox {
   lastSeen: number | null;
   pending: number;
   oldestTs: number | null;
+  // triage split (D2): open = still-live word, folded = superseded by the sender's own
+  // later message. Advisory display only — folded mail stays in the box, still peekable.
+  open?: number;
+  folded?: number;
 }
 
 export interface FabricSnapshot {
@@ -78,7 +82,7 @@ export async function fetchFabric(client: Client, selfAlias: string | undefined,
       .then((r: { projects: ProjectBox[] }) => r.projects ?? [])
       .catch(() => [] as ProjectBox[]),
     client
-      .orphans()
+      .orphans(undefined, true) // triage=true → each box carries its open/folded split
       .then((r: { orphans: OrphanBox[] }) => r.orphans ?? [])
       .catch(() => [] as OrphanBox[]),
   ]);

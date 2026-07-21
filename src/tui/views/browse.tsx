@@ -10,6 +10,7 @@ import type { Message } from "../../models.ts";
 import type { OrphanBox, ProjectBox } from "../data.ts";
 import { ageLabel, inlineHead, logLine, sanitizeBlock, sanitizeInline } from "../model.ts";
 import { kindColor, theme } from "../theme.ts";
+import { TextField } from "../widgets/TextField.tsx";
 
 function Split({ list, detail }: { list: React.ReactNode; detail: React.ReactNode }) {
   return (
@@ -117,7 +118,15 @@ export function OrphansView({
                 <Text wrap="truncate-end">
                   <Text bold color={theme.accent}>{i === sel ? "› " : "  "}</Text>
                   <Text dim={sid}>{name.padEnd(26)}</Text>
-                  <Text>{`${o.pending} waiting`}</Text>
+                  {/* triage split: open = live word, folded = superseded (advisory — still peekable) */}
+                  {typeof o.open === "number" && typeof o.folded === "number" && o.folded > 0 ? (
+                    <>
+                      <Text>{`${o.open} open`}</Text>
+                      <Text dim>{` · ${o.folded} folded`}</Text>
+                    </>
+                  ) : (
+                    <Text>{`${o.pending} waiting`}</Text>
+                  )}
                   <Text dim>
                     {`${o.oldestTs ? ` · oldest ${ageLabel(o.oldestTs, nowS)}` : ""}${o.cwd ? ` · ${o.cwd.split("/").pop()}` : ""}`}
                   </Text>
@@ -149,12 +158,24 @@ export function LogView({
   sel,
   nowS,
   operator,
+  deliveries,
+  query,
+  queryEditing,
+  onQueryChange,
+  onQuerySubmit,
+  onQueryCancel,
   onSelect,
 }: {
   history: Message[]; // newest first
   sel: number;
   nowS: number;
   operator: boolean;
+  deliveries: string[] | null; // per-recipient lifecycle, only for a message the viewer sent
+  query: string;
+  queryEditing: boolean;
+  onQueryChange: (v: string) => void;
+  onQuerySubmit: () => void;
+  onQueryCancel: () => void;
   onSelect: (i: number) => void;
 }) {
   const m = history[sel];
@@ -162,6 +183,17 @@ export function LogView({
     <Split
       list={
         <>
+          {(queryEditing || query) && (
+            <TextField
+              value={query}
+              onChange={onQueryChange}
+              onSubmit={onQuerySubmit}
+              onCancel={onQueryCancel}
+              active={queryEditing}
+              prefix="/"
+              placeholder="search bodies + routes (! = regex)"
+            />
+          )}
           <Text dim>{`last 24h · ${history.length} messages · bodies: ${operator ? "OPERATOR (all)" : "party-scoped"} (o toggles)`}</Text>
           <ScrollBox flexGrow={1}>
             {history.length === 0 && <Text dim>no traffic in the last 24h</Text>}
@@ -190,6 +222,9 @@ export function LogView({
             </Text>
             <Text dim>{`${sanitizeInline(m.fromAlias)} → ${sanitizeInline(m.toAlias)} · ${m.kind} · ${ageLabel(m.ts, nowS)} ago`}</Text>
             {m.corrId && <Text dim>{`answers ${m.corrId}`}</Text>}
+            {deliveries?.map((line) => (
+              <Text key={line} dim wrap="truncate-end">{`  ${line}`}</Text>
+            ))}
             <Box marginTop={1}>
               <Text wrap="wrap">{sanitizeBlock(m.body) || " "}</Text>
             </Box>

@@ -15,6 +15,8 @@ export interface InboxListProps {
   nowS: number;
   focused: boolean;
   identityKnown: boolean;
+  seen: ReadonlySet<string>; // session-local reading aid — display only, never consumes
+  owedOnly: boolean;
   onSelect: (i: number) => void;
   onFocus: () => void;
   scrollRef: React.Ref<unknown>;
@@ -30,10 +32,16 @@ export function InboxList(p: InboxListProps) {
       paddingX={1}
       onClick={p.onFocus}
     >
-      <Text dim>{`inbox — ${p.messages.length} pending`}</Text>
+      <Text dim>{`inbox — ${p.messages.length} ${p.owedOnly ? "owed (f = everything)" : "pending"}`}</Text>
       <ScrollBox ref={p.scrollRef as never} flexGrow={1}>
         {p.messages.length === 0 && (
-          <Text dim>{p.identityKnown ? "nothing pending — all caught up" : "read-only: @ to pick an identity"}</Text>
+          <Text dim>
+            {p.owedOnly
+              ? "nothing owed — f shows everything"
+              : p.identityKnown
+                ? "nothing pending — all caught up"
+                : "read-only: @ to pick an identity"}
+          </Text>
         )}
         {p.messages.map((m, i) => {
           const line = inboxLine(m, p.nowS);
@@ -41,9 +49,9 @@ export function InboxList(p: InboxListProps) {
             <Box key={m.id} onClick={() => p.onSelect(i)}>
               <Text wrap="truncate-end">
                 <Text bold color={theme.accent}>{p.focused && i === p.sel ? "› " : "  "}</Text>
-                <Text color={kindColor(m.kind, m.status)}>{line.tag}</Text>
+                <Text color={kindColor(m.kind, m.status)} dim={p.seen.has(m.id)}>{line.tag}</Text>
                 <Text dim>{`  ${line.age}  `}</Text>
-                <Text>{line.head}</Text>
+                <Text dim={p.seen.has(m.id)}>{line.head}</Text>
               </Text>
             </Box>
           );

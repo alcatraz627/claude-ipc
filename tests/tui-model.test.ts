@@ -10,8 +10,11 @@ import {
   actionsFor,
   copyFieldsForMessage,
   copyFieldsForPeer,
+  deliveryLines,
   fabricOverview,
+  filterMessages,
   filterRoster,
+  sortRoster,
   groupRoster,
   inboxLine,
   inlineHead,
@@ -285,5 +288,99 @@ describe("fabricOverview", () => {
     const broker = o.rows.find((r) => r.label === "broker")!;
     expect(broker.value).toBe("DOWN");
     expect(broker.accent).toBe(true);
+  });
+});
+
+describe("filterMessages (log search)", () => {
+  const flow = [
+    msg({ id: "a", kind: "inform", fromAlias: "vb-fable", toAlias: "me", ts: 1, body: "deploy done" }),
+    msg({ id: "b", kind: "query", fromAlias: "cl-inst", toAlias: "me", ts: 2, body: "meld phase?" }),
+  ];
+  test("matches body and either alias, case-insensitively", () => {
+    expect(filterMessages(flow, "DEPLOY").map((m) => m.id)).toEqual(["a"]);
+    expect(filterMessages(flow, "cl-inst").map((m) => m.id)).toEqual(["b"]);
+    expect(filterMessages(flow, "")).toEqual(flow);
+  });
+  test("! prefix is regex; invalid regex matches nothing", () => {
+    expect(filterMessages(flow, "!^meld").map((m) => m.id)).toEqual(["b"]);
+    expect(filterMessages(flow, "!(")).toEqual([]);
+  });
+});
+
+describe("sortRoster", () => {
+  const rows = groupRoster(
+    [
+      peer({ alias: "me", sessionId: "s0", lastSeen: 100 }),
+      peer({ alias: "zed", sessionId: "s1", lastSeen: 900 }),
+      peer({ alias: "amy", sessionId: "s2", lastSeen: 500 }),
+    ],
+    "me",
+  );
+  test("status keeps groupRoster order untouched", () => {
+    expect(sortRoster(rows, "status")).toEqual(rows);
+  });
+  test("you stay pinned first in every sort", () => {
+    for (const key of ["seen", "alias", "owed"] as const) {
+      expect(sortRoster(rows, key)[0]!.alias).toBe("me");
+    }
+  });
+  test("seen ranks by freshest lastSeen, alias alphabetically", () => {
+    expect(sortRoster(rows, "seen").map((r) => r.alias)).toEqual(["me", "zed", "amy"]);
+    expect(sortRoster(rows, "alias").map((r) => r.alias)).toEqual(["me", "amy", "zed"]);
+  });
+  test("owed ranks by the provided counter", () => {
+    const owed = (r: { alias: string }) => (r.alias === "amy" ? 3 : 0);
+    expect(sortRoster(rows, "owed", owed).map((r) => r.alias)).toEqual(["me", "amy", "zed"]);
+  });
+});
+
+describe("deliveryLines (D1)", () => {
+  test("maps the lifecycle to the CLI's honest labels", () => {
+    const lines = deliveryLines([
+      { toAlias: "a", state: "queued" },
+      { toAlias: "b", state: "delivered" },
+      { toAlias: "c", state: "consumed" },
+    ]);
+    expect(lines[0]).toBe("a: queued — waits for their next wake");
+    expect(lines[1]).toBe("b: delivered — claimed by their wake, not yet shown");
+    expect(lines[2]).toBe("c: settled — read, accepted, declined, or cancelled");
+  });
+  test("an unknown state renders raw — never remapped to something friendlier", () => {
+    expect(deliveryLines([{ toAlias: "x", state: "weird" }])).toEqual(["x: weird"]);
+  });
+  test("peer-controlled alias text is neutralized", () => {
+    expect(deliveryLines([{ toAlias: "e\x1b[31mvil", state: "queued" }])[0]).toStartWith("evil:");
+  });
+});
+
+describe("groupRoster D3 fields", () => {
+  test("carries the freshest sinceSeenS and any succeededSid across the session's aliases", () => {
+    const rows = groupRoster([
+      peer({ alias: "a1", sessionId: "s1", sessionAliases: ["a1", "a2"], sinceSeenS: 300 }),
+      peer({ alias: "a2", sessionId: "s1", sessionAliases: ["a1", "a2"], sinceSeenS: 40, succeededSid: "dead-sid-123" }),
+    ]);
+    expect(rows[0]!.sinceSeenS).toBe(40);
+    expect(rows[0]!.succeededSid).toBe("dead-sid-123");
+  });
+});
+
+describe("peerPreview D3 honesty", () => {
+  test("status names its basis and prefers broker-computed freshness", () => {
+    const row = groupRoster([peer({ alias: "vb", sessionId: "s", sinceSeenS: 45 })])[0]!;
+    const data = peerPreview(row, 2000, null, undefined, 2000);
+    const status = data.rows.find((r) => r.label === "status")!.value;
+    expect(status).toContain("(heartbeat)");
+    expect(status).toContain("45s ago");
+    // freshness AGES from the snapshot, not from the render clock: a paused
+    // dashboard must not keep claiming "45s ago" forever
+    const later = peerPreview(row, 2120, null, undefined, 2000);
+    expect(later.rows.find((r) => r.label === "status")!.value).toContain("3m ago"); // 45+120s, rounded to nearest
+  });
+  test("a takeover gets its own accented row", () => {
+    const row = groupRoster([peer({ alias: "vb", sessionId: "s", succeededSid: "0123456789abcdef" })])[0]!;
+    const data = peerPreview(row, 2000, null, undefined);
+    const t = data.rows.find((r) => r.label === "takeover")!;
+    expect(t.value).toBe("succeeded dead session 01234567…");
+    expect(t.accent).toBe(true);
   });
 });

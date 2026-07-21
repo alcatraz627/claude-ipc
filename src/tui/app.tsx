@@ -24,8 +24,12 @@ import {
   copyFieldsForOrphan,
   copyFieldsForPeer,
   copyFieldsForProject,
+  deliveryLines,
   fabricOverview,
+  filterMessages,
   filterRoster,
+  ROSTER_SORTS,
+  sortRoster,
   groupRoster,
   lastMessageFor,
   lastOpenAskFrom,
@@ -115,6 +119,12 @@ function App({ client }: { client: Client }) {
   const editorBusyRef = useRef(false);
   const [paused, setPaused] = useState(false);
   const [refreshIdx, setRefreshIdx] = useState(DEFAULT_CADENCE);
+  const [owedOnly, setOwedOnly] = useState(false);
+  const [seen] = useState(() => new Set<string>()); // session-local reading aid; never consumes
+  const [seenTick, setSeenTick] = useState(0); // Set mutations need a render nudge
+  const [sortIdx, setSortIdx] = useState(0);
+  const [logQuery, setLogQuery] = useState("");
+  const [logQueryEditing, setLogQueryEditing] = useState(false);
   const [projSel, setProjSel] = useState(0);
   const [orphSel, setOrphSel] = useState(0);
   const [logSel, setLogSel] = useState(0);
@@ -180,19 +190,22 @@ function App({ client }: { client: Client }) {
   }, [toast]);
 
   // ---- derived view-model (pure fns over the snapshot) ----
-  const grouped = groupRoster(snapshot.peers, identity?.alias);
-  const matched = filterRoster(grouped, filter);
-  const visible = filter || offlineExpanded ? matched : matched.filter((r) => r.status !== "offline" || r.you);
-  const offlineHidden = matched.length - visible.length;
-  const selClamped = Math.min(sel, Math.max(0, visible.length - 1));
-  const selected: RosterRow | undefined = visible[selClamped];
-
   const sessionCounts = (row: RosterRow) => {
     const aliases = [row.alias, ...row.also];
     const boxes = aliases.map((a) => snapshot.peerInboxes.get(a)).filter((b): b is Message[] => Array.isArray(b));
     if (boxes.length === 0) return null;
     return pendingStats(boxes.flat());
   };
+  const grouped = groupRoster(snapshot.peers, identity?.alias);
+  const matched = sortRoster(
+    filterRoster(grouped, filter),
+    ROSTER_SORTS[sortIdx]!,
+    (row) => sessionCounts(row)?.owed ?? 0,
+  );
+  const visible = filter || offlineExpanded ? matched : matched.filter((r) => r.status !== "offline" || r.you);
+  const offlineHidden = matched.length - visible.length;
+  const selClamped = Math.min(sel, Math.max(0, visible.length - 1));
+  const selected: RosterRow | undefined = visible[selClamped];
 
   const preview = selected
     ? peerPreview(
@@ -200,10 +213,13 @@ function App({ client }: { client: Client }) {
         nowS,
         sessionCounts(selected),
         lastMessageFor(snapshot.history, [selected.alias, ...selected.also]),
+        snapshot.at,
       )
     : null;
 
-  const inbox = [...snapshot.myInbox].sort((a, b) => b.ts - a.ts);
+  const inboxAll = [...snapshot.myInbox].sort((a, b) => b.ts - a.ts);
+  const inbox = owedOnly ? inboxAll.filter((m) => m.kind === "query" || m.kind === "request") : inboxAll;
+  void seenTick; // the Set is mutated in place; this state only exists to re-render
   const inboxSelClamped = Math.min(inboxSel, Math.max(0, inbox.length - 1));
   const selectedMsg: Message | undefined = inbox[inboxSelClamped];
 
@@ -236,10 +252,40 @@ function App({ client }: { client: Client }) {
 
   const threadFor = thread && thread.msgId === selectedMsg?.id ? thread : null;
 
-  const logSorted = [...snapshot.history].sort((a, b) => b.ts - a.ts);
+  const [logDeliv, setLogDeliv] = useState<{ msgId: string; rows: string[] } | null>(null);
+
+  const logSorted = filterMessages(
+    [...snapshot.history].sort((a, b) => b.ts - a.ts),
+    logQuery,
+  );
   const projClamped = Math.min(projSel, Math.max(0, snapshot.projects.length - 1));
   const orphClamped = Math.min(orphSel, Math.max(0, snapshot.orphans.length - 1));
   const logClamped = Math.min(logSel, Math.max(0, logSorted.length - 1));
+
+  // D1 in the LOG: when the selected flow message is one I sent, fetch its
+  // per-recipient delivery lifecycle. Only my own sends — a delivery ledger for
+  // someone else's message is not mine to display.
+  const selectedLogMsg = view === "log" ? logSorted[logClamped] : undefined;
+  useEffect(() => {
+    const m = selectedLogMsg;
+    const mine = grouped.find((r) => r.you);
+    const myNames = mine ? [mine.alias, ...mine.also] : identity ? [identity.alias] : [];
+    if (!m || !myNames.includes(m.fromAlias)) {
+      setLogDeliv(null);
+      return;
+    }
+    let stale = false;
+    client
+      .status(m.id, identity?.alias)
+      .then(
+        (r: { deliveries?: { toAlias: string; state: string }[] }) =>
+          !stale && setLogDeliv({ msgId: m.id, rows: deliveryLines(r.deliveries ?? []) }),
+      )
+      .catch(() => !stale && setLogDeliv(null));
+    return () => {
+      stale = true;
+    };
+  }, [selectedLogMsg?.id, identity?.alias]);
 
   // Peek the selected project/orphan mailbox — read-only, never consuming.
   useEffect(() => {
@@ -542,6 +588,18 @@ function App({ client }: { client: Client }) {
       if (input === "a") return void runAction("accept");
       if (input === "d") return openAskModal("decline");
       if (input === "s") return void runAction("snooze");
+      if (input === "f") {
+        setOwedOnly((v) => !v);
+        setToast({ text: owedOnly ? "showing everything" : "showing only what's owed", kind: "ok" });
+        return;
+      }
+      if (input === "m") {
+        if (!selectedMsg) return setToast({ text: "inbox is empty — nothing to mark", kind: "err" });
+        if (seen.has(selectedMsg.id)) seen.delete(selectedMsg.id);
+        else seen.add(selectedMsg.id);
+        setSeenTick((t) => t + 1);
+        return;
+      }
       if (input === "y" && selectedMsg)
         return setModal({ t: "copy", fields: copyFieldsForMessage(selectedMsg, identity?.alias), sel: 0 });
       if (key.escape) {
@@ -562,6 +620,13 @@ function App({ client }: { client: Client }) {
       if (input === "G") return setSel(Math.max(0, visible.length - 1));
       if (input === "/") return setFilterEditing(true);
       if (input === "o") return setOfflineExpanded((v) => !v);
+      if (input === "<" || input === ">") {
+        const delta = input === ">" ? 1 : -1;
+        const next = (sortIdx + delta + ROSTER_SORTS.length) % ROSTER_SORTS.length;
+        setSortIdx(next);
+        setToast({ text: `sort: ${ROSTER_SORTS[next]}`, kind: "ok" });
+        return;
+      }
       if (input === "y") return openCopyMenu();
       if (input === "i" || key.rightArrow) return setFocusedPane("inbox");
       if (key.return) {
@@ -594,6 +659,7 @@ function App({ client }: { client: Client }) {
         setLogOperator((v) => !v);
         return setToast({ text: logOperator ? "bodies: party-scoped" : "bodies: OPERATOR — everything on this machine", kind: "ok" });
       }
+      if (input === "/" && view === "log") return setLogQueryEditing(true);
       if (input === "y") {
         if (view === "projects" && snapshot.projects[projClamped])
           return setModal({ t: "copy", fields: copyFieldsForProject(snapshot.projects[projClamped]!), sel: 0 });
@@ -620,7 +686,7 @@ function App({ client }: { client: Client }) {
       }
       dispatchOne(input, key);
     },
-    { isActive: !filterEditing && modal?.t !== "reply" && modal?.t !== "decline" },
+    { isActive: !filterEditing && !logQueryEditing && modal?.t !== "reply" && modal?.t !== "decline" },
   );
 
   const refreshedAgo = snapshot.at ? Math.max(0, nowS - snapshot.at) : null;
@@ -746,6 +812,8 @@ function App({ client }: { client: Client }) {
             inboxSel={inboxSelClamped}
             focusedPane={focusedPane}
             identityKnown={identity !== null}
+            seen={seen}
+            owedOnly={owedOnly}
             thread={threadFor}
             onInboxSelect={(i) => {
               setFocusedPane("inbox");
@@ -763,6 +831,8 @@ function App({ client }: { client: Client }) {
                 nowS={nowS}
                 focused
                 identityKnown={identity !== null}
+                seen={seen}
+                owedOnly={owedOnly}
                 onSelect={setInboxSel}
                 onFocus={() => {}}
                 scrollRef={inboxScrollRef}
@@ -789,7 +859,22 @@ function App({ client }: { client: Client }) {
             onSelect={setOrphSel}
           />
         ) : (
-          <LogView history={logSorted} sel={logClamped} nowS={nowS} operator={logOperator} onSelect={setLogSel} />
+          <LogView
+            history={logSorted}
+            sel={logClamped}
+            nowS={nowS}
+            operator={logOperator}
+            deliveries={logDeliv && logDeliv.msgId === logSorted[logClamped]?.id ? logDeliv.rows : null}
+            query={logQuery}
+            queryEditing={logQueryEditing}
+            onQueryChange={setLogQuery}
+            onQuerySubmit={() => setLogQueryEditing(false)}
+            onQueryCancel={() => {
+              setLogQuery("");
+              setLogQueryEditing(false);
+            }}
+            onSelect={setLogSel}
+          />
         )}
 
         <Box paddingX={1} gap={1}>
@@ -801,11 +886,11 @@ function App({ client }: { client: Client }) {
             <KeyHints
               pairs={
                 inboxFocused
-                  ? [["↑↓", "move"], ["r", "reply"], ["a", "accept"], ["d", "decline"], ["s", "snooze"], ["y", "copy"], ["esc", "back"]]
+                  ? [["↑↓", "move"], ["r", "reply"], ["a", "accept"], ["d", "decline"], ["s", "snooze"], ["f", "owed"], ["m", "seen"], ["y", "copy"], ["esc", "back"]]
                   : view === "peers"
-                    ? [["↑↓", "move"], ["enter", "compose"], ["y", "copy"], ["/", "filter"], ["o", "offline"], ["i/→", "inbox"]]
+                    ? [["↑↓", "move"], ["enter", "compose"], ["y", "copy"], ["/", "filter"], ["<>", "sort"], ["o", "offline"], ["i/→", "inbox"]]
                     : view === "log"
-                      ? [["↑↓", "move"], ["o", "operator bodies"], ["y", "copy"], ["tab", "views"]]
+                      ? [["↑↓", "move"], ["/", "search"], ["o", "operator bodies"], ["y", "copy"], ["tab", "views"]]
                       : [["↑↓", "move"], ["y", "copy"], ["tab", "views"], ["R", "refresh"]]
               }
             />

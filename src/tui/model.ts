@@ -43,6 +43,8 @@ export interface RosterRow {
   cwd: string;
   status: "live" | "idle" | "offline";
   lastSeen: number;
+  sinceSeenS?: number; // seconds since the last sign of life (D3) — freshest across the session's aliases
+  succeededSid?: string; // the dead session this one took an alias over from (D3 succession)
   you: boolean; // this row is the session driving the dashboard
 }
 
@@ -68,6 +70,7 @@ export function groupRoster(peers: RegistryEntry[], selfAlias?: string): RosterR
     );
     const head = group[0]!;
     const aliases = group.map((g) => g.alias);
+    const sinceSeen = group.map((g) => g.sinceSeenS).filter((s): s is number => typeof s === "number");
     return {
       key: [...aliases].sort().join(" "),
       alias: sanitizeInline(head.alias),
@@ -76,6 +79,9 @@ export function groupRoster(peers: RegistryEntry[], selfAlias?: string): RosterR
       cwd: head.cwd,
       status: head.status,
       lastSeen: Math.max(...group.map((g) => g.lastSeen)),
+      // freshest sign of life across the session's aliases, matching the max lastSeen
+      sinceSeenS: sinceSeen.length ? Math.min(...sinceSeen) : undefined,
+      succeededSid: group.find((g) => g.succeededSid)?.succeededSid,
       you: selfAlias !== undefined && aliases.includes(selfAlias),
     };
   });
@@ -115,6 +121,52 @@ export function filterRoster(rows: RosterRow[], query: string): RosterRow[] {
       r.also.some((a) => a.toLowerCase().includes(q)) ||
       r.cwd.toLowerCase().includes(q),
   );
+}
+
+/**
+ * Filter flow messages by content or route — same `!`-regex convention as the
+ * roster filter. Matches the sanitized body and both aliases.
+ */
+export function filterMessages(messages: Message[], query: string): Message[] {
+  const raw = query.trim();
+  if (!raw) return messages;
+  if (raw.startsWith("!")) {
+    const pat = raw.slice(1);
+    if (!pat) return messages;
+    let re: RegExp;
+    try {
+      re = new RegExp(pat, "i");
+    } catch {
+      return [];
+    }
+    return messages.filter((m) => re.test(m.body) || re.test(m.fromAlias) || re.test(m.toAlias));
+  }
+  const q = raw.toLowerCase();
+  return messages.filter(
+    (m) =>
+      m.body.toLowerCase().includes(q) ||
+      m.fromAlias.toLowerCase().includes(q) ||
+      m.toAlias.toLowerCase().includes(q),
+  );
+}
+
+export type RosterSort = "status" | "seen" | "alias" | "owed";
+export const ROSTER_SORTS: readonly RosterSort[] = ["status", "seen", "alias", "owed"] as const;
+
+/**
+ * Re-order roster rows by a chosen key. "status" keeps groupRoster's order
+ * (liveness first); the others re-rank. Your own row stays pinned first in
+ * every sort — self-orientation beats strict ordering.
+ */
+export function sortRoster(rows: RosterRow[], sort: RosterSort, owedFor?: (row: RosterRow) => number): RosterRow[] {
+  if (sort === "status") return rows;
+  const rest = rows.filter((r) => !r.you);
+  const you = rows.filter((r) => r.you);
+  if (sort === "seen") rest.sort((a, b) => b.lastSeen - a.lastSeen || a.alias.localeCompare(b.alias));
+  else if (sort === "alias") rest.sort((a, b) => a.alias.localeCompare(b.alias));
+  else if (sort === "owed")
+    rest.sort((a, b) => (owedFor?.(b) ?? 0) - (owedFor?.(a) ?? 0) || b.lastSeen - a.lastSeen);
+  return [...you, ...rest];
 }
 
 /** Unread = everything still pending; owed = the subset that expects an answer. */
@@ -265,6 +317,20 @@ export function logLine(m: Message, nowS: number): { age: string; route: string;
   };
 }
 
+/**
+ * Per-recipient delivery lifecycle for a message the viewer SENT (D1's `sent`
+ * verb, as display rows). Labels are the CLI's honest vocabulary; an unknown
+ * state renders raw rather than being mapped to something friendlier.
+ */
+export function deliveryLines(deliveries: { toAlias: string; state: string }[]): string[] {
+  const LABEL: Record<string, string> = {
+    queued: "queued — waits for their next wake",
+    delivered: "delivered — claimed by their wake, not yet shown",
+    consumed: "settled — read, accepted, declined, or cancelled",
+  };
+  return deliveries.map((d) => `${sanitizeInline(d.toAlias)}: ${LABEL[d.state] ?? d.state}`);
+}
+
 /** Copy-menu fields for a project mailbox. */
 export function copyFieldsForProject(p: { address: string; path: string }): CopyField[] {
   return [
@@ -365,13 +431,22 @@ export function peerPreview(
   nowS: number,
   counts: { unread: number; owed: number } | null | undefined,
   lastMsg: Message | undefined,
+  snapAt?: number, // when the snapshot carrying sinceSeenS was taken — freshness must age from THERE
 ): PreviewData {
   const rows: PreviewData["rows"] = [
     { label: "alias", value: row.alias + (row.you ? "  (you)" : "") },
     ...(row.also.length ? [{ label: "also", value: row.also.join(", ") }] : []),
     { label: "session", value: row.sessionId },
     { label: "cwd", value: row.cwd || "?" },
-    { label: "status", value: `${row.status} · seen ${ageLabel(row.lastSeen, nowS)} ago` },
+    {
+      label: "status",
+      // name the BASIS: "live" is a heartbeat inference, not a process check (D3).
+      // sinceSeenS was computed AT SNAPSHOT TIME — anchor it there, or a paused
+      // dashboard would keep claiming a freshness the data no longer has.
+      value: `${row.status} (heartbeat) · seen ${
+        row.sinceSeenS !== undefined ? humanAge((snapAt ?? nowS) - row.sinceSeenS, nowS) : ageLabel(row.lastSeen, nowS)
+      } ago`,
+    },
     {
       label: "inbox",
       // counts are read with the peer's own token from the shared per-user tokens
@@ -385,6 +460,10 @@ export function peerPreview(
       accent: Boolean(counts && counts.owed > 0),
     },
   ];
+  if (row.succeededSid) {
+    // a takeover is worth a line: this session rebound a name a dead one held
+    rows.push({ label: "takeover", value: `succeeded dead session ${row.succeededSid.slice(0, 8)}…`, accent: true });
+  }
   if (lastMsg) {
     rows.push({
       label: "last msg",
