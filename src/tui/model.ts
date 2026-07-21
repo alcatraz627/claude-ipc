@@ -268,7 +268,7 @@ export function inboxLine(m: Message, nowS: number): { tag: string; head: string
   };
 }
 
-/** Copy-menu fields for a message selection. */
+/** Copy-menu fields for a message; the reply command joins only when it expects an answer. */
 export function copyFieldsForMessage(m: Message, selfAlias: string | undefined): CopyField[] {
   const fields: CopyField[] = [
     { label: "msg-id", value: m.id },
@@ -323,10 +323,15 @@ export function logLine(m: Message, nowS: number): { age: string; route: string;
  * state renders raw rather than being mapped to something friendlier.
  */
 export function deliveryLines(deliveries: { toAlias: string; state: string }[]): string[] {
+  // The CLI `sent` verb's vocabulary, verbatim — the broker knows delivery, never
+  // cognition, so "surfaced" must carry its NOT-confirmed-read gloss (D1 spec).
   const LABEL: Record<string, string> = {
-    queued: "queued — waits for their next wake",
+    queued: "queued — not yet claimed by their session · waits for their next wake",
     delivered: "delivered — claimed by their wake, not yet shown",
+    surfaced: "surfaced — placed in their context (NOT confirmed read)",
     consumed: "settled — read, accepted, declined, or cancelled",
+    accepted: "accepted",
+    declined: "declined",
   };
   return deliveries.map((d) => `${sanitizeInline(d.toAlias)}: ${LABEL[d.state] ?? d.state}`);
 }
@@ -462,7 +467,7 @@ export function peerPreview(
   ];
   if (row.succeededSid) {
     // a takeover is worth a line: this session rebound a name a dead one held
-    rows.push({ label: "takeover", value: `succeeded dead session ${row.succeededSid.slice(0, 8)}…`, accent: true });
+    rows.push({ label: "takeover", value: `succeeded dead session ${sanitizeInline(row.succeededSid).slice(0, 8)}…`, accent: true });
   }
   if (lastMsg) {
     rows.push({

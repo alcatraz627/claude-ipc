@@ -341,9 +341,18 @@ describe("deliveryLines (D1)", () => {
       { toAlias: "b", state: "delivered" },
       { toAlias: "c", state: "consumed" },
     ]);
-    expect(lines[0]).toBe("a: queued — waits for their next wake");
+    expect(lines[0]).toBe("a: queued — not yet claimed by their session · waits for their next wake");
     expect(lines[1]).toBe("b: delivered — claimed by their wake, not yet shown");
     expect(lines[2]).toBe("c: settled — read, accepted, declined, or cancelled");
+  });
+  test("surfaced carries its NOT-confirmed-read gloss — the D1 false-confidence guard", () => {
+    expect(deliveryLines([{ toAlias: "a", state: "surfaced" }])[0]).toBe(
+      "a: surfaced — placed in their context (NOT confirmed read)",
+    );
+  });
+  test("accepted and declined are their own rendered states", () => {
+    expect(deliveryLines([{ toAlias: "a", state: "accepted" }])[0]).toBe("a: accepted");
+    expect(deliveryLines([{ toAlias: "b", state: "declined" }])[0]).toBe("b: declined");
   });
   test("an unknown state renders raw — never remapped to something friendlier", () => {
     expect(deliveryLines([{ toAlias: "x", state: "weird" }])).toEqual(["x: weird"]);

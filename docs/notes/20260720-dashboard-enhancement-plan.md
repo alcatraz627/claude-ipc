@@ -73,6 +73,20 @@ ink-terminal `inverse` renders as nothing; attr-only cell changes can skip the
 damage diff (first-painted row) — selection/carets must be printed characters
 or explicit fg+bg colors.
 
+## Status (2026-07-21, post wave 3)
+
+Waves 0–3 SHIPPED on feat/i-dashboard (d2c6caf → wave-3 fix round). Wave-3 gate:
+opus adversarial validator, ISSUES-FOUND → all fixed same day
+(`.claude/output/20260721-w3-validation/findings.md`, 0 undispositioned).
+**Deferred, honestly:** R10/R11 color-depth degradation + auto dark/light
+(ink-terminal exposes no capability machinery — needs its own detection pass) ·
+R8 clickable keybar (mouse rows/tabs already work; ergonomics-only) · R13
+sparkline, R14 wrap-toggle (wave-4 candidates) · inbox mark-seen persists only
+per launch (session-local by design). **Still owed:** the manual never-trap tty
+walk (owner) · phase-4b adversarial review of the WHOLE dashboard + D10 gcc
+convention extraction · live D1 shakedown with a real send (needs a willing
+peer or the isolated broker).
+
 ## Constraints carried forward
 
 Client-only data, no new broker endpoints · peek-don't-consume · no fabricated

@@ -285,7 +285,9 @@ function App({ client }: { client: Client }) {
     return () => {
       stale = true;
     };
-  }, [selectedLogMsg?.id, identity?.alias]);
+    // snapshot.at in the deps: a watched message's state must advance with the
+    // auto-refresh, not only when the selection moves
+  }, [selectedLogMsg?.id, identity?.alias, snapshot.at]);
 
   // Peek the selected project/orphan mailbox — read-only, never consuming.
   useEffect(() => {
@@ -660,6 +662,11 @@ function App({ client }: { client: Client }) {
         return setToast({ text: logOperator ? "bodies: party-scoped" : "bodies: OPERATOR — everything on this machine", kind: "ok" });
       }
       if (input === "/" && view === "log") return setLogQueryEditing(true);
+      if (key.escape && view === "log" && logQuery) {
+        // like the roster filter: Esc clears the search before it means "quit"
+        setLogQuery("");
+        return;
+      }
       if (input === "y") {
         if (view === "projects" && snapshot.projects[projClamped])
           return setModal({ t: "copy", fields: copyFieldsForProject(snapshot.projects[projClamped]!), sel: 0 });
