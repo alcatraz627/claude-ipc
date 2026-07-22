@@ -125,6 +125,7 @@ export class Router {
       caps?: string[];
       pid?: number;
       tty?: string;
+      service?: boolean;
     };
     if (!a.alias || !a.sessionId) return fail("bad_args", "register needs alias + sessionId");
     if (Router.RESERVED.has(a.alias)) {
@@ -146,7 +147,7 @@ export class Router {
     const tty = a.tty ?? (a.pid ? ttyForPid(a.pid) : null);
     const result = this.registry.register(
       a.alias,
-      { sessionId: a.sessionId, cwd: a.cwd ?? "", caps: a.caps, pid: a.pid ?? null, tty },
+      { sessionId: a.sessionId, cwd: a.cwd ?? "", caps: a.caps, pid: a.pid ?? null, tty, service: a.service === true },
       req.token,
     );
     if (!result.ok) {

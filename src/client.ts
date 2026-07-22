@@ -129,6 +129,7 @@ export interface RegisterInfo {
   caps?: string[];
   pid?: number;
   tty?: string;
+  service?: boolean; // a non-session identity: never heartbeats, never auto-pruned (E2)
 }
 
 export interface SendArgs {

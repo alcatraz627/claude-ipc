@@ -53,7 +53,7 @@ export class Registry {
    */
   register(
     alias: string,
-    info: { sessionId: string; cwd: string; caps?: string[]; pid?: number | null; tty?: string | null },
+    info: { sessionId: string; cwd: string; caps?: string[]; pid?: number | null; tty?: string | null; service?: boolean },
     presentedToken?: string,
   ): { ok: boolean; replaced: boolean; token: string | null } {
     const prev = this.entries.get(alias);
@@ -77,6 +77,9 @@ export class Registry {
       // sets it; the successor's own later re-registers CARRY IT FORWARD (else the
       // marker would evaporate on the next heartbeat-register).
       ...(replaced && prev ? { succeededSid: prev.sessionId } : prev?.succeededSid ? { succeededSid: prev.succeededSid } : {}),
+      // service is sticky like succession: once a service identity, always one,
+      // until a human deliberately removes the row
+      ...(info.service === true || prev?.service ? { service: true } : {}),
       token,
     });
     this.touchSiblings(info.sessionId, alias); // registering IS a liveness signal for the whole session
@@ -183,6 +186,12 @@ export class Registry {
   pruneOffline(beforeTs: number): number {
     let removed = 0;
     for (const [alias, e] of this.entries) {
+      // services never heartbeat — looking dead is their normal state, so
+      // liveness decay must not eat them (the prune-ate-decision-pages class).
+      // The one exit is DELIBERATE: `leave` backdates lastSeen to 0, and a
+      // service that explicitly left is removable like anyone else — without
+      // this, a service row would be immortal with no removal path at all.
+      if (e.service && e.lastSeen !== 0) continue;
       if (this.statusOf(e) !== "offline" || e.lastSeen >= beforeTs) continue;
       if (this.backend.pending(alias).length > 0) continue; // keep live mailboxes
       this.entries.delete(alias);

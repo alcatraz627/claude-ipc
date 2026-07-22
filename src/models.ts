@@ -100,6 +100,10 @@ export interface RegistryEntry {
   // name a now-dead one held (D3 succession). Absent on a fresh claim or a same-session
   // reconnect; present marks a takeover so "two names, one lane" is legible.
   succeededSid?: string;
+  // A service identity (E2): a non-session sender — a web server, a cron, a bot.
+  // Never heartbeats by design, so pruneOffline exempts it; removal is a
+  // deliberate human act, not liveness decay.
+  service?: boolean;
   // The capability secret that proves ownership of this alias. Issued at register
   // time, held by the owner in a 0600 file; required to act as the alias. Never
   // sent over the wire except in the register response to the owner — strip it

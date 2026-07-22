@@ -181,3 +181,62 @@ describe("count absence honesty (P3a)", () => {
     expect(((await c.count("real-box")) as { count: number }).count).toBe(0);
   });
 });
+
+describe("service identities (E2)", () => {
+  let broker: BrokerHandle;
+  let sock: string;
+  let registry: Registry;
+  let now = 1000;
+  let idn = 0;
+  beforeEach(() => {
+    idn = 0;
+    now = 1000;
+    const backend = new MemoryBackend();
+    registry = new Registry(backend, () => now, { idleS: 300, offlineS: 1800 });
+    const router = new Router(backend, registry, () => now, () => `msg-${++idn}`, null);
+    sock = tmpSock();
+    broker = startBroker({ router, socketPath: sock });
+  });
+  afterEach(() => broker.stop());
+
+  test("a service alias survives the prune that eats every idle session", async () => {
+    const c = new Client(sock);
+    await c.register("decision-pages", { sessionId: "svc:decision-pages", cwd: "/gcc", service: true });
+    await c.register("mortal-session", { sessionId: "sid-m", cwd: "/m" });
+    now = 999999; // everyone ages far past offline
+    const pruned = registry.pruneOffline(now);
+    expect(pruned).toBe(1); // the mortal went; the service stayed
+    const left = ((await c.list()) as { peers: { alias: string; service?: boolean }[] }).peers.map((p) => p.alias);
+    expect(left).toContain("decision-pages");
+    expect(left).not.toContain("mortal-session");
+  });
+
+  test("a service can still SEND after the great prune — the decision-pages scenario end-to-end", async () => {
+    const c = new Client(sock);
+    await c.register("doorbell-svc", { sessionId: "svc:doorbell-svc", cwd: "/gcc", service: true });
+    await c.register("worker", { sessionId: "sid-w", cwd: "/w" });
+    now = 999999;
+    registry.pruneOffline(now);
+    await c.register("worker", { sessionId: "sid-w", cwd: "/w" }); // the session re-registers on wake
+    const sent = await c.send({ from: "doorbell-svc", to: "worker", kind: "inform", body: "event:decision-pages some-slug answered" });
+    expect(sent.msgId).toBeTruthy();
+    const box = (await c.check("worker", false)) as { messages: { body: string }[] };
+    expect(box.messages.some((m) => m.body.startsWith("event:decision-pages"))).toBe(true);
+  });
+
+  test("service is sticky across re-registration — no accidental demotion to prunable", async () => {
+    const c = new Client(sock);
+    await c.register("svc-x", { sessionId: "svc:svc-x", cwd: "/x", service: true });
+    // a later re-register WITHOUT the flag (e.g. a hand-typed refresh) keeps the tier
+    await c.register("svc-x", { sessionId: "svc:svc-x", cwd: "/x" });
+    now = 999999;
+    expect(registry.pruneOffline(now)).toBe(0);
+  });
+  test("leave is the service's one exit — an explicitly-departed service prunes like anyone", async () => {
+    const c = new Client(sock);
+    await c.register("svc-done", { sessionId: "svc:svc-done", cwd: "/x", service: true });
+    await c.leave("svc-done");
+    now = 999999;
+    expect(registry.pruneOffline(now)).toBe(1);
+  });
+});

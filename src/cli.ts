@@ -149,7 +149,7 @@ function parseDuration(s: string): number | null {
 
 // Presence-only flags: never consume the following token as a value, so they can
 // sit anywhere on the line (e.g. `reply <id> --from x --partial <body...>`).
-const BOOLEAN_FLAGS = new Set(["partial", "consume", "no-reply-expected", "operator", "all"]);
+const BOOLEAN_FLAGS = new Set(["partial", "consume", "no-reply-expected", "operator", "all", "service"]);
 
 function parse(argv: string[]): { cmd: string; positional: string[]; flags: Record<string, FlagValue> } {
   const cmd = argv[0] ?? "help";
@@ -175,7 +175,8 @@ function parse(argv: string[]): { cmd: string; positional: string[]; flags: Reco
 
 const USAGE = `claude-ipc — cross-session messaging
 
-  register <alias>           (claim a mailbox from the shell)
+  register <alias> [--service]  (claim a mailbox; --service = a non-session identity —
+                              a server/cron/bot that never heartbeats and is never auto-pruned)
   send   --to <b> | --to-project <dir|name> [--from <a>] [--kind inform|query|request] [--ttl N]
          [--reply-by 5m|90s|none] [--no-reply-expected] <body...> | --body-file <path>
                              (--body-file: read the body from a file, byte-exact — use it when the
@@ -219,7 +220,7 @@ const USAGE = `claude-ipc — cross-session messaging
 // send/reply so the "body is positional" hint fires instead of a generic rejection.
 // A command absent from this map (help, serve) skips the check.
 export const COMMAND_FLAGS: Record<string, string[]> = {
-  register: ["as", "tty"],
+  register: ["as", "tty", "service"],
   send: ["to", "to-project", "from", "kind", "ttl", "reply-by", "no-reply-expected", "body", "body-file"],
   reply: ["from", "corr", "status", "partial", "body", "body-file"],
   inbox: ["alias", "consume", "project"],
@@ -364,12 +365,18 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
         // rebind, and minting a synthetic cli-<alias> row (the old behavior) would
         // create a third mailbox the hooks never poll — the exact orphan-queue bug
         // this whole change removes. Refuse rather than orphan.
-        const sid = process.env.CLAUDE_CODE_SESSION_ID;
+        // --service (E2): a non-session identity — a web server, cron, bot. It has
+        // no CLAUDE_CODE_SESSION_ID by nature; a synthetic svc: sid marks the tier,
+        // pruneOffline exempts it, and its mailbox is DELIBERATELY standalone (its
+        // consumer is the service process itself, never the session hooks).
+        const service = flags.service === true;
+        const sid = service ? `svc:${alias}` : process.env.CLAUDE_CODE_SESSION_ID;
         if (!sid) {
           console.error(
             "register must run inside a Claude Code session (CLAUDE_CODE_SESSION_ID is unset).\n" +
               "It rebinds the current session's ipc alias; run it from that session's shell,\n" +
-              "or set CLAUDE_IPC_ALIAS in that session's environment instead.",
+              "or set CLAUDE_IPC_ALIAS in that session's environment instead.\n" +
+              "Registering a non-session sender (server/cron/bot)? Use: register <name> --service",
           );
           return 2;
         }
@@ -380,10 +387,11 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
         const res = (await client.register(alias, {
           sessionId: sid,
           cwd: process.cwd(),
-          pid: process.ppid,
+          pid: service ? undefined : process.ppid,
           tty: flags.tty ? String(flags.tty) : undefined,
+          service,
         })) as { replaced?: boolean };
-        writeAliasForSession(sid, alias);
+        if (!service) writeAliasForSession(sid, alias); // the side-file is session plumbing; services have none
         // Print a confirmation, NOT the raw capability token that register returns — it is
         // a secret (whoever holds it can act as this alias), and dumping it to stdout puts
         // it in scrollback and any log that captures the command. It is already saved,
