@@ -32,6 +32,17 @@ like groupRoster, successor-aware via the D3 `succeededSid` data ("dead, but
 catch-cowrk-b7 succeeded it in the same cwd"). Read-only verb, no broker
 schema change; CLI + tests only.
 
+> **P3 status (2026-07-22):** split on build. **P3a SHIPPED** — count now FAILS
+> on an unregistered alias (router + tests), the help text states the decrease
+> semantics, and ipc-await.sh dies loudly with a re-register line instead of
+> stalling on a pruned alias. **P3b (the seq cursor) DEFERRED to its own pass**
+> with a newly-found design constraint: a per-session monotonic seq must
+> survive broker restarts (memory backend restarts would REWIND the cursor and
+> silently break watchers' monotonicity assumption) — it needs the
+> registry_snapshot treatment plus both-backend persistence, designed fresh,
+> not bolted on. Change-gating + drain-on-wake remains sound for doorbells
+> meanwhile.
+
 ## P3 — a watcher cursor with honest absence · KEEP (reshaped, hardening) · M
 
 `count` looks like the watcher primitive and hides its semantics: it is

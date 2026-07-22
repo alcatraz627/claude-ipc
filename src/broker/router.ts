@@ -976,6 +976,13 @@ export class Router {
       return ok({ count: n });
     }
     if (!a.alias) return fail("bad_args", "count needs alias");
+    // Absence is an error, never a zero: an unregistered alias has NO inbox, and
+    // answering 0 is indistinguishable from an empty one — a count-gated watcher
+    // whose alias got pruned would poll a void forever with no signal (observed
+    // live 2026-07-22). Fail so the caller learns to re-register.
+    if (!this.registry.list().some((p) => p.alias === a.alias)) {
+      return fail("not_registered", `${a.alias} is not registered — no inbox exists to count. Re-register: claude-ipc register ${a.alias}`);
+    }
     const denied = this.requireOwner(req, a.alias); // your own inbox size only
     if (denied) return denied;
     const messages = this.dedupeById(this.sessionBoxes(a.alias).flatMap((addr) => this.backend.pending(addr)));

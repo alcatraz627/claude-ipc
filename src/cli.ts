@@ -194,7 +194,9 @@ const USAGE = `claude-ipc — cross-session messaging
   orphans [--project [dir]] [--triage]  (dead sessions' waiting mail; --triage folds superseded/stale arcs)
   supersede <old-id> --by <new-id> [--from <a>]  (your later message replaces an earlier one — successors fold it)
   who    <query> [--json]    (resolve a half-remembered name → ranked, successor-aware matches)
-  count  <alias>             (pending count — cheap, for tab-title segments)
+  count  <alias>             (pending count — cheap, for tab-title segments. Session-scoped;
+                              can DECREASE (TTL sweep, sibling consume); FAILS on an
+                              unregistered alias rather than reading as an empty box)
   log    [--peer <a>] [--since <epoch>]
   status <msg-id>            (a message's delivery + response lifecycle)
   sent   <msg-id> [--json]   (delivery state of a message YOU sent, per recipient — did they see it?)

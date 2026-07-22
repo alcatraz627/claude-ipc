@@ -150,3 +150,34 @@ describe("who / error surfaces (CLI + broker)", () => {
     expect(message).not.toContain("send --to worker");
   });
 });
+
+describe("count absence honesty (P3a)", () => {
+  let broker: BrokerHandle;
+  let sock: string;
+  let idn = 0;
+  beforeEach(() => {
+    idn = 0;
+    const backend = new MemoryBackend();
+    const registry = new Registry(backend, () => 1000, { idleS: 300, offlineS: 1800 });
+    const router = new Router(backend, registry, () => 1000, () => `msg-${++idn}`, null);
+    sock = tmpSock();
+    broker = startBroker({ router, socketPath: sock });
+  });
+  afterEach(() => broker.stop());
+
+  test("count on an unregistered alias FAILS — absence is an error, never a zero", async () => {
+    const c = new Client(sock);
+    let code = "";
+    try {
+      await c.count("never-registered");
+    } catch (e) {
+      code = (e as { code?: string }).code ?? "";
+    }
+    expect(code).toBe("not_registered");
+  });
+  test("count on a registered alias still answers, including zero for a truly empty box", async () => {
+    const c = new Client(sock);
+    await c.register("real-box", { sessionId: "sid-r", cwd: "/r" });
+    expect(((await c.count("real-box")) as { count: number }).count).toBe(0);
+  });
+});
