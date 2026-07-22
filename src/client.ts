@@ -325,3 +325,38 @@ export class Client {
     }
   }
 }
+
+/**
+ * The Viewer Contract, typed (extensibility E1). A viewer is a read-only window
+ * onto the fabric — dashboards, exporters, digests, watchers. It can look at
+ * everything a client can look at and can change NOTHING: no sends, no
+ * consumes, no registration, no heartbeat. The type has no mutating members,
+ * so a consumer written against Viewer cannot drift into acting by accident —
+ * the dashboard's politeness, promoted from discipline to compile-time law.
+ */
+export interface Viewer {
+  list(): Promise<any>;
+  peek(alias: string): Promise<any>; // check, consume forced false
+  peekProject(dir: string, asAlias?: string): Promise<any>;
+  history(q?: { peer?: string; since?: number; conversationId?: string }, asAlias?: string, operator?: boolean): Promise<any>;
+  status(msgId: string, asAlias?: string): Promise<any>;
+  projects(): Promise<any>;
+  orphans(dir?: string, triage?: boolean): Promise<any>;
+  count(alias: string): Promise<any>;
+  countProject(dir: string): Promise<any>;
+}
+
+/** Wrap an existing Client as a Viewer. The wrapper is the whole implementation. */
+export function viewerOf(c: Client): Viewer {
+  return {
+    list: () => c.list(),
+    peek: (alias) => c.check(alias, false),
+    peekProject: (dir, asAlias) => c.checkProject(dir, false, asAlias),
+    history: (q, asAlias, operator) => c.history(q ?? {}, asAlias, operator ?? false),
+    status: (msgId, asAlias) => c.status(msgId, asAlias, false),
+    projects: () => c.projects(),
+    orphans: (dir, triage) => c.orphans(dir, triage ?? false),
+    count: (alias) => c.count(alias),
+    countProject: (dir) => c.countProject(dir),
+  };
+}

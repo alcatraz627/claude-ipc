@@ -7,7 +7,7 @@
  * (shared per-user tokens dir); a refusal nulls that one cell, never the snapshot.
  */
 
-import type { Client } from "../client.ts";
+import { viewerOf, type Client, type Viewer } from "../client.ts";
 import type { Message, RegistryEntry } from "../models.ts";
 
 export interface PeerCounts {
@@ -59,10 +59,13 @@ export const EMPTY_SNAPSHOT: FabricSnapshot = {
 };
 
 export async function fetchFabric(client: Client, selfAlias: string | undefined, operator = false): Promise<FabricSnapshot> {
+  // Every read in this pass goes through the Viewer — the type has no consume,
+  // no send, no register, so the polling loop CANNOT mutate the fabric.
+  const v = viewerOf(client);
   const at = Math.floor(Date.now() / 1000);
   let peers: RegistryEntry[];
   try {
-    peers = ((await client.list()) as { peers: RegistryEntry[] }).peers ?? [];
+    peers = ((await v.list()) as { peers: RegistryEntry[] }).peers ?? [];
   } catch {
     return { ...EMPTY_SNAPSHOT, at };
   }
@@ -71,17 +74,17 @@ export async function fetchFabric(client: Client, selfAlias: string | undefined,
   // offline graveyard would be dozens of round trips for rows shown collapsed.
   const active = peers.filter((p) => p.status !== "offline").map((p) => p.alias);
   const [myInbox, history, peeked, projects, orphans] = await Promise.all([
-    selfAlias ? peek(client, selfAlias) : Promise.resolve<Message[] | null>([]),
-    client
+    selfAlias ? peek(v, selfAlias) : Promise.resolve<Message[] | null>([]),
+    v
       .history({ since: at - HISTORY_WINDOW_S }, selfAlias, operator)
       .then((r: { messages: Message[] }) => r.messages ?? [])
       .catch(() => [] as Message[]),
-    Promise.all(active.map(async (alias) => [alias, await peek(client, alias)] as const)),
-    client
+    Promise.all(active.map(async (alias) => [alias, await peek(v, alias)] as const)),
+    v
       .projects()
       .then((r: { projects: ProjectBox[] }) => r.projects ?? [])
       .catch(() => [] as ProjectBox[]),
-    client
+    v
       .orphans(undefined, true) // triage=true → each box carries its open/folded split
       .then((r: { orphans: OrphanBox[] }) => r.orphans ?? [])
       .catch(() => [] as OrphanBox[]),
@@ -91,9 +94,9 @@ export async function fetchFabric(client: Client, selfAlias: string | undefined,
 }
 
 /** Non-consuming inbox read; null when this alias's mailbox isn't ours to read. */
-async function peek(client: Client, alias: string): Promise<Message[] | null> {
+async function peek(v: Viewer, alias: string): Promise<Message[] | null> {
   try {
-    return ((await client.check(alias, false)) as { messages: Message[] }).messages ?? [];
+    return ((await v.peek(alias)) as { messages: Message[] }).messages ?? [];
   } catch {
     return null;
   }
