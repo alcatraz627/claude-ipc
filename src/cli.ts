@@ -193,6 +193,7 @@ const USAGE = `claude-ipc — cross-session messaging
   projects                   (project mailboxes with pending mail)
   orphans [--project [dir]] [--triage]  (dead sessions' waiting mail; --triage folds superseded/stale arcs)
   supersede <old-id> --by <new-id> [--from <a>]  (your later message replaces an earlier one — successors fold it)
+  who    <query> [--json]    (resolve a half-remembered name → ranked, successor-aware matches)
   count  <alias>             (pending count — cheap, for tab-title segments)
   log    [--peer <a>] [--since <epoch>]
   status <msg-id>            (a message's delivery + response lifecycle)
@@ -237,10 +238,49 @@ export const COMMAND_FLAGS: Record<string, string[]> = {
   cancel: ["corr"],
   compose: ["from"],
   peers: ["by-session"],
+  who: ["json"],
   projects: [],
   "-i": [],
   interactive: [],
 };
+
+/**
+ * Rank registered aliases against a half-remembered name — the shared core of
+ * `who <query>` and the no_peer near-match suggestions. Tiers: exact > prefix >
+ * substring > one-typo (withinOneEdit) > cwd-basename; a live/idle bonus breaks
+ * ties toward sessions that can actually answer. Pure; returns [] on no signal
+ * rather than inventing a match.
+ */
+export function rankAliasMatches(
+  query: string,
+  peers: { alias: string; sessionId: string; status: string; lastSeen: number | null; cwd: string; succeededSid?: string }[],
+  limit = 3,
+): { alias: string; sessionId: string; status: string; lastSeen: number | null; cwd: string; succeededSid?: string; score: number }[] {
+  const q = query.toLowerCase();
+  if (!q) return [];
+  const scored = peers.flatMap((p) => {
+    const a = p.alias.toLowerCase();
+    let score = 0;
+    if (a === q) score = 100;
+    else if (a.startsWith(q) || q.startsWith(a)) score = 80;
+    else if (a.includes(q) || q.includes(a)) score = 60;
+    else if (withinOneEdit(a, q)) score = 45;
+    else {
+      const base = (p.cwd?.split("/").pop() ?? "").toLowerCase();
+      if (base && (base.includes(q) || q.includes(base))) score = 30;
+    }
+    if (score === 0) return [];
+    if (p.status === "live") score += 8;
+    else if (p.status === "idle") score += 4;
+    // a live near-miss beats a dead close-miss (picking a dead session was the
+    // motivating incident) — but an EXACT match is the answer even when dead:
+    // it surfaces first and carries its successor line
+    else if (score < 100) score -= 15;
+    return [{ ...p, score }];
+  });
+  scored.sort((x, y) => y.score - x.score || (y.lastSeen ?? 0) - (x.lastSeen ?? 0) || x.alias.localeCompare(y.alias));
+  return scored.slice(0, limit);
+}
 
 // True when two names are a single typo apart: one substitution, insertion,
 // deletion, or adjacent transposition ("opsu" for "opus"). Bounded on purpose —
@@ -490,18 +530,44 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
           // bare no_peer into a discovery answer: name who's reachable now and who's
           // known-but-offline, so a typo'd or half-remembered recipient is easy to fix.
           if (e instanceof BrokerError && e.code === "no_peer") {
-            const all = ((await client.list()).peers ?? []) as { alias: string; status: string }[];
+            const all = ((await client.list()).peers ?? []) as {
+              alias: string;
+              sessionId: string;
+              status: string;
+              cwd: string;
+              lastSeen: number | null;
+              succeededSid?: string;
+            }[];
             const live = all.filter((p) => p.status !== "offline").map((p) => p.alias);
             const offline = all.filter((p) => p.status === "offline").map((p) => p.alias);
             const lines = [`no peer named "${to}" is registered — NOTHING WAS SENT.`];
+            // the near-misses first: a typo'd or half-remembered name usually has one
+            const near = rankAliasMatches(to ?? "", all, 3);
+            if (near.length) {
+              const nowS = Math.floor(Date.now() / 1000);
+              lines.push(
+                `  closest:  ${near
+                  .map((m) => `${m.alias} (${m.status}${m.lastSeen ? `, ${humanAge(m.lastSeen, nowS)}` : ""})`)
+                  .join(" · ")}`,
+              );
+            }
             if (live.length) lines.push(`  reachable now:  ${live.join(", ")}`);
             if (offline.length) {
               const shown = offline.slice(0, 8).join(", ");
               lines.push(`  known but offline (mail still reaches them):  ${shown}${offline.length > 8 ? ", …" : ""}`);
             }
             if (!live.length && !offline.length) lines.push(`  no peers are registered yet.`);
-            lines.push(`  full roster:  claude-ipc peers`);
+            lines.push(`  addressing a role or repo lane?  --to-project <dir> reaches whoever registers there.`);
+            lines.push(`  resolve a name:  claude-ipc who ${to ?? "<query>"}   ·   full roster:  claude-ipc peers`);
             console.error(lines.join("\n"));
+            return 2;
+          }
+          if (e instanceof BrokerError && e.code === "not_registered") {
+            // the usual cause is prune eating the SENDER's alias while the session
+            // idled — say so, with the one-command fix (papercuts P2/P4)
+            console.error(
+              `${e.message}\n  your alias may have been pruned while this session idled — re-register: claude-ipc register ${from}`,
+            );
             return 2;
           }
           throw e; // any other refusal → the shared catch prints `error: code: …` and exits 1
@@ -637,6 +703,44 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
         const box = await client.check(alias, consume);
         out(withReplyHints(box, alias));
         railIfPeerMail(box);
+        return 0;
+      }
+      case "who": {
+        // "Find the alias the user means" without the roster firehose: one round
+        // trip from a fuzzy name to an addressable answer (papercuts P1).
+        const query = positional[0] ?? "";
+        if (!query) {
+          console.error("who <query>   (fuzzy over alias + cwd; try: who fable)");
+          return 2;
+        }
+        const roster = ((await client.list()).peers ?? []) as {
+          alias: string;
+          sessionId: string;
+          status: string;
+          cwd: string;
+          lastSeen: number | null;
+          sinceSeenS?: number;
+          succeededSid?: string;
+        }[];
+        const ranked = rankAliasMatches(query, roster, 8);
+        // one row per SESSION (best-scoring alias speaks for its siblings)
+        const seenSids = new Set<string>();
+        const rows = ranked.filter((m) => !seenSids.has(m.sessionId) && seenSids.add(m.sessionId) !== undefined);
+        if (flags.json === true) {
+          out({ query, matches: rows });
+          return 0;
+        }
+        if (!rows.length) {
+          console.error(`nothing matches "${query}" — full roster: claude-ipc peers · lane addressing: send --to-project <dir>`);
+          return 2;
+        }
+        for (const m of rows) {
+          const age = m.lastSeen ? humanAge(m.lastSeen, Math.floor(Date.now() / 1000)) : "?";
+          // a dead match with a successor is an answer, not a dead end
+          const heir = m.status === "offline" ? roster.find((p) => p.succeededSid === m.sessionId) : undefined;
+          const succ = heir ? `  → succeeded by ${heir.alias} (${heir.status})` : "";
+          out(`${m.alias}  ${m.status} · seen ${age} ago · ${m.cwd || "?"}${succ}`);
+        }
         return 0;
       }
       case "peers": {
