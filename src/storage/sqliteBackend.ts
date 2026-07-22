@@ -50,7 +50,8 @@ CREATE TABLE IF NOT EXISTS project_passes (
 
 CREATE TABLE IF NOT EXISTS registry_snapshot (
   alias TEXT PRIMARY KEY, session_id TEXT, cwd TEXT, caps TEXT,
-  pid INTEGER, tty TEXT, last_seen REAL, status TEXT, token TEXT, succeeded_sid TEXT);
+  pid INTEGER, tty TEXT, last_seen REAL, status TEXT, token TEXT, succeeded_sid TEXT,
+  service INTEGER);
 
 -- A later message can supersede an earlier one (D2): the successor triaging
 -- inherited mail folds the countermanded arc. Advisory — display, not delivery.
@@ -104,6 +105,7 @@ interface RegRow {
   status: string;
   token: string | null;
   succeeded_sid: string | null;
+  service: number | null;
 }
 
 function toMessage(r: MsgRow): Message {
@@ -171,6 +173,13 @@ export class SqliteBackend implements StorageBackend {
     }
     try {
       this.db.run("ALTER TABLE registry_snapshot ADD COLUMN succeeded_sid TEXT");
+    } catch {
+      // column already present on an existing DB — fine
+    }
+    try {
+      // service tier must survive a restart — a reload that drops it would demote
+      // every service to prunable, the exact bug the tier exists to kill
+      this.db.run("ALTER TABLE registry_snapshot ADD COLUMN service INTEGER");
     } catch {
       // column already present on an existing DB — fine
     }
@@ -412,11 +421,23 @@ export class SqliteBackend implements StorageBackend {
     const tx = this.db.transaction((rows: RegistryEntry[]) => {
       this.db.run("DELETE FROM registry_snapshot");
       const stmt = this.db.query(
-        `INSERT INTO registry_snapshot (alias, session_id, cwd, caps, pid, tty, last_seen, status, token, succeeded_sid)
-         VALUES (?,?,?,?,?,?,?,?,?,?)`,
+        `INSERT INTO registry_snapshot (alias, session_id, cwd, caps, pid, tty, last_seen, status, token, succeeded_sid, service)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
       );
       for (const e of rows) {
-        stmt.run(e.alias, e.sessionId, e.cwd, JSON.stringify(e.caps), e.pid, e.tty, e.lastSeen, e.status, e.token, e.succeededSid ?? null);
+        stmt.run(
+          e.alias,
+          e.sessionId,
+          e.cwd,
+          JSON.stringify(e.caps),
+          e.pid,
+          e.tty,
+          e.lastSeen,
+          e.status,
+          e.token,
+          e.succeededSid ?? null,
+          e.service ? 1 : null,
+        );
       }
     });
     tx(entries);
@@ -435,6 +456,7 @@ export class SqliteBackend implements StorageBackend {
       status: r.status as RegistryEntry["status"],
       token: r.token ?? null,
       ...(r.succeeded_sid ? { succeededSid: r.succeeded_sid } : {}),
+      ...(r.service ? { service: true } : {}),
     }));
   }
 

@@ -24,19 +24,24 @@ done
 [ -n "$CORR" ] || { echo "ipc-await: --for <corrId> is required" >&2; exit 2; }
 
 # Change-gate on the cheap count (no badge side effect); pull details only on change.
-# count FAILS on an unregistered alias (never a fake 0) — surface that loudly:
-# a watcher on a pruned alias must die telling its Monitor why, not stall forever.
-if ! prev="$("$CIPC" count "$ALIAS" 2>/dev/null)"; then
+# count exits 4 for not_registered (never a fake 0) — die loudly on THAT, because a
+# pruned alias never comes back on its own. Any other failure (broker restarting,
+# socket blip) is transient: tolerate and keep watching, like the watcher always did.
+prev="$("$CIPC" count "$ALIAS" 2>/dev/null)"; rc=$?
+if [ "$rc" -eq 4 ]; then
   echo "ipc-await: $ALIAS is not registered (pruned while idle?) — re-register, then re-arm me: claude-ipc register $ALIAS"
   exit 3
 fi
+[ "$rc" -ne 0 ] && prev=0
 [ -n "${AWAIT_DEBUG:-}" ] && echo "[await] baseline prev=$prev cipc=$CIPC alias=$ALIAS" >&2
 while :; do
   sleep "$INTERVAL"
-  if ! n="$("$CIPC" count "$ALIAS" 2>/dev/null)"; then
+  n="$("$CIPC" count "$ALIAS" 2>/dev/null)"; rc=$?
+  if [ "$rc" -eq 4 ]; then
     echo "ipc-await: $ALIAS is not registered (pruned mid-watch?) — re-register, then re-arm me: claude-ipc register $ALIAS"
     exit 3
   fi
+  [ "$rc" -ne 0 ] && n="$prev"
   [ -n "${AWAIT_DEBUG:-}" ] && echo "[await] n=$n prev=$prev" >&2
   [ "$n" = "$prev" ] && continue
   prev="$n"

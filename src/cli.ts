@@ -1214,6 +1214,10 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
     }
   } catch (e) {
     console.error(`error: ${e instanceof Error ? e.message : String(e)}`);
+    // not_registered gets its own exit code so watchers (ipc-await.sh) can tell
+    // "your alias is gone, re-register" from a transient broker outage — an
+    // error CLASS travels as a code, never as a string to grep (gate HIGH-2)
+    if (e instanceof BrokerError && e.code === "not_registered") return 4;
     return 1;
   }
 }

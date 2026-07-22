@@ -60,12 +60,16 @@ export class Registry {
     if (prev?.token && presentedToken !== prev.token) {
       return { ok: false, replaced: false, token: null }; // owned alias, wrong/missing token
     }
-    const replaced = prev !== undefined && prev.sessionId !== info.sessionId;
+    // a service refresh keeps its synthetic svc: sid and never reads as a
+    // takeover — re-registering a service is maintenance, not succession, and
+    // coupling it to a human session's sid would drag its liveness along (LOW-2)
+    const svcRefresh = prev?.service === true;
+    const replaced = !svcRefresh && prev !== undefined && prev.sessionId !== info.sessionId;
     const keep = prev?.token && presentedToken === prev.token;
     const token = keep ? prev.token : `tok-${crypto.randomUUID()}`;
     this.entries.set(alias, {
       alias,
-      sessionId: info.sessionId,
+      sessionId: svcRefresh ? prev!.sessionId : info.sessionId,
       cwd: info.cwd,
       caps: info.caps ?? [],
       pid: info.pid ?? null,

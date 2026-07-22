@@ -11,6 +11,7 @@ import { startBroker, type BrokerHandle } from "../src/broker/server.ts";
 import { Client } from "../src/client.ts";
 import { rankAliasMatches, run } from "../src/cli.ts";
 import { MemoryBackend } from "../src/storage/memoryBackend.ts";
+import { SqliteBackend } from "../src/storage/sqliteBackend.ts";
 
 const tmpSock = (): string => `/tmp/cipc-who-${process.pid}-${Math.random().toString(36).slice(2, 10)}.sock`;
 
@@ -172,6 +173,25 @@ describe("who / error surfaces (CLI + broker)", () => {
     expect(typeof parsed.matches[0]!.score).toBe("number");
   });
 
+  test("register --service works from a sessionless shell, both flag orders (gate LOW-1)", async () => {
+    const saved = process.env.CLAUDE_CODE_SESSION_ID;
+    delete process.env.CLAUDE_CODE_SESSION_ID;
+    try {
+      expect(await run(["register", "svc-cli-a", "--service"], { socketPath: sock })).toBe(0);
+      expect(await run(["register", "--service", "svc-cli-b"], { socketPath: sock })).toBe(0);
+    } finally {
+      if (saved !== undefined) process.env.CLAUDE_CODE_SESSION_ID = saved;
+    }
+    const peers = ((await new Client(sock).list()) as { peers: { alias: string; sessionId: string; service?: boolean }[] }).peers;
+    expect(peers.find((p) => p.alias === "svc-cli-a")!.sessionId).toBe("svc:svc-cli-a");
+    expect(peers.find((p) => p.alias === "svc-cli-b")!.sessionId).toBe("svc:svc-cli-b");
+    expect(peers.find((p) => p.alias === "svc-cli-a")!.service).toBe(true);
+  });
+
+  test("count exits 4 on not_registered — the code watchers branch on (gate HIGH-2)", async () => {
+    expect(await run(["count", "never-there"], { socketPath: sock })).toBe(4);
+  });
+
   test("not_an_ask on your own BROADCAST suggests broadcasting again, never a lane (gate finding 1)", async () => {
     const c = new Client(sock);
     await c.register("caster", { sessionId: "sid-cast", cwd: "/c" });
@@ -261,13 +281,32 @@ describe("service identities (E2)", () => {
     expect(box.messages.some((m) => m.body.startsWith("event:decision-pages"))).toBe(true);
   });
 
-  test("service is sticky across re-registration — no accidental demotion to prunable", async () => {
+  test("service is sticky across a REAL hand-typed refresh — tier, sid, and no fake succession", async () => {
     const c = new Client(sock);
     await c.register("svc-x", { sessionId: "svc:svc-x", cwd: "/x", service: true });
-    // a later re-register WITHOUT the flag (e.g. a hand-typed refresh) keeps the tier
-    await c.register("svc-x", { sessionId: "svc:svc-x", cwd: "/x" });
+    // the real refresh path: no --service flag, a human session's sid (LOW-2)
+    await c.register("svc-x", { sessionId: "sid-human-uuid", cwd: "/x" });
+    const row = ((await c.list()) as { peers: { alias: string; sessionId: string; service?: boolean; succeededSid?: string }[] }).peers.find(
+      (p) => p.alias === "svc-x",
+    )!;
+    expect(row.service).toBe(true); // tier sticks
+    expect(row.sessionId).toBe("svc:svc-x"); // sid never couples to the human session
+    expect(row.succeededSid).toBeUndefined(); // maintenance is not succession
     now = 999999;
     expect(registry.pruneOffline(now)).toBe(0);
+  });
+
+  test("service survives a broker restart — sqlite persists the tier (gate HIGH-1)", () => {
+    const db = `/tmp/cipc-svc-${process.pid}-${Math.random().toString(36).slice(2, 8)}.sqlite`;
+    const b1 = new SqliteBackend(db);
+    const r1 = new Registry(b1, () => 1000, { idleS: 300, offlineS: 1800 });
+    r1.register("decision-pages", { sessionId: "svc:decision-pages", cwd: "/gcc", service: true });
+    // the restart: a fresh backend + registry over the SAME database file
+    const b2 = new SqliteBackend(db);
+    const r2 = new Registry(b2, () => 999999, { idleS: 300, offlineS: 1800 });
+    expect(r2.get("decision-pages")?.service).toBe(true);
+    expect(r2.pruneOffline(999999)).toBe(0);
+    expect(r2.has("decision-pages")).toBe(true);
   });
   test("leave is the service's one exit — an explicitly-departed service prunes like anyone", async () => {
     const c = new Client(sock);
