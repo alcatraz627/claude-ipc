@@ -617,13 +617,18 @@ export class Router {
           );
         }
         const other = msg.fromAlias === a.from ? msg.toAlias : msg.fromAlias;
-        // Suggest only a command that would currently succeed: if the other party's
-        // alias has been pruned, `send --to <them>` fails not_registered — point at
-        // lane addressing instead of a dead end (papercuts 4b).
-        const otherRegistered = this.registry.list().some((p) => p.alias === other);
-        const cont = otherRegistered
-          ? `to continue the thread, send: claude-ipc send --to ${other} --from ${a.from} "<your message>"`
-          : `"${other}" is no longer registered — reach their lane instead: claude-ipc send --to-project <their repo dir> --from ${a.from} "<your message>"`;
+        // Suggest only a command that would currently succeed: a broadcast or a
+        // project mailbox is never a registered peer alias (they'd hit the pruned
+        // branch and get advice that cannot work), and a pruned alias gets lane
+        // addressing instead of a dead end (papercuts 4b + gate finding 1).
+        const cont =
+          other === "*"
+            ? `to continue the thread, broadcast again: claude-ipc send --to "*" --from ${a.from} "<your message>"`
+            : isProjectAddress(other)
+              ? `to continue the thread in that lane: claude-ipc send --to-project ${projectPath(other)} --from ${a.from} "<your message>"`
+              : this.registry.list().some((p) => p.alias === other)
+                ? `to continue the thread, send: claude-ipc send --to ${other} --from ${a.from} "<your message>"`
+                : `"${other}" is no longer registered — reach their lane instead: claude-ipc send --to-project <their repo dir> --from ${a.from} "<your message>"`;
         return fail(
           "not_an_ask",
           `${a.corrId} is ${msg.kind === "inform" ? "an" : "a"} ${msg.kind}${msg.kind === "inform" ? " you sent" : ""}, not a question you can answer — ${cont}`,

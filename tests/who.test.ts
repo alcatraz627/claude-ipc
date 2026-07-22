@@ -149,6 +149,43 @@ describe("who / error surfaces (CLI + broker)", () => {
     expect(message).toContain("--to-project");
     expect(message).not.toContain("send --to worker");
   });
+  test("a GENUINE succession renders the → succeeded by line (gate finding 2)", async () => {
+    const c = new Client(sock);
+    // sid-old holds two aliases; it dies; sid-new takes over ONE of them.
+    await c.register("shared-name", { sessionId: "sid-old", cwd: "/code/x" });
+    await c.register("old-extra", { sessionId: "sid-old", cwd: "/code/x" });
+    now = 5000; // sid-old is dead by liveness
+    await c.register("shared-name", { sessionId: "sid-new", cwd: "/code/x" }); // takeover
+    // old-extra still names the dead session; its heir is the taken-over alias
+    expect(await run(["who", "old-extra"], { socketPath: sock })).toBe(0);
+    expect(lines.join("\n")).toContain("succeeded by shared-name");
+  });
+
+  test("who --json returns the {query, matches} shape a script can consume (gate finding 3)", async () => {
+    const c = new Client(sock);
+    await c.register("vb-fable", { sessionId: "sid-f", cwd: "/code/versable" });
+    expect(await run(["who", "fable", "--json"], { socketPath: sock })).toBe(0);
+    const parsed = JSON.parse(lines.join("\n")) as { query: string; matches: { alias: string; sessionId: string; status: string; score: number }[] };
+    expect(parsed.query).toBe("fable");
+    expect(parsed.matches.length).toBe(1);
+    expect(parsed.matches[0]!.alias).toBe("vb-fable");
+    expect(typeof parsed.matches[0]!.score).toBe("number");
+  });
+
+  test("not_an_ask on your own BROADCAST suggests broadcasting again, never a lane (gate finding 1)", async () => {
+    const c = new Client(sock);
+    await c.register("caster", { sessionId: "sid-cast", cwd: "/c" });
+    await c.register("hearer", { sessionId: "sid-hear", cwd: "/h" });
+    const b = (await c.send({ from: "caster", to: "*", kind: "inform", body: "all hands" })) as { msgId: string };
+    let message = "";
+    try {
+      await c.reply({ from: "caster", corrId: b.msgId, body: "amendment" });
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    expect(message).toContain('--to "*"');
+    expect(message).not.toContain("no longer registered");
+  });
 });
 
 describe("count absence honesty (P3a)", () => {
