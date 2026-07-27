@@ -137,6 +137,16 @@ export class Router {
     if (Router.RESERVED.has(a.alias)) {
       return fail("bad_args", `"${a.alias}" is reserved — the broker speaks under that name. Pick another.`);
     }
+    // "user" is the human owner's sentinel: a message from it means a PERSON typed
+    // it, so no session may wear it as its own name. It is claimable only as a
+    // service identity (a deliberate act, token-guarded and prune-exempt after).
+    if (a.alias === "user" && a.service !== true) {
+      return fail(
+        "bad_args",
+        `"user" is the human owner's sentinel — a session can't register it as its alias. ` +
+          `The owner claims it once, deliberately: claude-ipc register user --service`,
+      );
+    }
     // An alias is interpolated raw into every rendered ⟨…⟩ frame; neutralization
     // covers brackets but not control chars — a newline would forge a whole extra
     // line in a peer's context. Reject anything the slug wouldn't preserve, at this

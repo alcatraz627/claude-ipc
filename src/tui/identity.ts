@@ -19,20 +19,57 @@ export interface Identity {
   mode: "session" | "acting-as" | "none";
 }
 
+/** One pickable identity, carrying enough session context to tell lookalikes apart. */
+export interface ActingCandidate {
+  alias: string;
+  sessionId: string;
+  status: RegistryEntry["status"];
+  cwd: string;
+  siblings: string[]; // the session's other aliases — "two names, one lane" made visible
+  service: boolean;
+  sinceSeenS?: number;
+}
+
 export function sessionIdentity(): Identity | null {
   // Mirrors cli.ts resolveSelfAlias (import would cycle): explicit override, then side-file.
   const alias = process.env.CLAUDE_IPC_ALIAS || readAliasForSession(process.env.CLAUDE_CODE_SESSION_ID);
   return alias ? { alias, mode: "session" } : null;
 }
 
+/** The human owner's sentinel identity — registered `--service`, never a session's name. */
+export const USER_SENTINEL = "user";
+
 /**
- * Aliases the dashboard could act as: registered peers whose capability token
- * is readable in the shared per-user tokens dir. Live sessions first.
+ * Aliases the dashboard could act as: registered peers whose capability token is
+ * readable in the shared per-user tokens dir. Hygiene: the dead-alias graveyard
+ * is cut unless asked for (or unless it is ALL there is — an empty picker is a
+ * dead end); the `user` sentinel outranks everything, then live before idle.
  */
-export function actingCandidates(peers: RegistryEntry[]): string[] {
+export function actingCandidates(peers: RegistryEntry[], includeOffline = false): ActingCandidate[] {
   const rank: Record<string, number> = { live: 0, idle: 1, offline: 2 };
-  return peers
-    .filter((p) => existsSync(join(config.tokensDir, encodeURIComponent(p.alias))))
-    .sort((a, b) => (rank[a.status] ?? 3) - (rank[b.status] ?? 3) || b.lastSeen - a.lastSeen)
-    .map((p) => p.alias);
+  const held = peers.filter((p) => existsSync(join(config.tokensDir, encodeURIComponent(p.alias))));
+  const alive = held.filter((p) => p.status !== "offline");
+  const pool = includeOffline || alive.length === 0 ? held : alive;
+  return pool
+    .map((p) => ({
+      alias: p.alias,
+      sessionId: p.sessionId,
+      status: p.status,
+      cwd: p.cwd,
+      siblings: (p.sessionAliases ?? []).filter((a) => a !== p.alias),
+      service: p.service === true,
+      sinceSeenS: p.sinceSeenS,
+    }))
+    .sort(
+      (a, b) =>
+        Number(b.alias === USER_SENTINEL) - Number(a.alias === USER_SENTINEL) ||
+        (rank[a.status] ?? 3) - (rank[b.status] ?? 3) ||
+        (a.sinceSeenS ?? Infinity) - (b.sinceSeenS ?? Infinity) ||
+        a.alias.localeCompare(b.alias),
+    );
+}
+
+/** How many token-held identities the default (live+idle) view hides. */
+export function hiddenOfflineCount(peers: RegistryEntry[]): number {
+  return actingCandidates(peers, true).length - actingCandidates(peers, false).length;
 }

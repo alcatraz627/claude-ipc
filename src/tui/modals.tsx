@@ -5,10 +5,12 @@
  */
 
 import { Box, Text } from "ink-terminal";
-import type { Message } from "../models.ts";
+import type { Color } from "ink-terminal/core";
+import { humanAge, type Message } from "../models.ts";
+import { USER_SENTINEL, type ActingCandidate } from "./identity.ts";
 import type { CopyField, PreviewData } from "./model.ts";
 import { inlineHead } from "./model.ts";
-import { theme } from "./theme.ts";
+import { STATUS_COLOR, STATUS_GLYPH, theme } from "./theme.ts";
 import { TextField } from "./widgets/TextField.tsx";
 
 function Frame({ title, children }: { title: string; children: React.ReactNode }) {
@@ -94,26 +96,62 @@ export function QuitGuard() {
  *  aliases, and an unwindowed list overflows the frame into an unreadable wall. */
 const PICKER_WINDOW = 9;
 
-export function IdentityPicker({ candidates, sel }: { candidates: string[]; sel: number }) {
+/** One picker row: status, name, and the session context that tells lookalikes apart. */
+function candidateLine(c: ActingCandidate): { dot: { glyph: string; color: Color | undefined }; context: string } {
+  if (c.alias === USER_SENTINEL && c.service) {
+    return { dot: { glyph: "◆", color: theme.accent }, context: "the human owner · service" };
+  }
+  const parts = [
+    c.cwd ? (c.cwd.split("/").pop() ?? c.cwd) : "cwd unknown",
+    c.sessionId.slice(0, 8),
+    ...(c.siblings.length ? [`+${c.siblings.length} name${c.siblings.length > 1 ? "s" : ""}`] : []),
+    ...(c.service ? ["service"] : []),
+    ...(c.sinceSeenS !== undefined ? [`seen ${humanAge(0, c.sinceSeenS)} ago`] : []),
+  ];
+  return {
+    dot: { glyph: STATUS_GLYPH[c.status] ?? "?", color: STATUS_COLOR[c.status] },
+    context: parts.join(" · "),
+  };
+}
+
+export function IdentityPicker({
+  candidates,
+  sel,
+  showOffline,
+  hiddenCount,
+}: {
+  candidates: ActingCandidate[];
+  sel: number;
+  showOffline: boolean;
+  hiddenCount: number;
+}) {
   const start = Math.max(0, Math.min(sel - Math.floor(PICKER_WINDOW / 2), candidates.length - PICKER_WINDOW));
   const shown = candidates.slice(start, start + PICKER_WINDOW);
+  const offlineHint = showOffline ? "o hide offline" : hiddenCount > 0 ? `o +${hiddenCount} offline` : null;
   return (
-    <Frame title="act as which alias?">
+    <Frame title="act as which identity?">
       <Box flexDirection="column" marginTop={1}>
         <Text dim>This shell isn't a Claude session — pick a registered identity to act as.</Text>
         {start > 0 && <Text dim>{`  ▲ ${start} more`}</Text>}
-        {shown.map((a, i) => (
-          <Text key={a}>
-            <Text bold color={theme.accent}>{start + i === sel ? "› " : "  "}</Text>
-            {a}
-          </Text>
-        ))}
+        {shown.map((c, i) => {
+          const { dot, context } = candidateLine(c);
+          return (
+            <Text key={c.alias}>
+              <Text bold color={theme.accent}>{start + i === sel ? "› " : "  "}</Text>
+              <Text color={dot.color}>{dot.glyph}</Text>
+              <Text bold={start + i === sel}>{` ${c.alias.padEnd(22)}`}</Text>
+              <Text dim wrap="truncate-end">{` ${context}`}</Text>
+            </Text>
+          );
+        })}
         {start + shown.length < candidates.length && (
           <Text dim>{`  ▼ ${candidates.length - start - shown.length} more`}</Text>
         )}
       </Box>
       <Box marginTop={1}>
-        <Text dim>{`${sel + 1}/${candidates.length} · ↑↓/pgup/pgdn move · enter pick · esc = read-only`}</Text>
+        <Text dim>
+          {`${sel + 1}/${candidates.length} · ↑↓ move · enter pick${offlineHint ? ` · ${offlineHint}` : ""} · esc = read-only`}
+        </Text>
       </Box>
     </Frame>
   );

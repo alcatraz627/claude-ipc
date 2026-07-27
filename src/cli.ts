@@ -176,7 +176,9 @@ function parse(argv: string[]): { cmd: string; positional: string[]; flags: Reco
 const USAGE = `claude-ipc — cross-session messaging
 
   register <alias> [--service]  (claim a mailbox; --service = a non-session identity —
-                              a server/cron/bot that never heartbeats and is never auto-pruned)
+                              a server/cron/bot that never heartbeats and is never auto-pruned.
+                              "user" is the human owner's sentinel: sessions can't wear it;
+                              the owner claims it once with: register user --service)
   send   --to <b> | --to-project <dir|name> [--from <a>] [--kind inform|query|request] [--ttl N]
          [--reply-by 5m|90s|none] [--no-reply-expected] <body...> | --body-file <path>
                              (--body-file: read the body from a file, byte-exact — use it when the
