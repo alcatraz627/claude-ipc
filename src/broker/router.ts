@@ -1,10 +1,9 @@
 /**
  * Turns a wire request into an effect on storage + registry, and a response.
  *
- * This is the broker's whole decision surface for Phase 2: registration,
- * liveness, message routing, inbox pulls, and peer listing. Correlation,
- * consent, and timeouts arrive in Phase 3. The router is synchronous — storage
- * is synchronous — so it is trivially testable with an injected clock + id source.
+ * The broker's whole decision surface: registration, liveness, routing,
+ * correlation, consent, inbox pulls. Synchronous end to end — storage is
+ * synchronous — so it is trivially testable with an injected clock + id source.
  */
 
 import { sanitizeAlias } from "../aliasStore.ts";
@@ -131,11 +130,10 @@ export class Router {
     if (Router.RESERVED.has(a.alias)) {
       return fail("bad_args", `"${a.alias}" is reserved — the broker speaks under that name. Pick another.`);
     }
-    // An alias is interpolated raw into every rendered ⟨…⟩ frame and the boot digest,
-    // and it is the mailbox name the watcher polls. Frame-neutralization handles the
-    // brackets but not a newline or other control char, which would forge a whole
-    // extra line in a peer's context. Reject anything the slug wouldn't preserve, at
-    // this boundary (every entry point — CLI, MCP, hooks — passes through here).
+    // An alias is interpolated raw into every rendered ⟨…⟩ frame; neutralization
+    // covers brackets but not control chars — a newline would forge a whole extra
+    // line in a peer's context. Reject anything the slug wouldn't preserve, at this
+    // boundary (every entry point — CLI, MCP, hooks — passes through here).
     if (sanitizeAlias(a.alias) !== a.alias) {
       const safe = sanitizeAlias(a.alias);
       return fail(
@@ -207,11 +205,9 @@ export class Router {
     if (Router.RESERVED.has(a.from)) return fail("bad_args", `"${a.from}" is reserved — you can't send as the broker.`);
     const denied = this.requireOwner(req, a.from); // you may only send AS yourself
     if (denied) return denied;
-    // Proof of life: this is a token-authenticated request from the alias's real
-    // owner, so the process IS alive right now — refresh liveness before the
-    // content guards below. A send refused for an empty body or bad kind still
-    // came from a live agent; requireOwner already blocked anyone who isn't it,
-    // so a dead session can't fake this.
+    // A token-authenticated send proves the owner is alive right now — refresh
+    // liveness before the content guards: a send refused for an empty body or bad
+    // kind still came from a live agent, and requireOwner blocked anyone who isn't.
     this.registry.touchByAct(a.from);
     // Strict identity: an unregistered `from` can't send — closes the window
     // where you forge a message from an alias before its owner registers.
@@ -305,14 +301,10 @@ export class Router {
       }
     }
 
-    // A directed query/request is something the sender waits on — track it for
-    // correlation. It auto-times-out only if an explicit ttl was given (or a
-    // default configured); by default it stays open until answered.
-    //
-    // The reply-by deadline is resolved HERE rather than in the CLI, so an ask sent
-    // over MCP — or by a stale compiled binary that predates the flag — still gets
-    // chased. `replyByS: null` is the sender explicitly opting out (a last message in
-    // a chain); undefined just means they didn't say, so they get the default.
+    // A directed query/request opens an awaiting (no auto-timeout unless a ttl was
+    // given). The reply-by deadline resolves HERE, not in the CLI, so an MCP ask or
+    // a stale compiled binary still gets chased; `replyByS: null` = the sender
+    // opted out, undefined = they didn't say, so they get the default.
     let replyBy: number | null = null;
     if (a.to !== "*" && (a.kind === "query" || a.kind === "request")) {
       const ttl = a.ttlS ?? this.defaultTtlS;
@@ -321,12 +313,9 @@ export class Router {
     }
 
     for (const t of targets) this.notify(t);
-    // Hand the deadline back rather than letting the caller assume one: the broker is
-    // the only party that knows what it will actually honour, and a CLI that guesses
-    // would be telling the sender a number nothing enforces.
-    // For a direct send, say what the roster knows about the recipient — a send
-    // to a long-dark alias succeeds by design (mail waits), but the sender
-    // deserves to know it isn't talking to anyone right now.
+    // Hand back the deadline the broker will actually honour (a CLI guess is a
+    // number nothing enforces) and the roster's view of the recipient — a send to
+    // a long-dark alias succeeds by design, but the sender deserves to know.
     const rec = a.to !== "*" && !isProjectAddress(a.to) ? this.registry.get(a.to) : null;
     return ok({
       msgId: msg.id,
@@ -637,15 +626,10 @@ export class Router {
       return fail("no_origin", `no message with id ${a.corrId}`);
     }
     const aw = this.backend.getAwaiting(a.corrId);
-    // Refuse only if the sender explicitly cancelled. Otherwise deliver — even after
-    // a timeout fired: a real (if late) answer beats a provisional timeout, and a
-    // human-paced reply hours later is the normal case, not an error to discard.
-    //
-    // Refuse LOUDLY, and with the way out: the old `ok({dropped:true})` binned a
-    // composed reply while reading as success — a field agent lost its whole report
-    // to that, twice in one day. The replier keeps its own text; what it needs from
-    // us is the fact of non-delivery and the exact command that still reaches the
-    // asker. Their pending copy of the dead ask is consumed so it stops nagging.
+    // Only an explicit cancel refuses — a real late answer beats a provisional
+    // timeout. And refuse LOUDLY with the way out: `ok({dropped:true})` once binned
+    // a composed reply while reading as success (a field agent lost its report to
+    // that, twice in one day). The dead ask's pending copy is consumed so it stops nagging.
     if (aw?.closed && aw.closedReason === "cancelled") {
       this.backend.markConsumed(a.corrId, a.from);
       if (isProjectAddress(origin.toAlias)) this.backend.markConsumed(a.corrId, origin.toAlias);
@@ -685,15 +669,11 @@ export class Router {
     // answer, so the recipient stops being chased — nudging someone who just told you
     // they're working on it is a claim about their state that their own reply refutes.
     if (!terminal) this.backend.deferNudge(a.corrId, this.now());
-    // Answering a message consumes it: the replier has clearly acted on the ask,
-    // so their own still-queued delivery of the origin must stop counting as
-    // pending — otherwise the turn-end push keeps reminding about an
-    // already-answered request until the next inbox drain (found live 2026-07-10).
+    // Answering consumes the replier's own still-queued copy of the ask, or the
+    // turn-end push keeps reminding about an answered request (found live 2026-07-10).
     this.backend.markConsumed(a.corrId, a.from);
-    // A session may hold several aliases. When the ask was delivered to a SIBLING
-    // alias of the replier — a query to catch-fbl-7c answered from vb-opus, one
-    // session — consume that delivery too, or the addressed alias keeps showing the
-    // ask as owed and the turn-end nudge fires about a question already answered.
+    // An ask delivered to a SIBLING alias of the replier (one session) is consumed
+    // there too, or the addressed alias keeps showing an answered ask as owed.
     const fromSid = this.registry.get(a.from)?.sessionId ?? null;
     if (
       fromSid &&
@@ -930,11 +910,9 @@ export class Router {
     }
     const denied = this.requireOwner(req, origin.fromAlias);
     if (denied) return denied;
-    // Tell the recipient the ask was withdrawn, rather than letting them find out by
-    // composing an answer into a refusal (a field agent lost a finished report that
-    // way). A copy they never saw is consumed silently; a copy already in front of
-    // them gets a notice — kind "response" so the wake path carries it — and stops
-    // counting as pending. Only a real state change notifies: a second cancel is a no-op.
+    // A recipient who SAW the ask is told it was withdrawn (kind "response" so the
+    // wake path carries it) rather than finding out by composing an answer into a
+    // refusal; a copy never seen is consumed silently. A second cancel is a no-op.
     const wasOpen = this.backend.isAwaitingOpen(a.corrId);
     this.backend.closeAwaiting(a.corrId, "cancelled");
     if (origin && wasOpen) {
