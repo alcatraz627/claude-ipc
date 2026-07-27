@@ -53,6 +53,10 @@ CREATE TABLE IF NOT EXISTS registry_snapshot (
   pid INTEGER, tty TEXT, last_seen REAL, status TEXT, token TEXT, succeeded_sid TEXT,
   service INTEGER);
 
+-- P3b inbox-event cursor: one global monotonic counter + last seq per address.
+CREATE TABLE IF NOT EXISTS seq_state (key TEXT PRIMARY KEY, value INTEGER);
+CREATE TABLE IF NOT EXISTS address_seq (address TEXT PRIMARY KEY, seq INTEGER);
+
 -- A later message can supersede an earlier one (D2): the successor triaging
 -- inherited mail folds the countermanded arc. Advisory — display, not delivery.
 CREATE TABLE IF NOT EXISTS supersessions (
@@ -154,8 +158,9 @@ function toAwaiting(r: AwaitRow): Awaiting {
 
 export class SqliteBackend implements StorageBackend {
   private db: Database;
+  private seqCounter: number;
 
-  constructor(path = ":memory:") {
+  constructor(path = ":memory:", seqFloor = Math.floor(Date.now() / 1000)) {
     this.db = new Database(path);
     this.db.run("PRAGMA journal_mode = WAL");
     this.db.run("PRAGMA busy_timeout = 2000");
@@ -190,6 +195,26 @@ export class SqliteBackend implements StorageBackend {
         // column already present on an existing DB — fine
       }
     }
+    // Cursor never rewinds: resume from the persisted counter, floored to the
+    // boot clock so a lost/older store still mints above every seq handed out.
+    const persisted = (this.db.query(`SELECT value FROM seq_state WHERE key='counter'`).get() as { value: number } | null)
+      ?.value;
+    this.seqCounter = Math.max(persisted ?? 0, seqFloor);
+  }
+
+  private bumpSeq(addr: string): void {
+    this.seqCounter++;
+    this.db.query(`INSERT OR REPLACE INTO seq_state (key, value) VALUES ('counter', ?)`).run(this.seqCounter);
+    this.db.query(`INSERT OR REPLACE INTO address_seq (address, seq) VALUES (?, ?)`).run(addr, this.seqCounter);
+  }
+
+  lastEventSeq(addresses: string[]): number {
+    if (addresses.length === 0) return 0;
+    const placeholders = addresses.map(() => "?").join(",");
+    const r = this.db
+      .query(`SELECT MAX(seq) AS s FROM address_seq WHERE address IN (${placeholders})`)
+      .get(...addresses) as { s: number | null } | null;
+    return r?.s ?? 0;
   }
 
   append(m: Message): void {
@@ -225,9 +250,10 @@ export class SqliteBackend implements StorageBackend {
 
   enqueue(msgId: string, alias: string): void {
     const ts = (this.db.query("SELECT ts FROM messages WHERE id = ?").get(msgId) as { ts: number } | null)?.ts ?? 0;
-    this.db
+    const r = this.db
       .query(`INSERT OR IGNORE INTO deliveries (msg_id, to_alias, via, state, ts) VALUES (?,?,NULL,'queued',?)`)
       .run(msgId, alias, ts);
+    if (r.changes > 0) this.bumpSeq(alias); // an idempotent re-enqueue is not an event
   }
 
   pending(alias: string, opts?: { consume?: boolean }): Message[] {
@@ -239,9 +265,10 @@ export class SqliteBackend implements StorageBackend {
       )
       .all(alias) as MsgRow[];
     if (opts?.consume) {
-      this.db
+      const r = this.db
         .query(`UPDATE deliveries SET state='consumed' WHERE to_alias = ? AND state IN ('queued','delivered','surfaced')`)
         .run(alias);
+      if (r.changes > 0) this.bumpSeq(alias);
     }
     return rows.map(toMessage);
   }
@@ -253,7 +280,14 @@ export class SqliteBackend implements StorageBackend {
   }
 
   markConsumed(msgId: string, alias: string): void {
-    this.db.query(`UPDATE deliveries SET state='consumed' WHERE msg_id=? AND to_alias=?`).run(msgId, alias);
+    // Only leaving the pending set is an event; consuming an already-settled row isn't.
+    const r = this.db
+      .query(
+        `UPDATE deliveries SET state='consumed' WHERE msg_id=? AND to_alias=? AND state IN ('queued','delivered','surfaced')`,
+      )
+      .run(msgId, alias);
+    if (r.changes > 0) this.bumpSeq(alias);
+    else this.db.query(`UPDATE deliveries SET state='consumed' WHERE msg_id=? AND to_alias=?`).run(msgId, alias);
   }
 
   markSurfaced(msgId: string, alias: string): void {
@@ -289,9 +323,12 @@ export class SqliteBackend implements StorageBackend {
   }
 
   setConsent(msgId: string, alias: string, accepted: boolean): void {
-    this.db
-      .query(`UPDATE deliveries SET state=? WHERE msg_id=? AND to_alias=?`)
-      .run(accepted ? "accepted" : "declined", msgId, alias);
+    const state = accepted ? "accepted" : "declined";
+    const r = this.db
+      .query(`UPDATE deliveries SET state=? WHERE msg_id=? AND to_alias=? AND state IN ('queued','delivered','surfaced')`)
+      .run(state, msgId, alias);
+    if (r.changes > 0) this.bumpSeq(alias);
+    else this.db.query(`UPDATE deliveries SET state=? WHERE msg_id=? AND to_alias=?`).run(state, msgId, alias);
   }
 
   deliveriesFor(msgId: string): Delivery[] {

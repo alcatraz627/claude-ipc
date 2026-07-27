@@ -973,13 +973,18 @@ export class Router {
     return ok({ cancelled: true });
   }
 
-  /** Cheap pending-count for an alias — for a tab-title segment that runs every turn. */
+  /**
+   * Cheap pending-count for an alias — for a tab-title segment that runs every turn.
+   * `seq` rides along (P3b): a monotonic inbox-event cursor that moves on any
+   * pending-set change, so a watcher can see a net-zero window the count hides.
+   */
   private count(req: Request): Response {
     const a = req.args as { alias?: string; project?: string };
     if (a.project) {
       // Ungated like a peek — a cheap number, and openness is the anti-silo stance.
-      const n = this.projectMailboxes(a.project).reduce((s, addr) => s + this.backend.pending(addr).length, 0);
-      return ok({ count: n });
+      const boxes = this.projectMailboxes(a.project);
+      const n = boxes.reduce((s, addr) => s + this.backend.pending(addr).length, 0);
+      return ok({ count: n, seq: this.backend.lastEventSeq(boxes) });
     }
     if (!a.alias) return fail("bad_args", "count needs alias");
     // Absence is an error, never a zero: an unregistered alias has NO inbox, and
@@ -991,8 +996,9 @@ export class Router {
     }
     const denied = this.requireOwner(req, a.alias); // your own inbox size only
     if (denied) return denied;
-    const messages = this.dedupeById(this.sessionBoxes(a.alias).flatMap((addr) => this.backend.pending(addr)));
-    return ok({ count: messages.length });
+    const boxes = this.sessionBoxes(a.alias);
+    const messages = this.dedupeById(boxes.flatMap((addr) => this.backend.pending(addr)));
+    return ok({ count: messages.length, seq: this.backend.lastEventSeq(boxes) });
   }
 
   /** Drop offline peers idle past a window — clears the dead-session graveyard. */

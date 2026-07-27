@@ -82,6 +82,14 @@ describe("session-scope invariant — personal mailbox ops span all of a session
     expect(n).toBe(3); // for-primary + for-sibling + one broadcast, not two
   });
 
+  // The cursor is session-scoped like the count it rides on: sibling-box events move it.
+  test("count seq: an event on the SIBLING box moves the anchored alias's cursor", () => {
+    const s0 = okOf(call("count", { alias: "lane-primary" }, "lane-primary")).seq as number;
+    okOf(call("send", { from: "sender", to: "lane-sibling", kind: "inform", body: "sibling-event" }, "sender"));
+    const s1 = okOf(call("count", { alias: "lane-primary" }, "lane-primary")).seq as number;
+    expect(s1).toBeGreaterThan(s0);
+  });
+
   // Anchoring on the OTHER sibling must give the identical session view.
   test("the view is identical regardless of which sibling alias anchors it", () => {
     const viaPrimary = bodiesOf(okOf(call("check", { alias: "lane-primary" }, "lane-primary"))).sort();

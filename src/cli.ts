@@ -149,7 +149,7 @@ function parseDuration(s: string): number | null {
 
 // Presence-only flags: never consume the following token as a value, so they can
 // sit anywhere on the line (e.g. `reply <id> --from x --partial <body...>`).
-const BOOLEAN_FLAGS = new Set(["partial", "consume", "no-reply-expected", "operator", "all", "service"]);
+const BOOLEAN_FLAGS = new Set(["partial", "consume", "no-reply-expected", "operator", "all", "service", "cursor"]);
 
 function parse(argv: string[]): { cmd: string; positional: string[]; flags: Record<string, FlagValue> } {
   const cmd = argv[0] ?? "help";
@@ -195,9 +195,12 @@ const USAGE = `claude-ipc — cross-session messaging
   orphans [--project [dir]] [--triage]  (dead sessions' waiting mail; --triage folds superseded/stale arcs)
   supersede <old-id> --by <new-id> [--from <a>]  (your later message replaces an earlier one — successors fold it)
   who    <query> [--json]    (resolve a half-remembered name → ranked, successor-aware matches)
-  count  <alias>             (pending count — cheap, for tab-title segments. Session-scoped;
+  count  <alias> [--cursor]  (pending count — cheap, for tab-title segments. Session-scoped;
                               can DECREASE (TTL sweep, sibling consume); FAILS on an
-                              unregistered alias rather than reading as an empty box)
+                              unregistered alias rather than reading as an empty box.
+                              --cursor appends seq=<n>: a monotonic inbox-event cursor that
+                              moves on ANY inbox change and survives broker restarts, so a
+                              net-zero window — one message in, one consumed — is visible)
   log    [--peer <a>] [--since <epoch>]
   status <msg-id>            (a message's delivery + response lifecycle)
   sent   <msg-id> [--json]   (delivery state of a message YOU sent, per recipient — did they see it?)
@@ -224,7 +227,7 @@ export const COMMAND_FLAGS: Record<string, string[]> = {
   send: ["to", "to-project", "from", "kind", "ttl", "reply-by", "no-reply-expected", "body", "body-file"],
   reply: ["from", "corr", "status", "partial", "body", "body-file"],
   inbox: ["alias", "consume", "project"],
-  count: ["alias", "project"],
+  count: ["alias", "project", "cursor"],
   orphans: ["project", "triage"],
   supersede: ["by", "from"],
   prune: ["offline-for"],
@@ -796,19 +799,33 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
         return 0;
       }
       case "count": {
+        const withCursor = flags.cursor === true;
+        // "N seq=M", or the bare count without --cursor. A broker that predates the
+        // cursor returns no seq — fail rather than print a fabricated seq=0 a
+        // watcher would trust forever (none-not-fabricate).
+        const render = (r: { count: number; seq?: number }): number => {
+          if (!withCursor) {
+            out(String(r.count));
+            return 0;
+          }
+          if (r.seq === undefined) {
+            console.error("this broker predates --cursor (no seq in its count response) — redeploy the broker, or poll without --cursor");
+            return 1;
+          }
+          out(`${r.count} seq=${r.seq}`);
+          return 0;
+        };
         if (flags.project) {
           const dir = await resolveProjectDir(flags.project, client);
           if (typeof dir !== "string") return 2;
-          out(String((await client.countProject(dir)).count));
-          return 0;
+          return render((await client.countProject(dir)) as { count: number; seq?: number });
         }
         const alias = positional[0] ?? String(flags.alias ?? "");
         if (!alias) {
-          console.error("count <alias> (or count --project [dir])");
+          console.error("count <alias> [--cursor] (or count --project [dir])");
           return 2;
         }
-        out(String((await client.count(alias)).count));
-        return 0;
+        return render((await client.count(alias)) as { count: number; seq?: number });
       }
       case "projects": {
         out(await client.projects());

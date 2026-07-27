@@ -18,6 +18,22 @@ export class MemoryBackend implements StorageBackend {
   private deliveries = new Map<string, Delivery>();
   private awaiting = new Map<string, Awaiting>();
   private registry: RegistryEntry[] = [];
+  // P3b cursor state. The floor makes a restarted (= rebuilt) backend mint seqs
+  // above anything the old life handed out, so a watcher's cursor never rewinds.
+  private seqCounter: number;
+  private addrSeq = new Map<string, number>();
+
+  constructor(seqFloor = Math.floor(Date.now() / 1000)) {
+    this.seqCounter = seqFloor;
+  }
+
+  private bumpSeq(addr: string): void {
+    this.addrSeq.set(addr, ++this.seqCounter);
+  }
+
+  lastEventSeq(addresses: string[]): number {
+    return addresses.reduce((max, a) => Math.max(max, this.addrSeq.get(a) ?? 0), 0);
+  }
 
   append(m: Message): void {
     if (!this.messages.has(m.id)) this.messages.set(m.id, { ...m });
@@ -33,16 +49,22 @@ export class MemoryBackend implements StorageBackend {
     if (this.deliveries.has(k)) return;
     const ts = this.messages.get(msgId)?.ts ?? 0;
     this.deliveries.set(k, { msgId, toAlias: alias, via: null, state: "queued", ts });
+    this.bumpSeq(alias);
   }
 
   pending(alias: string, opts?: { consume?: boolean }): Message[] {
     const out: Message[] = [];
+    let consumed = false;
     for (const d of this.deliveries.values()) {
       if (d.toAlias !== alias || !isPending(d.state)) continue;
       const m = this.messages.get(d.msgId);
       if (m) out.push({ ...m });
-      if (opts?.consume) d.state = "consumed";
+      if (opts?.consume) {
+        d.state = "consumed";
+        consumed = true;
+      }
     }
+    if (consumed) this.bumpSeq(alias);
     return out.sort((a, b) => a.ts - b.ts);
   }
 
@@ -56,7 +78,9 @@ export class MemoryBackend implements StorageBackend {
 
   markConsumed(msgId: string, alias: string): void {
     const d = this.deliveries.get(delKey(msgId, alias));
-    if (d) d.state = "consumed";
+    if (!d) return;
+    if (isPending(d.state)) this.bumpSeq(alias); // only leaving the pending set is an event
+    d.state = "consumed";
   }
 
   markSurfaced(msgId: string, alias: string): void {
@@ -78,7 +102,9 @@ export class MemoryBackend implements StorageBackend {
 
   setConsent(msgId: string, alias: string, accepted: boolean): void {
     const d = this.deliveries.get(delKey(msgId, alias));
-    if (d) d.state = accepted ? "accepted" : "declined";
+    if (!d) return;
+    if (isPending(d.state)) this.bumpSeq(alias);
+    d.state = accepted ? "accepted" : "declined";
   }
 
   deliveriesFor(msgId: string): Delivery[] {

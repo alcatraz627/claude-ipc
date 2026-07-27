@@ -190,6 +190,38 @@ function backendSuite(name: string, make: () => StorageBackend): void {
       expect(db.supersededBy("old-1")).toBe("new-1");
       expect(db.supersededBy("new-1")).toBeNull(); // the superseding message is not itself superseded
     });
+
+    // P3b — the event cursor: seqs move on pending-set MEMBERSHIP changes only.
+    test("event seq: enqueue and consume bump it; delivered/surfaced shuffles don't", () => {
+      expect(db.lastEventSeq(["bob"])).toBe(0); // nothing ever happened — honestly 0
+      db.append(m("e1", { ts: 1 }));
+      db.enqueue("e1", "bob");
+      const s1 = db.lastEventSeq(["bob"]);
+      expect(s1).toBeGreaterThan(0);
+      db.enqueue("e1", "bob"); // idempotent re-enqueue is not an event
+      expect(db.lastEventSeq(["bob"])).toBe(s1);
+      db.markDelivered("e1", "bob", "hook"); // still pending — not an event
+      db.markSurfaced("e1", "bob"); // still pending — not an event
+      expect(db.lastEventSeq(["bob"])).toBe(s1);
+      db.markConsumed("e1", "bob"); // leaves the pending set — an event
+      const s2 = db.lastEventSeq(["bob"]);
+      expect(s2).toBeGreaterThan(s1);
+      db.markConsumed("e1", "bob"); // consuming a settled row again is not an event
+      expect(db.lastEventSeq(["bob"])).toBe(s2);
+    });
+
+    test("event seq: consent (accept/decline) bumps; per-address isolation holds", () => {
+      db.append(m("e2", { ts: 1 }));
+      db.enqueue("e2", "bob");
+      db.enqueue("e2", "carol");
+      const bob = db.lastEventSeq(["bob"]);
+      db.setConsent("e2", "bob", true);
+      expect(db.lastEventSeq(["bob"])).toBeGreaterThan(bob);
+      const carol = db.lastEventSeq(["carol"]);
+      db.pending("carol", { consume: true }); // bulk consume bumps carol only
+      expect(db.lastEventSeq(["carol"])).toBeGreaterThan(carol);
+      expect(db.lastEventSeq(["dave"])).toBe(0); // an untouched address stays 0
+    });
   });
 }
 

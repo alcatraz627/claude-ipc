@@ -30,6 +30,14 @@ export interface StorageBackend {
   /** Every address (session or project) that still has pending mail. */
   pendingAddresses(): string[];
 
+  /**
+   * Newest inbox-event seq across these addresses; 0 = nothing ever happened.
+   * Minted from one global counter on pending-set membership changes only, so a
+   * net-zero window still moves the cursor; persisted + floored to the boot
+   * clock so a restart can only jump it forward, never rewind a watcher.
+   */
+  lastEventSeq(addresses: string[]): number;
+
   // sender's outstanding query/request
   openAwaiting(originId: string, expiresAt: number | null, replyByS?: number | null, nudgeFrom?: number): void; // expiresAt null = no deadline
   closeAwaiting(originId: string, reason: Awaiting["closedReason"]): void;
