@@ -69,7 +69,3 @@ export function actingCandidates(peers: RegistryEntry[], includeOffline = false)
     );
 }
 
-/** How many token-held identities the default (live+idle) view hides. */
-export function hiddenOfflineCount(peers: RegistryEntry[]): number {
-  return actingCandidates(peers, true).length - actingCandidates(peers, false).length;
-}

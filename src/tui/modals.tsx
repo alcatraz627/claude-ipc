@@ -6,7 +6,7 @@
 
 import { Box, Text } from "ink-terminal";
 import type { Color } from "ink-terminal/core";
-import { humanAge, type Message } from "../models.ts";
+import { humanDuration, type Message } from "../models.ts";
 import { USER_SENTINEL, type ActingCandidate } from "./identity.ts";
 import type { CopyField, PreviewData } from "./model.ts";
 import { inlineHead } from "./model.ts";
@@ -106,7 +106,7 @@ function candidateLine(c: ActingCandidate): { dot: { glyph: string; color: Color
     c.sessionId.slice(0, 8),
     ...(c.siblings.length ? [`+${c.siblings.length} name${c.siblings.length > 1 ? "s" : ""}`] : []),
     ...(c.service ? ["service"] : []),
-    ...(c.sinceSeenS !== undefined ? [`seen ${humanAge(0, c.sinceSeenS)} ago`] : []),
+    ...(c.sinceSeenS !== undefined ? [`seen ${humanDuration(c.sinceSeenS)} ago`] : []),
   ];
   return {
     dot: { glyph: STATUS_GLYPH[c.status] ?? "?", color: STATUS_COLOR[c.status] },

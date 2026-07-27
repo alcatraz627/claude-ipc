@@ -17,7 +17,7 @@ import { copyToClipboard } from "./clipboard.ts";
 import { ComposePanel, KINDS, REPLY_BY_OPTIONS, type ComposeState, type ComposeStep } from "./compose.tsx";
 import { EMPTY_SNAPSHOT, fetchFabric, type FabricSnapshot } from "./data.ts";
 import { editInEditor } from "./editor.ts";
-import { actingCandidates, hiddenOfflineCount, sessionIdentity, type ActingCandidate, type Identity } from "./identity.ts";
+import { actingCandidates, sessionIdentity, type ActingCandidate, type Identity } from "./identity.ts";
 import {
   actionsFor,
   copyFieldsForMessage,
@@ -58,7 +58,7 @@ type Modal =
   | { t: "help" }
   | { t: "overview" }
   | { t: "copy"; fields: CopyField[]; sel: number }
-  | { t: "identity"; candidates: ActingCandidate[]; sel: number; showOffline: boolean }
+  | { t: "identity"; candidates: ActingCandidate[]; sel: number; showOffline: boolean; hidden: number }
   | { t: "reply"; msg: Message; value: string }
   | { t: "decline"; msg: Message; value: string }
   | ComposeState
@@ -180,7 +180,9 @@ function App({ client }: { client: Client }) {
       setToast({ text: "no identity to act as — read-only", kind: "err" });
       return;
     }
-    setModal({ t: "identity", candidates, sel: 0, showOffline: false });
+    // hidden = token-held aliases the default view cuts; computed HERE, never in render
+    const hidden = actingCandidates(snapshot.peers, true).length - candidates.length;
+    setModal({ t: "identity", candidates, sel: 0, showOffline: false, hidden });
   }, [snapshot, identitySettled, modal]);
 
   useEffect(() => {
@@ -464,7 +466,8 @@ function App({ client }: { client: Client }) {
   function openIdentityPicker(): void {
     const candidates = actingCandidates(snapshot.peers);
     if (candidates.length === 0) return setToast({ text: "no registered identities to act as", kind: "err" });
-    setModal({ t: "identity", candidates, sel: 0, showOffline: false });
+    const hidden = actingCandidates(snapshot.peers, true).length - candidates.length;
+    setModal({ t: "identity", candidates, sel: 0, showOffline: false, hidden });
   }
 
   // Every incremental update is FUNCTIONAL: a burst of key-repeat events is
@@ -547,9 +550,12 @@ function App({ client }: { client: Client }) {
         if (key.pageUp) return moveModalSel(-10, modal.candidates.length - 1);
         if (key.pageDown) return moveModalSel(10, modal.candidates.length - 1);
         if (input === "o") {
-          // toggle the dead-alias tail; functional update, like every incremental
-          const show = !modal.showOffline;
-          return setModal({ t: "identity", candidates: actingCandidates(snapshot.peers, show), sel: 0, showOffline: show });
+          // functional: a key-repeated `o` toggles per replayed press, not once
+          return setModal((m) => {
+            if (!m || m.t !== "identity") return m;
+            const show = !m.showOffline;
+            return { t: "identity", candidates: actingCandidates(snapshot.peers, show), sel: 0, showOffline: show, hidden: m.hidden };
+          });
         }
         if (key.return) {
           const alias = modal.candidates[modal.sel]!.alias;
@@ -804,7 +810,7 @@ function App({ client }: { client: Client }) {
               candidates={modal.candidates}
               sel={modal.sel}
               showOffline={modal.showOffline}
-              hiddenCount={hiddenOfflineCount(snapshot.peers)}
+              hiddenCount={modal.hidden}
             />
           )
         ) : view === "peers" ? (

@@ -111,13 +111,18 @@ export interface RegistryEntry {
   token: string | null;
 }
 
-/** A compact human age for a past epoch-seconds timestamp: "45s", "12m", "3h", "2d". */
-export function humanAge(ts: number, nowS: number): string {
-  const s = Math.max(0, nowS - ts);
+/** A compact human duration for a span of seconds: "45s", "12m", "3h", "2d". */
+export function humanDuration(seconds: number): string {
+  const s = Math.max(0, seconds);
   if (s < 90) return `${Math.round(s)}s`;
   if (s < 5400) return `${Math.round(s / 60)}m`;
   if (s < 172800) return `${Math.round(s / 3600)}h`;
   return `${Math.round(s / 86400)}d`;
+}
+
+/** A compact human age for a past epoch-seconds timestamp: "45s", "12m", "3h", "2d". */
+export function humanAge(ts: number, nowS: number): string {
+  return humanDuration(nowS - ts);
 }
 
 /** Build a Message from the few fields a caller supplies, defaulting the rest. */
