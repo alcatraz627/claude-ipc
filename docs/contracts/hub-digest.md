@@ -79,7 +79,7 @@ under the Viewer Contract, `src/tui/data.ts` / `viewerOf`).
 
 | Field | Type | Meaning |
 |---|---|---|
-| `aliases` | string[] | Every alias registered to this session, newest last. |
+| `aliases` | string[] | Every alias registered to this session. Order is deterministic (sorted) but NOT meaningful — the broker records no claim order, so consumers must not read position as recency. |
 | `role` | string \| null | Reserved; `null` until role semantics ship (meld Phase 5). |
 | `liveness_claim` | `"live" \| "idle" \| "offline"` | The broker's OWN heartbeat-derived view — the same statuses `claude-ipc peers` prints. It is a claim, not process truth: consumers display it only when diffing against their own liveness source, never as the primary liveness of a card. |
 | `unread` | int \| null | Messages sitting unconsumed in the session's mailbox. |

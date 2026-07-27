@@ -201,6 +201,9 @@ const USAGE = `claude-ipc — cross-session messaging
                               --cursor appends seq=<n>: a monotonic inbox-event cursor that
                               moves on ANY inbox change and survives broker restarts, so a
                               net-zero window — one message in, one consumed — is visible)
+  digest [--project <dir>] [--json]  (hub-digest §5.1: one project's fabric state, session-keyed;
+                              read-only peek — consumes nothing, notifies nobody)
+  asks   --all [--json]      (hub-digest §5.2: every open ask machine-wide + orphan roster; read-only)
   log    [--peer <a>] [--since <epoch>]
   status <msg-id>            (a message's delivery + response lifecycle)
   sent   <msg-id> [--json]   (delivery state of a message YOU sent, per recipient — did they see it?)
@@ -228,6 +231,8 @@ export const COMMAND_FLAGS: Record<string, string[]> = {
   reply: ["from", "corr", "status", "partial", "body", "body-file"],
   inbox: ["alias", "consume", "project"],
   count: ["alias", "project", "cursor"],
+  digest: ["project", "json"],
+  asks: ["all", "json"],
   orphans: ["project", "triage"],
   supersede: ["by", "from"],
   prune: ["offline-for"],
@@ -829,6 +834,28 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
       }
       case "projects": {
         out(await client.projects());
+        return 0;
+      }
+      case "digest": {
+        // The hub-digest contract §5.1 (docs/contracts/hub-digest.md): one
+        // project's fabric state, session-keyed. Machine verb — always JSON;
+        // --json = compact one-liner for subprocess consumers.
+        const dir = flags.project ? await resolveProjectDir(flags.project, client) : process.cwd();
+        if (typeof dir !== "string") return 2;
+        const r = await client.digest(dir);
+        out(flags.json === true ? JSON.stringify(r) : JSON.stringify(r, null, 2));
+        return 0;
+      }
+      case "asks": {
+        if (flags.all !== true) {
+          console.error(
+            "asks --all [--json] — every open ask machine-wide + the orphan roster (hub-digest contract §5.2).\n" +
+              "For the asks THIS session owes, use: claude-ipc owed",
+          );
+          return 2;
+        }
+        const r = await client.asksAll();
+        out(flags.json === true ? JSON.stringify(r) : JSON.stringify(r, null, 2));
         return 0;
       }
       case "orphans": {

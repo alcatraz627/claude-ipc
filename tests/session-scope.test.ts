@@ -82,6 +82,16 @@ describe("session-scope invariant — personal mailbox ops span all of a session
     expect(n).toBe(3); // for-primary + for-sibling + one broadcast, not two
   });
 
+  // The digest keys by SESSION — sibling boxes collapse into one entry, mail spanning both.
+  test("digest groups a two-alias session into ONE sid-keyed entry", () => {
+    const r = okOf(call("digest", { project: "/w" }));
+    const sessions = r.sessions as Record<string, { aliases: string[]; unread: number }>;
+    expect(sessions["sid-lane"]).toBeDefined();
+    expect(sessions["sid-lane"]!.aliases.sort()).toEqual(["lane-primary", "lane-sibling"]);
+    expect(sessions["sid-lane"]!.unread).toBe(2); // for-primary + for-sibling, one entry
+    expect(Object.keys(sessions)).not.toContain("lane-primary");
+  });
+
   // The cursor is session-scoped like the count it rides on: sibling-box events move it.
   test("count seq: an event on the SIBLING box moves the anchored alias's cursor", () => {
     const s0 = okOf(call("count", { alias: "lane-primary" }, "lane-primary")).seq as number;

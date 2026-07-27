@@ -6,8 +6,11 @@
  * synchronous — so it is trivially testable with an injected clock + id source.
  */
 
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { sanitizeAlias } from "../aliasStore.ts";
 import { ttyForPid } from "../badge.ts";
+import { config } from "../config.ts";
 import { makeMessage, type DeliveredVia, type ErrorCode, type Kind, type Message, type Status } from "../models.ts";
 import {
   isProjectAddress,
@@ -17,7 +20,7 @@ import {
   sameLineage,
   withinProject,
 } from "../projectAddress.ts";
-import { PROTOCOL_VERSION, type Request, type Response } from "../protocol.ts";
+import { HUB_CONTRACT_VERSION, PROTOCOL_VERSION, type Request, type Response } from "../protocol.ts";
 import type { StorageBackend } from "../storage/base.ts";
 import type { Registry } from "./registry.ts";
 
@@ -98,6 +101,10 @@ export class Router {
           return this.orphans(req);
         case "supersede":
           return this.supersede(req);
+        case "digest":
+          return this.digest(req);
+        case "asks":
+          return this.asks(req);
         default:
           return fail("bad_op", `unsupported op: ${req.op}`);
       }
@@ -977,6 +984,183 @@ export class Router {
     const boxes = this.sessionBoxes(a.alias);
     const messages = this.dedupeById(boxes.flatMap((addr) => this.backend.pending(addr)));
     return ok({ count: messages.length, seq: this.backend.lastEventSeq(boxes) });
+  }
+
+  /** alias → sid from the alias-by-sid side files, for aliases the registry no longer knows. */
+  private aliasSidSideMap(): Map<string, string> {
+    const out = new Map<string, string>();
+    try {
+      for (const name of readdirSync(config.aliasDir)) {
+        if (name.endsWith(".tmp")) continue; // a rename in flight, not a mapping
+        try {
+          const alias = readFileSync(join(config.aliasDir, name), "utf8").trim();
+          if (alias) out.set(alias, decodeURIComponent(name));
+        } catch {
+          // unreadable side file — skip, the registry may still resolve it
+        }
+      }
+    } catch {
+      // no alias dir yet
+    }
+    return out;
+  }
+
+  /**
+   * One project's fabric state, session-keyed — the hub-digest contract §5.1
+   * (docs/contracts/hub-digest.md). A pure peek under the Viewer Contract: serving
+   * it consumes nothing, notifies nobody, and touches no liveness. Value laws:
+   * sessions are the unit (aliases are labels), absence is null never 0, and an
+   * obligation whose alias resolves to no session lands under `_unresolved`.
+   */
+  private digest(req: Request): Response {
+    const a = req.args as { project?: string };
+    if (!a.project) return fail("bad_args", "digest needs a project dir");
+    const dir = normalizeProjectPath(a.project);
+    const now = this.now();
+    const roster = this.registry.list();
+    const side = this.aliasSidSideMap();
+    const open = this.backend.openAwaitings();
+
+    const bySid = new Map<string, typeof roster>();
+    for (const e of roster) {
+      if (!e.cwd || !withinProject(e.cwd, dir)) continue;
+      bySid.set(e.sessionId, [...(bySid.get(e.sessionId) ?? []), e]);
+    }
+
+    // Dead boxes of this project still holding mail — one project-scoped number,
+    // repeated on every session row (the contract's orphaned_in_cwd).
+    const entries = new Map(roster.map((e) => [e.alias, e]));
+    let orphanedInCwd = 0;
+    for (const addr of this.backend.pendingAddresses()) {
+      if (isProjectAddress(addr)) continue;
+      const e = entries.get(addr);
+      if (e && e.status !== "offline") continue;
+      if (!e?.cwd || !withinProject(e.cwd, dir)) continue;
+      orphanedInCwd += this.backend.pending(addr).length;
+    }
+
+    const sessions: Record<string, unknown> = {};
+    for (const [sid, members] of bySid) {
+      const aliases = [...new Set(members.flatMap((m) => m.sessionAliases ?? [m.alias]))].sort();
+      const pendingMsgs = this.dedupeById(aliases.flatMap((addr) => this.backend.pending(addr)));
+      const chase = pendingMsgs.filter((m) => m.fromAlias === "ipc").length;
+      // Owed = an ask whose origin still sits pending in the session's boxes (the
+      // same rule the `owed` verb applies); ask_state carries the ledger's word.
+      const owed = pendingMsgs
+        .filter((m) => m.kind === "query" || m.kind === "request")
+        .map((m) => {
+          const aw = this.backend.getAwaiting(m.id);
+          return {
+            corr_id: m.id,
+            kind: m.kind,
+            age_s: Math.max(0, now - m.ts),
+            reply_by_s: aw?.replyByS ?? null,
+            ask_state: !aw || !aw.closed ? "open" : (aw.closedReason ?? "parked"),
+          };
+        });
+      const waitingOn = open.filter((w) => {
+        const o = this.backend.originOf(w.originId);
+        return o !== null && aliases.includes(o.fromAlias);
+      }).length;
+      const deadlines = owed
+        .filter((o) => o.ask_state === "open" && o.reply_by_s !== null)
+        .map((o) => (o.reply_by_s as number) - o.age_s);
+      const liveness = members.some((m) => m.status === "live")
+        ? "live"
+        : members.some((m) => m.status === "idle")
+          ? "idle"
+          : "offline";
+      sessions[sid] = {
+        aliases,
+        role: null, // reserved until role semantics ship
+        liveness_claim: liveness,
+        unread: pendingMsgs.length - chase,
+        owed,
+        waiting_on: waitingOn,
+        orphaned_in_cwd: orphanedInCwd,
+        oldest_deadline_s: deadlines.length ? Math.min(...deadlines) : null,
+        chase_noise_folded: chase,
+      };
+    }
+
+    // Never dropped: obligations whose recipient alias resolves to no session at
+    // all (registry AND side files both silent) are bucketed, machine-wide.
+    const unresolved = new Set<string>();
+    for (const w of open) {
+      const o = this.backend.originOf(w.originId);
+      if (!o || o.toAlias === "*" || isProjectAddress(o.toAlias)) continue;
+      if (this.registry.get(o.toAlias) || side.has(o.toAlias)) continue;
+      unresolved.add(o.toAlias);
+    }
+    sessions["_unresolved"] = {
+      aliases: [...unresolved].sort(),
+      note: "obligations whose alias has no alias-by-sid entry; bucketed, never dropped",
+    };
+
+    return ok({
+      protocol_version: PROTOCOL_VERSION,
+      contract_version: HUB_CONTRACT_VERSION,
+      ts: new Date(now * 1000).toISOString(),
+      sessions,
+    });
+  }
+
+  /**
+   * Every open ask on the broker plus the orphan roster — the hub-digest
+   * contract §5.2. Same Viewer-Contract law as digest: a pure peek.
+   */
+  private asks(req: Request): Response {
+    void req; // ungated, no args beyond the op itself
+    const now = this.now();
+    const side = this.aliasSidSideMap();
+    const sidOf = (alias: string): string | null => this.registry.get(alias)?.sessionId ?? side.get(alias) ?? null;
+    const NUDGE = ["none", "nudge", "last-call"] as const;
+
+    const asks = this.backend.openAwaitings().flatMap((w) => {
+      const o = this.backend.originOf(w.originId);
+      if (!o) return [];
+      const direct = o.toAlias !== "*" && !isProjectAddress(o.toAlias);
+      const rec = direct ? this.registry.get(o.toAlias) : null;
+      return [
+        {
+          corr_id: w.originId,
+          from_alias: o.fromAlias,
+          to_alias: o.toAlias,
+          to_sid: direct ? sidOf(o.toAlias) : null,
+          kind: o.kind,
+          age_s: Math.max(0, now - o.ts),
+          reply_by_s: w.replyByS,
+          nudge_stage: NUDGE[w.nudgedStage],
+          ask_state: "open",
+          project_cwd: isProjectAddress(o.toAlias) ? projectPath(o.toAlias) : (rec?.cwd || null),
+        },
+      ];
+    });
+
+    const orphans: Record<string, unknown>[] = [];
+    for (const addr of this.backend.pendingAddresses()) {
+      if (isProjectAddress(addr)) continue;
+      const e = this.registry.get(addr);
+      if (e && e.status !== "offline") continue;
+      const msgs = this.backend.pending(addr);
+      const chase = msgs.filter((m) => m.fromAlias === "ipc").length;
+      orphans.push({
+        alias: addr,
+        sid: sidOf(addr),
+        cwd: e?.cwd ?? null,
+        real_mail: msgs.length - chase,
+        chase_noise: chase,
+        oldest_ts: msgs.length ? new Date(Math.min(...msgs.map((m) => m.ts)) * 1000).toISOString() : null,
+      });
+    }
+
+    return ok({
+      protocol_version: PROTOCOL_VERSION,
+      contract_version: HUB_CONTRACT_VERSION,
+      ts: new Date(now * 1000).toISOString(),
+      asks,
+      orphans,
+    });
   }
 
   /** Drop offline peers idle past a window — clears the dead-session graveyard. */

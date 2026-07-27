@@ -282,6 +282,13 @@ export class Client {
   count(alias: string): Promise<any> {
     return this.call("count", { alias }, alias);
   }
+  // hub-digest contract verbs (docs/contracts/hub-digest.md) — pure peeks, ungated
+  digest(dir: string): Promise<any> {
+    return this.call("digest", { project: dir });
+  }
+  asksAll(): Promise<any> {
+    return this.call("asks", {});
+  }
   prune(offlineForS?: number): Promise<any> {
     return this.call("prune", { offlineForS });
   }
@@ -345,6 +352,8 @@ export interface Viewer {
   orphans(dir?: string, triage?: boolean): Promise<any>;
   count(alias: string): Promise<any>;
   countProject(dir: string): Promise<any>;
+  digest(dir: string): Promise<any>;
+  asksAll(): Promise<any>;
 }
 
 /** Wrap an existing Client as a Viewer. The wrapper is the whole implementation. */
@@ -359,5 +368,7 @@ export function viewerOf(c: Client): Viewer {
     orphans: (dir, triage) => c.orphans(dir, triage ?? false),
     count: (alias) => c.count(alias),
     countProject: (dir) => c.countProject(dir),
+    digest: (dir) => c.digest(dir),
+    asksAll: () => c.asksAll(),
   };
 }

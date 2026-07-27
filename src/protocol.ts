@@ -7,6 +7,9 @@
  */
 
 export const PROTOCOL_VERSION = 1;
+// The hub-digest contract version (docs/contracts/hub-digest.md) — additive-only
+// after v1; every digest/asks response carries it beside PROTOCOL_VERSION.
+export const HUB_CONTRACT_VERSION = 1;
 export const MAX_FRAME_BYTES = 8 * 1024 * 1024; // guard against a runaway frame
 
 export type Op =
@@ -29,7 +32,9 @@ export type Op =
   | "history"
   | "status"
   | "count"
-  | "prune";
+  | "prune"
+  | "digest"
+  | "asks";
 
 export interface Request {
   v: number;

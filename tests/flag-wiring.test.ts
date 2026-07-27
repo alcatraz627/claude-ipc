@@ -155,6 +155,14 @@ describe("flag wiring — every allowlisted flag observably does something", () 
     expect(captured("count")[0]).toMatchObject({ project: "/m" });
   });
 
+  test("digest --project reaches the broker; asks --all sends the op", async () => {
+    await cli(["digest", "--project", "/m", "--json"]);
+    expect(captured("digest")[0]).toMatchObject({ project: "/m" });
+    seen = [];
+    await cli(["asks", "--all", "--json"]);
+    expect(seen.filter((r) => r.op === "asks").length).toBe(1);
+  });
+
   test("orphans/prune/log/status flags reach the broker", async () => {
     await cli(["orphans", "--project", "/m"]);
     expect(captured("orphans")[0]).toMatchObject({ project: "/m" });

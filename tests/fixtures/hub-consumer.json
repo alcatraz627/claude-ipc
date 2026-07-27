@@ -1,0 +1,62 @@
+{
+  "_provenance": "Vendored consumer expectation for docs/contracts/hub-digest.md (contract_version 1). Parity checks compare field PRESENCE against a live response; protocol_version holds a string placeholder per the contract's fixture note — the live TYPE is pinned as integer by the contract itself.",
+  "digest": {
+    "protocol_version": "<int>",
+    "contract_version": 1,
+    "ts": "2026-07-24T10:00:00.000Z",
+    "sessions": {
+      "<session-uuid>": {
+        "aliases": ["vb-fable", "catch-vb-3f"],
+        "role": null,
+        "liveness_claim": "live",
+        "unread": 3,
+        "owed": [
+          {
+            "corr_id": "msg-fixture",
+            "kind": "query",
+            "age_s": 1200,
+            "reply_by_s": 300,
+            "ask_state": "open"
+          }
+        ],
+        "waiting_on": 1,
+        "orphaned_in_cwd": 0,
+        "oldest_deadline_s": 300,
+        "chase_noise_folded": 4
+      },
+      "_unresolved": {
+        "aliases": ["clade-ipc"],
+        "note": "obligations whose alias has no alias-by-sid entry; bucketed, never dropped"
+      }
+    }
+  },
+  "asks": {
+    "protocol_version": "<int>",
+    "contract_version": 1,
+    "ts": "2026-07-24T10:00:00.000Z",
+    "asks": [
+      {
+        "corr_id": "msg-fixture",
+        "from_alias": "asker",
+        "to_alias": "answerer",
+        "to_sid": "sid-answerer",
+        "kind": "query",
+        "age_s": 0,
+        "reply_by_s": 0,
+        "nudge_stage": "none",
+        "ask_state": "open",
+        "project_cwd": "/w"
+      }
+    ],
+    "orphans": [
+      {
+        "alias": "dead-alias",
+        "sid": null,
+        "cwd": "/w",
+        "real_mail": 2,
+        "chase_noise": 4,
+        "oldest_ts": "2026-07-24T09:00:00.000Z"
+      }
+    ]
+  }
+}
