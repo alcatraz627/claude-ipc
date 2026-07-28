@@ -176,10 +176,14 @@ export function LogView({
   onQueryCancel,
   onSelect,
   unreadable,
+  wrapRows,
+  spark,
 }: {
   history: Message[]; // newest first
   sel: number;
   unreadable: boolean;
+  wrapRows: boolean; // w: rows wrap full bodies instead of one-line heads
+  spark: string; // 24h traffic sparkline, computed over the UNFILTERED history
   nowS: number;
   operator: boolean;
   deliveries: string[] | null; // per-recipient lifecycle, only for a message the viewer sent
@@ -206,7 +210,7 @@ export function LogView({
               placeholder="search bodies + routes (! = regex)"
             />
           )}
-          <Text dim>{`last 24h · ${history.length} messages · bodies: ${operator ? "OPERATOR (all)" : "party-scoped"} (o toggles)`}</Text>
+          <Text dim>{`last 24h ${spark} · ${history.length} messages · bodies: ${operator ? "OPERATOR (all)" : "party-scoped"} (o toggles)`}</Text>
           <ScrollBox flexGrow={1}>
             {history.length === 0 && (
               <Text dim>{unreadable ? "history UNREADABLE: the read failed this pass" : "no traffic in the last 24h"}</Text>
@@ -215,12 +219,12 @@ export function LogView({
               const l = logLine(msg, nowS);
               return (
                 <Box key={msg.id} onClick={() => onSelect(i)}>
-                  <Text wrap="truncate-end">
+                  <Text wrap={wrapRows ? "wrap" : "truncate-end"}>
                     <Text bold color={theme.accent}>{i === sel ? "› " : "  "}</Text>
                     <Text dim>{l.age.padStart(4)} </Text>
                     <Text>{l.route}</Text>
                     <Text color={kindColor(msg.kind, msg.status)}>{` ${l.kind} `}</Text>
-                    <Text dim>{l.head}</Text>
+                    <Text dim>{wrapRows ? sanitizeBlock(msg.body).replace(/\n/g, " ␤ ") || l.head : l.head}</Text>
                   </Text>
                 </Box>
               );

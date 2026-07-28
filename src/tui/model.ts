@@ -102,6 +102,23 @@ export function groupRoster(peers: RegistryEntry[], selfAlias?: string): RosterR
  * A leading `!` switches to a regex (btop's convention); while the regex is
  * still invalid mid-typing, nothing matches — the empty state says so.
  */
+/** Traffic over the window as bar glyphs, oldest bucket first; a flat baseline
+ *  means "counted, zero" — an unreadable history never reaches this. */
+export function trafficSparkline(history: Message[], nowS: number, buckets = 12, spanS = 24 * 3600): string {
+  const counts = new Array<number>(buckets).fill(0);
+  const bucketS = spanS / buckets;
+  for (const m of history) {
+    const age = nowS - m.ts;
+    if (age < 0 || age >= spanS) continue;
+    const idx = buckets - 1 - Math.floor(age / bucketS);
+    counts[idx] = (counts[idx] ?? 0) + 1;
+  }
+  const glyphs = "▁▂▃▄▅▆▇█";
+  const max = Math.max(...counts);
+  if (max === 0) return "▁".repeat(buckets);
+  return counts.map((c) => glyphs[c === 0 ? 0 : Math.max(1, Math.round((c / max) * 7))]).join("");
+}
+
 /** How many picker rows are visible at once — one source for both pickers (review #18);
  *  a real machine has 100+ registered aliases and an unwindowed list overflows the frame. */
 export const PICKER_WINDOW = 9;

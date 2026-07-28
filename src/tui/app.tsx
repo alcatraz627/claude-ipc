@@ -29,6 +29,7 @@ import {
   filterMessages,
   filterRoster,
   rosterFilterInvalid,
+  trafficSparkline,
   ROSTER_SORTS,
   sortRoster,
   groupRoster,
@@ -71,20 +72,23 @@ interface Toast {
   kind: "ok" | "err";
 }
 
-/** The footer keybar: accented key, dim label — the same convention as the help overlay. */
-function KeyHints({ pairs }: { pairs: [string, string][] }) {
+/** The footer keybar: accented key, dim label — the same convention as the help
+ *  overlay. Hints are click targets (R8): a click dispatches the single-char key. */
+function KeyHints({ pairs, onKey }: { pairs: [string, string][]; onKey?: (k: string) => void }) {
   return (
-    <Text dim wrap="truncate-end">
+    <Box>
       {pairs.map(([k, label], i) => (
-        <Text key={k}>
-          {i > 0 ? " · " : ""}
-          <Text bold color={theme.accent}>
-            {k}
+        <Box key={k} onClick={onKey && k.length === 1 ? () => onKey(k) : undefined}>
+          <Text dim wrap="truncate-end">
+            {i > 0 ? " · " : ""}
+            <Text bold color={theme.accent}>
+              {k}
+            </Text>
+            {` ${label}`}
           </Text>
-          {` ${label}`}
-        </Text>
+        </Box>
       ))}
-    </Text>
+    </Box>
   );
 }
 
@@ -288,6 +292,7 @@ function App({ client }: { client: Client }) {
   const threadFor = thread && thread.msgId === selectedMsg?.id ? thread : null;
 
   const [logDeliv, setLogDeliv] = useState<{ msgId: string; rows: string[] } | null>(null);
+  const [logWrap, setLogWrap] = useState(false);
 
   // memoized: the 1s clock tick re-rendered five sorts of the 24h window per
   // refresh interval (review #11)
@@ -705,6 +710,7 @@ function App({ client }: { client: Client }) {
         setLogOperator((v) => !v);
         return setToast({ text: logOperator ? "bodies: party-scoped" : "bodies: OPERATOR — everything on this machine", kind: "ok" });
       }
+      if (input === "w" && view === "log") return setLogWrap((v) => !v); // R14: rows wrap full bodies
       if (input === "/" && view === "log") return setLogQueryEditing(true);
       if (key.escape && view === "log" && logQuery) {
         // like the roster filter: Esc clears the search before it means "quit"
@@ -935,6 +941,8 @@ function App({ client }: { client: Client }) {
             sel={logClamped}
             nowS={nowS}
             unreadable={snapshot.unreadable.history}
+            wrapRows={logWrap}
+            spark={trafficSparkline(snapshot.history, nowS)}
             operator={logOperator}
             deliveries={logDeliv && logDeliv.msgId === logSorted[logClamped]?.id ? logDeliv.rows : null}
             query={logQuery}
@@ -962,9 +970,10 @@ function App({ client }: { client: Client }) {
                   : view === "peers"
                     ? [["↑↓", "move"], ["enter", "compose"], ["y", "copy"], ["/", "filter"], ["<>", "sort"], ["o", "offline"], ["i/→", "inbox"]]
                     : view === "log"
-                      ? [["↑↓", "move"], ["/", "search"], ["o", "operator bodies"], ["y", "copy"], ["tab", "views"]]
+                      ? [["↑↓", "move"], ["/", "search"], ["w", "wrap"], ["o", "operator bodies"], ["y", "copy"], ["tab", "views"]]
                       : [["↑↓", "move"], ["y", "copy"], ["tab", "views"], ["R", "refresh"]]
               }
+              onKey={(k) => dispatchOne(k, NO_FLAGS)}
             />
           )}
           <Spacer />
@@ -973,7 +982,7 @@ function App({ client }: { client: Client }) {
               {toast.text}
             </Text>
           ) : (
-            <KeyHints pairs={[["?", "help"], ["q", "quit"]]} />
+            <KeyHints pairs={[["?", "help"], ["q", "quit"]]} onKey={(k) => dispatchOne(k, NO_FLAGS)} />
           )}
         </Box>
       </Box>

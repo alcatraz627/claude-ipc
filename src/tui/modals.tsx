@@ -206,6 +206,7 @@ const HELP_LINES: [string, string][] = [
   ["+ / -", "slower / faster auto-refresh"],
   ["< / >", "roster sort: status · seen · alias · owed"],
   ["f", "inbox: show only what's owed"],
+  ["w", "log: wrap rows to full bodies"],
   ["m", "inbox: mark seen (local · never consumes)"],
   ["o", "expand / collapse offline peers"],
   ["c / enter", "compose (enter on a peer prefills them)"],

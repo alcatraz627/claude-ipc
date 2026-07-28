@@ -16,6 +16,7 @@ import {
   filterMessages,
   filterRoster,
   sortRoster,
+  trafficSparkline,
   groupRoster,
   inboxLine,
   logLine,
@@ -466,5 +467,25 @@ describe("polish pass: unforgeable hidden marker, labeled invalid filter", () =>
     expect(rosterFilterInvalid("!foo")).toBe(false);
     expect(rosterFilterInvalid("plain")).toBe(false);
     expect(rosterFilterInvalid("!")).toBe(false);
+  });
+});
+
+describe("trafficSparkline", () => {
+  test("buckets by age, newest rightmost, scaled to the max", () => {
+    const now = 24 * 3600;
+    const hist = [
+      msg({ id: "a", kind: "inform", fromAlias: "x", toAlias: "y", ts: now - 30 }), // newest bucket
+      msg({ id: "b", kind: "inform", fromAlias: "x", toAlias: "y", ts: now - 40 }),
+      msg({ id: "c", kind: "inform", fromAlias: "x", toAlias: "y", ts: 10 }), // oldest bucket
+      msg({ id: "d", kind: "inform", fromAlias: "x", toAlias: "y", ts: -5 }), // outside the window: dropped
+    ];
+    const s = trafficSparkline(hist, now, 12);
+    expect(s.length).toBe(12);
+    expect(s[11]).toBe("█"); // 2 messages = the max
+    expect(s[0]).not.toBe("▁"); // 1 message still visibly non-zero
+    expect(s[5]).toBe("▁"); // an empty bucket is the baseline
+  });
+  test("no traffic reads as a flat baseline, honestly zero", () => {
+    expect(trafficSparkline([], 1000, 8)).toBe("▁".repeat(8));
   });
 });
