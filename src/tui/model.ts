@@ -75,8 +75,10 @@ export function groupRoster(peers: RegistryEntry[], selfAlias?: string): RosterR
       key: [...aliases].sort().join(" "),
       alias: sanitizeInline(head.alias),
       also: group.slice(1).map((g) => sanitizeInline(g.alias)),
-      sessionId: head.sessionId,
-      cwd: head.cwd,
+      // cwd and sessionId are registrant-supplied too — an ANSI-bearing cwd
+      // would restyle the pane from the roster (review #8)
+      sessionId: sanitizeInline(head.sessionId),
+      cwd: sanitizeInline(head.cwd),
       status: head.status,
       lastSeen: Math.max(...group.map((g) => g.lastSeen)),
       // freshest sign of life across the session's aliases, matching the max lastSeen
@@ -175,6 +177,13 @@ export function pendingStats(messages: Message[]): { unread: number; owed: numbe
     unread: messages.length,
     owed: messages.filter((m) => m.kind === "query" || m.kind === "request").length,
   };
+}
+
+/** A session's box arrives once per sibling alias (check is session-scoped) —
+ *  count each message once, or two-alias sessions read double. */
+export function dedupeMessages(messages: Message[]): Message[] {
+  const seen = new Set<string>();
+  return messages.filter((m) => (seen.has(m.id) ? false : (seen.add(m.id), true)));
 }
 
 /** The most recent message that touches any of a session's aliases, if any. */
@@ -390,6 +399,7 @@ export function fabricOverview(
     projects: { pending: number }[];
     orphans: { pending: number }[];
     history: Message[];
+    unreadable?: { history: boolean; projects: boolean; orphans: boolean };
   },
   selfAlias: string | undefined,
 ): PreviewData {
@@ -398,8 +408,14 @@ export function fabricOverview(
   const idle = sessions.filter((r) => r.status === "idle").length;
   const offline = sessions.length - live - idle;
   // null = a peek that failed; it is not a peeked inbox and must not count as one
-  const peeked = [...snap.peerInboxes.values()].filter((b): b is Message[] => Array.isArray(b));
-  const stats = pendingStats(peeked.flat());
+  const peekedAliases = new Set(
+    [...snap.peerInboxes.entries()].filter(([, b]) => Array.isArray(b)).map(([a]) => a),
+  );
+  const boxes = [...snap.peerInboxes.values()].filter((b): b is Message[] => Array.isArray(b));
+  const stats = pendingStats(dedupeMessages(boxes.flat()));
+  // sibling aliases share one box — the honest denominator is sessions, not aliases
+  const peekedSids = new Set(snap.peers.filter((p) => peekedAliases.has(p.alias)).map((p) => p.sessionId));
+  const un = snap.unreadable;
   const projPending = snap.projects.reduce((n, p) => n + p.pending, 0);
   const orphHeld = snap.orphans.reduce((n, o) => n + o.pending, 0);
   return {
@@ -409,18 +425,30 @@ export function fabricOverview(
       { label: "sessions", value: `${sessions.length} (${live} live · ${idle} idle · ${offline} offline)` },
       {
         label: "pending",
-        value: `${stats.unread} unread · ${stats.owed} owed  (across ${peeked.length} peekable inbox${peeked.length === 1 ? "" : "es"})`,
+        value: `${stats.unread} unread · ${stats.owed} owed  (across ${peekedSids.size} peeked session${peekedSids.size === 1 ? "" : "s"})`,
         accent: stats.owed > 0,
       },
       {
         label: "projects",
-        value: `${snap.projects.length} mailbox${snap.projects.length === 1 ? "" : "es"} · ${projPending} pending`,
+        value: un?.projects
+          ? "unknown — the projects read failed this pass"
+          : `${snap.projects.length} mailbox${snap.projects.length === 1 ? "" : "es"} · ${projPending} pending`,
+        accent: un?.projects,
       },
       {
         label: "orphans",
-        value: `${snap.orphans.length} dead session${snap.orphans.length === 1 ? "" : "s"} · ${orphHeld} held`,
+        value: un?.orphans
+          ? "unknown — the orphans read failed this pass"
+          : `${snap.orphans.length} dead session${snap.orphans.length === 1 ? "" : "s"} · ${orphHeld} held`,
+        accent: un?.orphans,
       },
-      { label: "traffic", value: `${snap.history.length} message${snap.history.length === 1 ? "" : "s"} in the last 24h` },
+      {
+        label: "traffic",
+        value: un?.history
+          ? "unknown — the history read failed this pass"
+          : `${snap.history.length} message${snap.history.length === 1 ? "" : "s"} in the last 24h`,
+        accent: un?.history,
+      },
     ],
   };
 }

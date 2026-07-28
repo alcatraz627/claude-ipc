@@ -42,6 +42,9 @@ export interface FabricSnapshot {
   history: Message[]; // recent flow; bodies party-scoped unless operator was asked for
   projects: ProjectBox[];
   orphans: OrphanBox[];
+  // Reads that FAILED this pass: their arrays are empty for iteration, but a
+  // view must render labeled-unknown, never "all caught up" over a refusal.
+  unreadable: { myInbox: boolean; history: boolean; projects: boolean; orphans: boolean };
 }
 
 /** How far back the flow view reaches. History is uncapped broker-side; always bound it. */
@@ -56,6 +59,7 @@ export const EMPTY_SNAPSHOT: FabricSnapshot = {
   history: [],
   projects: [],
   orphans: [],
+  unreadable: { myInbox: true, history: true, projects: true, orphans: true },
 };
 
 export async function fetchFabric(client: Client, selfAlias: string | undefined, operator = false): Promise<FabricSnapshot> {
@@ -73,24 +77,47 @@ export async function fetchFabric(client: Client, selfAlias: string | undefined,
   // Count mailboxes only for sessions that can still act on them — peeking the
   // offline graveyard would be dozens of round trips for rows shown collapsed.
   const active = peers.filter((p) => p.status !== "offline").map((p) => p.alias);
+  // A failed read flags itself — an empty array alone would render as a clean
+  // fabric over a refusal (review #4).
+  const unreadable = { myInbox: false, history: false, projects: false, orphans: false };
   const [myInbox, history, peeked, projects, orphans] = await Promise.all([
     selfAlias ? peek(v, selfAlias) : Promise.resolve<Message[] | null>([]),
     v
       .history({ since: at - HISTORY_WINDOW_S }, selfAlias, operator)
       .then((r: { messages: Message[] }) => r.messages ?? [])
-      .catch(() => [] as Message[]),
+      .catch(() => {
+        unreadable.history = true;
+        return [] as Message[];
+      }),
     Promise.all(active.map(async (alias) => [alias, await peek(v, alias)] as const)),
     v
       .projects()
       .then((r: { projects: ProjectBox[] }) => r.projects ?? [])
-      .catch(() => [] as ProjectBox[]),
+      .catch(() => {
+        unreadable.projects = true;
+        return [] as ProjectBox[];
+      }),
     v
       .orphans(undefined, true) // triage=true → each box carries its open/folded split
       .then((r: { orphans: OrphanBox[] }) => r.orphans ?? [])
-      .catch(() => [] as OrphanBox[]),
+      .catch(() => {
+        unreadable.orphans = true;
+        return [] as OrphanBox[];
+      }),
   ]);
+  if (selfAlias && myInbox === null) unreadable.myInbox = true; // peek's null = "not ours to read"
 
-  return { at, brokerUp: true, peers, myInbox: myInbox ?? [], peerInboxes: new Map(peeked), history, projects, orphans };
+  return {
+    at,
+    brokerUp: true,
+    peers,
+    myInbox: myInbox ?? [],
+    peerInboxes: new Map(peeked),
+    history,
+    projects,
+    orphans,
+    unreadable,
+  };
 }
 
 /** Non-consuming inbox read; null when this alias's mailbox isn't ours to read. */

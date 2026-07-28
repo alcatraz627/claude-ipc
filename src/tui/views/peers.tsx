@@ -34,6 +34,7 @@ export interface HomeViewProps {
   inboxSel: number;
   focusedPane: Pane;
   identityKnown: boolean;
+  inboxUnreadable: boolean;
   seen: ReadonlySet<string>;
   owedOnly: boolean;
   thread: { question: string | null; replies: number } | null;
@@ -90,6 +91,7 @@ export function HomeView(p: HomeViewProps) {
             nowS={p.nowS}
             focused={p.focusedPane === "inbox"}
             identityKnown={p.identityKnown}
+            unreadable={p.inboxUnreadable}
             seen={p.seen}
             owedOnly={p.owedOnly}
             onSelect={p.onInboxSelect}

@@ -11,6 +11,7 @@ import {
   copyFieldsForMessage,
   copyFieldsForPeer,
   deliveryLines,
+  dedupeMessages,
   fabricOverview,
   filterMessages,
   filterRoster,
@@ -275,7 +276,7 @@ describe("fabricOverview", () => {
     expect(val("broker")).toBe("up");
     expect(val("sessions")).toContain("2 (1 live · 0 idle · 1 offline)");
     expect(val("pending")).toContain("2 unread · 1 owed");
-    expect(val("pending")).toContain("1 peekable inbox");
+    expect(val("pending")).toContain("1 peeked session");
     expect(val("projects")).toContain("3 pending");
     expect(val("orphans")).toContain("2 dead sessions · 7 held");
     expect(val("traffic")).toContain("1 message in the last 24h");
@@ -391,5 +392,59 @@ describe("peerPreview D3 honesty", () => {
     const t = data.rows.find((r) => r.label === "takeover")!;
     expect(t.value).toBe("succeeded dead session 01234567…");
     expect(t.accent).toBe(true);
+  });
+});
+
+describe("review-slate fixes: dedupe, honest denominators, sanitized identity fields", () => {
+  const msg = (id: string, over: Partial<Message> = {}): Message =>
+    makeMessage({ id, kind: "inform", fromAlias: "x", toAlias: "y", ts: 1, ...over });
+
+  test("dedupeMessages counts a sibling-box duplicate once", () => {
+    const m1 = msg("m1");
+    const m2 = msg("m2", { kind: "query" });
+    expect(dedupeMessages([m1, m2, m1, m2, m1]).map((m) => m.id)).toEqual(["m1", "m2"]);
+  });
+
+  test("fabricOverview: a two-alias session's box counts once, denominator is sessions", () => {
+    const box = [msg("m1"), msg("m2", { kind: "query" })];
+    const snap = {
+      brokerUp: true,
+      peers: [
+        peer({ alias: "lane-a", sessionId: "sid-1", sessionAliases: ["lane-a", "lane-b"] }),
+        peer({ alias: "lane-b", sessionId: "sid-1", sessionAliases: ["lane-a", "lane-b"] }),
+      ],
+      peerInboxes: new Map([
+        ["lane-a", box],
+        ["lane-b", box], // the SAME session box, once per alias — the inflation shape
+      ]),
+      projects: [],
+      orphans: [],
+      history: [],
+    };
+    const pending = fabricOverview(snap, undefined).rows.find((r) => r.label === "pending")!;
+    expect(pending.value).toContain("2 unread · 1 owed"); // not 4 and 2
+    expect(pending.value).toContain("1 peeked session"); // not 2 inboxes
+  });
+
+  test("fabricOverview: a failed read renders unknown, never a clean zero", () => {
+    const snap = {
+      brokerUp: true,
+      peers: [],
+      peerInboxes: new Map(),
+      projects: [],
+      orphans: [],
+      history: [],
+      unreadable: { history: true, projects: true, orphans: false },
+    };
+    const rows = fabricOverview(snap, undefined).rows;
+    expect(rows.find((r) => r.label === "traffic")!.value).toContain("unknown");
+    expect(rows.find((r) => r.label === "projects")!.value).toContain("unknown");
+    expect(rows.find((r) => r.label === "orphans")!.value).not.toContain("unknown"); // read fine, honestly zero
+  });
+
+  test("groupRoster neutralizes ANSI in registrant-supplied cwd and sessionId", () => {
+    const rows = groupRoster([peer({ alias: "evil", sessionId: "sid-\x1b[31mred", cwd: "/tmp/\x1b[2Jwipe" })]);
+    expect(rows[0]!.cwd).not.toContain("\x1b");
+    expect(rows[0]!.sessionId).not.toContain("\x1b");
   });
 });

@@ -6,7 +6,7 @@
  * chrome keys, then the focused view.
  */
 
-import { AlternateScreen, Box, render, Spacer, Text, useApp, useInput, useInterval } from "ink-terminal";
+import { AlternateScreen, Box, render, Spacer, Text, useApp, useInput } from "ink-terminal";
 import { useEffect, useRef, useState } from "react";
 import type { Client } from "../client.ts";
 import { spawnBroker } from "../daemonCtl.ts";
@@ -34,6 +34,7 @@ import {
   lastMessageFor,
   lastOpenAskFrom,
   peerPreview,
+  dedupeMessages,
   pendingStats,
   recipientOptions,
   type CopyField,
@@ -162,13 +163,26 @@ function App({ client }: { client: Client }) {
   const refreshRef = useRef(refresh);
   refreshRef.current = refresh;
 
+  /** A real setInterval: ink's shared-Clock useInterval only ticks while a
+   *  keepAlive subscriber (a spinner) drives the clock, and this app has none —
+   *  so it never fired at all (review #1). */
+  function useSteadyInterval(callback: () => void, ms: number | null): void {
+    const cb = useRef(callback);
+    cb.current = callback;
+    useEffect(() => {
+      if (ms === null) return;
+      const t = setInterval(() => cb.current(), ms);
+      return () => clearInterval(t);
+    }, [ms]);
+  }
+
   useEffect(() => {
     void refresh();
     // identity changes what "my inbox" means; the operator toggle changes
     // which bodies history may show — both refetch
   }, [identity?.alias, logOperator]);
-  useInterval(() => void refreshRef.current(), editorBusy || paused ? null : CADENCES[refreshIdx]!);
-  useInterval(() => setNowS(Math.floor(Date.now() / 1000)), editorBusy ? null : 1000);
+  useSteadyInterval(() => void refreshRef.current(), editorBusy || paused ? null : CADENCES[refreshIdx]!);
+  useSteadyInterval(() => setNowS(Math.floor(Date.now() / 1000)), editorBusy ? null : 1000);
 
   // A bare shell has no session alias: once the roster is here, offer the
   // registered identities we hold tokens for. Esc = browse read-only.
@@ -196,7 +210,8 @@ function App({ client }: { client: Client }) {
     const aliases = [row.alias, ...row.also];
     const boxes = aliases.map((a) => snapshot.peerInboxes.get(a)).filter((b): b is Message[] => Array.isArray(b));
     if (boxes.length === 0) return null;
-    return pendingStats(boxes.flat());
+    // sibling boxes are the SAME session box — dedupe or counts multiply (review #2)
+    return pendingStats(dedupeMessages(boxes.flat()));
   };
   const grouped = groupRoster(snapshot.peers, identity?.alias);
   const matched = sortRoster(
@@ -704,7 +719,10 @@ function App({ client }: { client: Client }) {
       }
       dispatchOne(input, key);
     },
-    { isActive: !filterEditing && !logQueryEditing && modal?.t !== "reply" && modal?.t !== "decline" },
+    // !editorBusy drains ink's raw-mode refcount to 0 while $EDITOR owns the
+    // tty — otherwise ink keeps its stdin reader and races vim for keystrokes
+    // (review #5)
+    { isActive: !editorBusy && !filterEditing && !logQueryEditing && modal?.t !== "reply" && modal?.t !== "decline" },
   );
 
   const refreshedAgo = snapshot.at ? Math.max(0, nowS - snapshot.at) : null;
@@ -835,6 +853,7 @@ function App({ client }: { client: Client }) {
             inboxSel={inboxSelClamped}
             focusedPane={focusedPane}
             identityKnown={identity !== null}
+            inboxUnreadable={snapshot.unreadable.myInbox}
             seen={seen}
             owedOnly={owedOnly}
             thread={threadFor}
@@ -854,6 +873,7 @@ function App({ client }: { client: Client }) {
                 nowS={nowS}
                 focused
                 identityKnown={identity !== null}
+                unreadable={snapshot.unreadable.myInbox}
                 seen={seen}
                 owedOnly={owedOnly}
                 onSelect={setInboxSel}
@@ -870,6 +890,7 @@ function App({ client }: { client: Client }) {
             projects={snapshot.projects}
             sel={projClamped}
             nowS={nowS}
+            unreadable={snapshot.unreadable.projects}
             peeked={snapshot.projects[projClamped] ? peekFor(`proj:${snapshot.projects[projClamped]!.path}`) : []}
             onSelect={setProjSel}
           />
@@ -878,6 +899,7 @@ function App({ client }: { client: Client }) {
             orphans={snapshot.orphans}
             sel={orphClamped}
             nowS={nowS}
+            unreadable={snapshot.unreadable.orphans}
             peeked={snapshot.orphans[orphClamped] ? peekFor(`orph:${snapshot.orphans[orphClamped]!.alias}`) : []}
             onSelect={setOrphSel}
           />
@@ -886,6 +908,7 @@ function App({ client }: { client: Client }) {
             history={logSorted}
             sel={logClamped}
             nowS={nowS}
+            unreadable={snapshot.unreadable.history}
             operator={logOperator}
             deliveries={logDeliv && logDeliv.msgId === logSorted[logClamped]?.id ? logDeliv.rows : null}
             query={logQuery}

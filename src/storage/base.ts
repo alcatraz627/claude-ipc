@@ -1,10 +1,7 @@
 /**
- * The durability contract every storage substrate implements.
- *
- * Keeping this interface narrow and backend-agnostic is what lets the broker
- * swap SQLite for honker (or an in-memory fake in tests) without any change to
- * the tool, hook, or wire contracts. Messages are immutable; all mutable state
- * lives in the delivery and awaiting records.
+ * The durability contract every storage substrate implements. Backend-agnostic:
+ * swap backends without touching tool/hook/wire code. Messages are immutable;
+ * mutable state lives in the delivery and awaiting records.
  */
 
 import type { Awaiting, Delivery, Message, RegistryEntry } from "../models.ts";

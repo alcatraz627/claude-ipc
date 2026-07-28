@@ -15,6 +15,7 @@ export interface InboxListProps {
   nowS: number;
   focused: boolean;
   identityKnown: boolean;
+  unreadable: boolean; // this pass's peek FAILED — empty must not read as caught-up
   seen: ReadonlySet<string>; // session-local reading aid — display only, never consumes
   owedOnly: boolean;
   onSelect: (i: number) => void;
@@ -36,11 +37,13 @@ export function InboxList(p: InboxListProps) {
       <ScrollBox ref={p.scrollRef as never} flexGrow={1}>
         {p.messages.length === 0 && (
           <Text dim>
-            {p.owedOnly
-              ? "nothing owed — f shows everything"
-              : p.identityKnown
-                ? "nothing pending — all caught up"
-                : "read-only: @ to pick an identity"}
+            {p.unreadable
+              ? "inbox UNREADABLE: the peek was refused this pass (pruned alias? re-register)"
+              : p.owedOnly
+                ? "nothing owed. f shows everything"
+                : p.identityKnown
+                  ? "nothing pending. all caught up"
+                  : "read-only: @ to pick an identity"}
           </Text>
         )}
         {p.messages.map((m, i) => {

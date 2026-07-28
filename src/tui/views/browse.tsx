@@ -49,19 +49,23 @@ export function ProjectsView({
   sel,
   nowS,
   peeked,
+  unreadable,
   onSelect,
 }: {
   projects: ProjectBox[];
   sel: number;
   nowS: number;
   peeked: Message[] | null;
+  unreadable: boolean;
   onSelect: (i: number) => void;
 }) {
   return (
     <Split
       list={
         <ScrollBox flexGrow={1}>
-          {projects.length === 0 && <Text dim>no project mailboxes with pending mail</Text>}
+          {projects.length === 0 && (
+            <Text dim>{unreadable ? "projects UNREADABLE: the read failed this pass" : "no project mailboxes with pending mail"}</Text>
+          )}
           {projects.map((p, i) => (
             <Box key={p.address} onClick={() => onSelect(i)}>
               {/* basename first — a deep path truncates at the end, and the leaf is the part a human recognizes */}
@@ -95,19 +99,25 @@ export function OrphansView({
   sel,
   nowS,
   peeked,
+  unreadable,
   onSelect,
 }: {
   orphans: OrphanBox[];
   sel: number;
   nowS: number;
   peeked: Message[] | null;
+  unreadable: boolean;
   onSelect: (i: number) => void;
 }) {
   return (
     <Split
       list={
         <ScrollBox flexGrow={1}>
-          {orphans.length === 0 && <Text dim>no dead sessions are holding mail — clean fabric</Text>}
+          {orphans.length === 0 && (
+            <Text dim>
+              {unreadable ? "orphans UNREADABLE: the read failed this pass, not a clean-fabric claim" : "no dead sessions are holding mail. clean fabric"}
+            </Text>
+          )}
           {orphans.map((o, i) => {
             // an auto-registered session leaves its full sid as the alias; 36 chars
             // of hex at body contrast bury the NAMED rows that carry the ranking
@@ -165,9 +175,11 @@ export function LogView({
   onQuerySubmit,
   onQueryCancel,
   onSelect,
+  unreadable,
 }: {
   history: Message[]; // newest first
   sel: number;
+  unreadable: boolean;
   nowS: number;
   operator: boolean;
   deliveries: string[] | null; // per-recipient lifecycle, only for a message the viewer sent
@@ -196,7 +208,9 @@ export function LogView({
           )}
           <Text dim>{`last 24h · ${history.length} messages · bodies: ${operator ? "OPERATOR (all)" : "party-scoped"} (o toggles)`}</Text>
           <ScrollBox flexGrow={1}>
-            {history.length === 0 && <Text dim>no traffic in the last 24h</Text>}
+            {history.length === 0 && (
+              <Text dim>{unreadable ? "history UNREADABLE: the read failed this pass" : "no traffic in the last 24h"}</Text>
+            )}
             {history.map((msg, i) => {
               const l = logLine(msg, nowS);
               return (

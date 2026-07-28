@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { readAliasForSession } from "../aliasStore.ts";
 import { config } from "../config.ts";
 import type { RegistryEntry } from "../models.ts";
+import { sanitizeInline } from "./model.ts";
 
 export interface Identity {
   alias: string;
@@ -52,11 +53,12 @@ export function actingCandidates(peers: RegistryEntry[], includeOffline = false)
   const pool = includeOffline || alive.length === 0 ? held : alive;
   return pool
     .map((p) => ({
-      alias: p.alias,
-      sessionId: p.sessionId,
+      // registrant-supplied strings render raw in the picker rows (review #8)
+      alias: sanitizeInline(p.alias),
+      sessionId: sanitizeInline(p.sessionId),
       status: p.status,
-      cwd: p.cwd,
-      siblings: (p.sessionAliases ?? []).filter((a) => a !== p.alias),
+      cwd: sanitizeInline(p.cwd),
+      siblings: (p.sessionAliases ?? []).filter((a) => a !== p.alias).map(sanitizeInline),
       service: p.service === true,
       sinceSeenS: p.sinceSeenS,
     }))
