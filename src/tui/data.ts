@@ -27,7 +27,7 @@ export interface OrphanBox {
   lastSeen: number | null;
   pending: number;
   oldestTs: number | null;
-  // triage split (D2): open = still-live word, folded = superseded by the sender's own
+  // triage split: open = still-live word, folded = superseded by the sender's own
   // later message. Advisory display only — folded mail stays in the box, still peekable.
   open?: number;
   folded?: number;

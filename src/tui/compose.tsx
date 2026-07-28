@@ -7,7 +7,7 @@
 import { Box, Text } from "ink-terminal";
 import type { EditState } from "./widgets/textarea-ops.ts";
 import { TextArea } from "./widgets/TextArea.tsx";
-import { inlineHead } from "./model.ts";
+import { inlineHead, PICKER_WINDOW } from "./model.ts";
 import { theme } from "./theme.ts";
 
 export type ComposeStep = "to" | "kind" | "body" | "replyBy" | "confirm";
@@ -46,8 +46,6 @@ const STEP_TITLE: Record<ComposeStep, string> = {
   replyBy: "compose 4/5 — how long will you wait?",
   confirm: "compose 5/5 — send it?",
 };
-
-const PICKER_WINDOW = 9;
 
 export function ComposePanel({
   c,

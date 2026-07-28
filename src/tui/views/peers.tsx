@@ -22,6 +22,7 @@ export interface HomeViewProps {
   nowS: number;
   preview: PreviewData | null;
   filter: string;
+  filterInvalid: boolean;
   filterEditing: boolean;
   onFilterChange: (v: string) => void;
   onFilterSubmit: () => void;
@@ -69,7 +70,13 @@ export function HomeView(p: HomeViewProps) {
           )}
           <ScrollBox ref={p.scrollRef as never} flexGrow={1}>
             {p.rows.length === 0 && (
-              <Text dim>{p.filter ? "nothing matches the filter" : "no peers registered yet"}</Text>
+              <Text dim>
+                {p.filterInvalid
+                  ? "the !regex is invalid, so nothing is shown. fix the pattern (esc clears)"
+                  : p.filter
+                    ? "nothing matches the filter"
+                    : "no peers registered yet"}
+              </Text>
             )}
             {p.rows.map((r, i) => (
               <Box key={r.key} onClick={() => p.onSelect(i)}>
@@ -127,8 +134,7 @@ function RosterLine({ row, selected, nowS }: { row: RosterRow; selected: boolean
       <Text color={color} dim={row.status === "offline"}>
         {glyph}
       </Text>
-      {/* selection lives in the prefix ONLY: a bold toggle here is an attr-only
-          cell change, which the renderer's damage diff repaints with stale colors */}
+      {/* selection lives in the prefix ONLY — same damage-diff constraint as the cursor above */}
       <Text bold={row.you}>{` ${inlineHead(name, 28).padEnd(29)}`}</Text>
       <Text dim>{`${inlineHead(basename(row.cwd) || "?", 16).padEnd(17)}${ageLabel(row.lastSeen, nowS)}`}</Text>
       {row.you ? <Text color={theme.accent}> you</Text> : null}

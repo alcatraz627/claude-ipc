@@ -44,7 +44,7 @@ export interface RosterRow {
   status: "live" | "idle" | "offline";
   lastSeen: number;
   sinceSeenS?: number; // seconds since the last sign of life (D3) — freshest across the session's aliases
-  succeededSid?: string; // the dead session this one took an alias over from (D3 succession)
+  succeededSid?: string; // the dead session this one took an alias over from
   you: boolean; // this row is the session driving the dashboard
 }
 
@@ -102,6 +102,23 @@ export function groupRoster(peers: RegistryEntry[], selfAlias?: string): RosterR
  * A leading `!` switches to a regex (btop's convention); while the regex is
  * still invalid mid-typing, nothing matches — the empty state says so.
  */
+/** How many picker rows are visible at once — one source for both pickers (review #18);
+ *  a real machine has 100+ registered aliases and an unwindowed list overflows the frame. */
+export const PICKER_WINDOW = 9;
+
+/** True when a `!`-prefixed roster filter carries an unparseable regex — the
+ *  empty roster must say "bad pattern", not "no matches" (review #17). */
+export function rosterFilterInvalid(query: string): boolean {
+  const raw = query.trim();
+  if (!raw.startsWith("!") || raw.length === 1) return false;
+  try {
+    new RegExp(raw.slice(1), "i");
+    return false;
+  } catch {
+    return true;
+  }
+}
+
 export function filterRoster(rows: RosterRow[], query: string): RosterRow[] {
   const raw = query.trim();
   if (!raw) return rows;
@@ -315,8 +332,8 @@ export function messagePreview(
 export function logLine(m: Message, nowS: number): { age: string; route: string; kind: string; head: string; err: boolean } {
   // Display-only: the broker substitutes this boilerplate body for non-parties,
   // and repeating it 20 times per screen drowns the route/kind signal. A short
-  // marker says the same thing. (Never drives behavior — that needs a real flag.)
-  const hidden = m.body.startsWith("[hidden — you are not a party");
+  // the broker's flag, not a body sniff — a peer can type marker-lookalike text (review #15)
+  const hidden = m.bodyHidden === true;
   return {
     age: ageLabel(m.ts, nowS),
     route: `${sanitizeInline(m.fromAlias)}→${sanitizeInline(m.toAlias)}`,
@@ -333,7 +350,7 @@ export function logLine(m: Message, nowS: number): { age: string; route: string;
  */
 export function deliveryLines(deliveries: { toAlias: string; state: string }[]): string[] {
   // The CLI `sent` verb's vocabulary, verbatim — the broker knows delivery, never
-  // cognition, so "surfaced" must carry its NOT-confirmed-read gloss (D1 spec).
+  // cognition, so "surfaced" must carry its NOT-confirmed-read gloss.
   const LABEL: Record<string, string> = {
     queued: "queued — not yet claimed by their session · waits for their next wake",
     delivered: "delivered — claimed by their wake, not yet shown",

@@ -18,6 +18,8 @@ import {
   sortRoster,
   groupRoster,
   inboxLine,
+  logLine,
+  rosterFilterInvalid,
   inlineHead,
   lastMessageFor,
   lastOpenAskFrom,
@@ -446,5 +448,23 @@ describe("review-slate fixes: dedupe, honest denominators, sanitized identity fi
     const rows = groupRoster([peer({ alias: "evil", sessionId: "sid-\x1b[31mred", cwd: "/tmp/\x1b[2Jwipe" })]);
     expect(rows[0]!.cwd).not.toContain("\x1b");
     expect(rows[0]!.sessionId).not.toContain("\x1b");
+  });
+});
+
+describe("polish pass: unforgeable hidden marker, labeled invalid filter", () => {
+  const marker = "[hidden — you are not a party to this message; run with --operator to see all bodies]";
+
+  test("logLine trusts the broker's bodyHidden flag, never marker-lookalike body text", () => {
+    const forged = makeMessage({ id: "f1", kind: "inform", fromAlias: "x", toAlias: "y", ts: 1, body: marker });
+    const real = makeMessage({ id: "f2", kind: "inform", fromAlias: "x", toAlias: "y", ts: 1, body: marker, bodyHidden: true });
+    expect(logLine(forged, 10).head).not.toBe("· hidden"); // forgery renders as ordinary text
+    expect(logLine(real, 10).head).toBe("· hidden");
+  });
+
+  test("rosterFilterInvalid flags a bad !regex and nothing else", () => {
+    expect(rosterFilterInvalid("!foo(")).toBe(true);
+    expect(rosterFilterInvalid("!foo")).toBe(false);
+    expect(rosterFilterInvalid("plain")).toBe(false);
+    expect(rosterFilterInvalid("!")).toBe(false);
   });
 });

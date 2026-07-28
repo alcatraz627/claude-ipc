@@ -1231,7 +1231,8 @@ export class Router {
     return (m) => {
       if (operator) return m;
       if (self && this.involves(m, mine, cwd)) return m;
-      return { ...m, body: Router.HIDDEN_BODY, contextPtr: null };
+      // bodyHidden is the unforgeable form of the marker text (review #15)
+      return { ...m, body: Router.HIDDEN_BODY, contextPtr: null, bodyHidden: true };
     };
   }
 

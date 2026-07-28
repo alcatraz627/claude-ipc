@@ -7,7 +7,7 @@
  */
 
 import { AlternateScreen, Box, render, Spacer, Text, useApp, useInput } from "ink-terminal";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Client } from "../client.ts";
 import { spawnBroker } from "../daemonCtl.ts";
 import { BrokerError } from "../client.ts";
@@ -28,6 +28,7 @@ import {
   fabricOverview,
   filterMessages,
   filterRoster,
+  rosterFilterInvalid,
   ROSTER_SORTS,
   sortRoster,
   groupRoster,
@@ -205,6 +206,19 @@ function App({ client }: { client: Client }) {
     return () => clearTimeout(t);
   }, [toast]);
 
+  const pauseSettled = useRef(false);
+  useEffect(() => {
+    if (!pauseSettled.current) {
+      pauseSettled.current = true; // mount is not a toggle
+      return;
+    }
+    if (paused) setToast({ text: "refresh paused. u resumes, R refreshes once", kind: "ok" });
+    else {
+      setToast({ text: "refresh resumed", kind: "ok" });
+      void refreshRef.current();
+    }
+  }, [paused]);
+
   // ---- derived view-model (pure fns over the snapshot) ----
   const sessionCounts = (row: RosterRow) => {
     const aliases = [row.alias, ...row.also];
@@ -217,7 +231,9 @@ function App({ client }: { client: Client }) {
   const matched = sortRoster(
     filterRoster(grouped, filter),
     ROSTER_SORTS[sortIdx]!,
-    (row) => sessionCounts(row)?.owed ?? 0,
+    // -1: an unreadable inbox sorts into its own band BELOW the genuine zeros,
+    // instead of impersonating "owes nothing" (review #16)
+    (row) => sessionCounts(row)?.owed ?? -1,
   );
   const visible = filter || offlineExpanded ? matched : matched.filter((r) => r.status !== "offline" || r.you);
   const offlineHidden = matched.length - visible.length;
@@ -265,21 +281,25 @@ function App({ client }: { client: Client }) {
     return () => {
       stale = true;
     };
-  }, [selectedMsg?.id, identity?.alias]);
+    // snapshot.at in the deps for the same reason as the deliveries effect: a
+    // watched thread's reply count must advance with the auto-refresh (review #9)
+  }, [selectedMsg?.id, identity?.alias, snapshot.at]);
 
   const threadFor = thread && thread.msgId === selectedMsg?.id ? thread : null;
 
   const [logDeliv, setLogDeliv] = useState<{ msgId: string; rows: string[] } | null>(null);
 
-  const logSorted = filterMessages(
-    [...snapshot.history].sort((a, b) => b.ts - a.ts),
-    logQuery,
+  // memoized: the 1s clock tick re-rendered five sorts of the 24h window per
+  // refresh interval (review #11)
+  const logSorted = useMemo(
+    () => filterMessages([...snapshot.history].sort((a, b) => b.ts - a.ts), logQuery),
+    [snapshot.history, logQuery],
   );
   const projClamped = Math.min(projSel, Math.max(0, snapshot.projects.length - 1));
   const orphClamped = Math.min(orphSel, Math.max(0, snapshot.orphans.length - 1));
   const logClamped = Math.min(logSel, Math.max(0, logSorted.length - 1));
 
-  // D1 in the LOG: when the selected flow message is one I sent, fetch its
+  // When the selected flow message is one I sent, fetch its
   // per-recipient delivery lifecycle. Only my own sends — a delivery ledger for
   // someone else's message is not mine to display.
   const selectedLogMsg = view === "log" ? logSorted[logClamped] : undefined;
@@ -325,7 +345,9 @@ function App({ client }: { client: Client }) {
     };
   }, [view, projClamped, orphClamped, snapshot.at]);
 
-  const peekFor = (key: string): Message[] | null => (peek?.key === key ? peek.messages : []);
+  // null = not fetched yet (or another target's data): the pane renders its
+  // loading branch, never "empty" beside a row saying N pending (review #6)
+  const peekFor = (key: string): Message[] | null => (peek?.key === key ? peek.messages : null);
 
   function openCopyMenu(): void {
     if (!selected) return;
@@ -475,7 +497,7 @@ function App({ client }: { client: Client }) {
   function startBroker(): void {
     const pid = spawnBroker();
     setToast({ text: `broker starting (pid ${pid})`, kind: "ok" });
-    setTimeout(() => void refresh(), 800);
+    setTimeout(() => void refreshRef.current(), 800); // the CURRENT refresh — an identity picked within 800ms must not be lost (review #14)
   }
 
   function openIdentityPicker(): void {
@@ -557,7 +579,7 @@ function App({ client }: { client: Client }) {
           setIdentity(null);
           setIdentitySettled(true);
           setModal(null);
-          setToast({ text: "read-only — press a to pick an identity", kind: "err" });
+          setToast({ text: "read-only: @ picks an identity", kind: "err" });
           return;
         }
         if (key.upArrow || input === "k") return moveModalSel(-1, modal.candidates.length - 1);
@@ -591,13 +613,9 @@ function App({ client }: { client: Client }) {
       return setView(VIEWS[digit - 1]!);
     if (input === "?") return setModal({ t: "help" });
     if (input === "R") return void refresh();
-    if (input === "u") {
-      const next = !paused;
-      setPaused(next);
-      if (next) setToast({ text: "refresh paused — u resumes, R refreshes once", kind: "ok" });
-      else void refresh();
-      return;
-    }
+    // functional: a key-repeated `u` must toggle per replayed press (review #12);
+    // the toast and resume-refresh follow the settled value in the effect below
+    if (input === "u") return setPaused((p) => !p);
     if (input === "+" || input === "=") return setRefreshIdx((i) => Math.min(CADENCES.length - 1, i + 1));
     if (input === "-") return setRefreshIdx((i) => Math.max(0, i - 1));
     if (input === "v") return setModal({ t: "overview" });
@@ -714,7 +732,14 @@ function App({ client }: { client: Client }) {
       // whole run ("jjjj", "\t\t") with no flags set — replay it per character
       // or held keys go dead (the parser only flags single keypresses).
       if (input.length > 1 && !key.return && !key.escape && !key.tab) {
-        for (const ch of input) dispatchOne(ch, NO_FLAGS);
+        // Replay only homogeneous scroll runs: replaying arbitrary chars
+        // re-dispatches against a stale modal closure — "vq" opened the quit
+        // guard OVER the overview, a repeated "a" double-accepted (review #13)
+        if ([...input].every((ch) => ch === "j" || ch === "k")) {
+          for (const ch of input) dispatchOne(ch, NO_FLAGS);
+        } else {
+          dispatchOne(input[0]!, NO_FLAGS);
+        }
         return;
       }
       dispatchOne(input, key);
@@ -740,9 +765,9 @@ function App({ client }: { client: Client }) {
             ? [orphClamped + 1, snapshot.orphans.length]
             : [logClamped + 1, logSorted.length];
 
-  // While $EDITOR owns the terminal, unmounting AlternateScreen is what exits
-  // the alt screen and drains raw mode — the framework's own components do the
-  // terminal-state bookkeeping; remounting repaints the whole dashboard.
+  // While $EDITOR owns the terminal: unmounting AlternateScreen exits the alt
+  // screen; raw mode drains via the useInput isActive gate above (AlternateScreen
+  // does NOT manage it — review #5); remounting repaints the whole dashboard.
   if (editorBusy) {
     return <Text dim>editing in $EDITOR — the dashboard returns when it exits…</Text>;
   }
@@ -839,6 +864,7 @@ function App({ client }: { client: Client }) {
             nowS={nowS}
             preview={preview}
             filter={filter}
+            filterInvalid={rosterFilterInvalid(filter)}
             filterEditing={filterEditing}
             onFilterChange={setFilter}
             onFilterSubmit={() => setFilterEditing(false)}

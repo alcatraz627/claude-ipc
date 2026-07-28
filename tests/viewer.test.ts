@@ -60,7 +60,8 @@ describe("Viewer contract", () => {
     await c.register("b", { sessionId: "sid-b", cwd: "/b" });
     const sent = await c.send({ from: "a", to: "b", kind: "inform", body: "secret detail" });
     const v = viewerOf(c);
-    const st = (await v.status(sent.msgId)) as { message: { body: string } };
+    const st = (await v.status(sent.msgId)) as { message: { body: string; bodyHidden?: boolean } };
     expect(st.message.body).toContain("hidden"); // no identity, no operator → scoped
+    expect(st.message.bodyHidden).toBe(true); // the unforgeable flag rides the strip (review #15)
   });
 });

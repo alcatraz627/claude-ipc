@@ -1,11 +1,7 @@
 /**
- * SQLite storage backend — the default durable substrate.
- *
- * `messages` is strictly append-only (the full history, never mutated); all
- * mutable state lives in `deliveries` (per-recipient read/consent) and `awaiting`
- * (the sender's open/closed request view). That separation is what makes
- * broadcast fan-out, per-recipient idempotency, and reply-after-timeout
- * well-defined. Uses Bun's built-in SQLite — no external dependency.
+ * SQLite storage backend, the default durable substrate (Bun's built-in SQLite).
+ * `messages` is append-only; `deliveries` and `awaiting` hold the mutable state,
+ * which is what makes fan-out, idempotency, and reply-after-timeout well-defined.
  */
 
 import { Database } from "bun:sqlite";

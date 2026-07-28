@@ -9,7 +9,7 @@ import type { Color } from "ink-terminal/core";
 import { humanDuration, type Message } from "../models.ts";
 import { USER_SENTINEL, type ActingCandidate } from "./identity.ts";
 import type { CopyField, PreviewData } from "./model.ts";
-import { inlineHead } from "./model.ts";
+import { inlineHead, PICKER_WINDOW } from "./model.ts";
 import { STATUS_COLOR, STATUS_GLYPH, theme } from "./theme.ts";
 import { TextField } from "./widgets/TextField.tsx";
 
@@ -92,9 +92,6 @@ export function QuitGuard() {
   );
 }
 
-/** How many picker rows are visible at once — a real machine has 100+ registered
- *  aliases, and an unwindowed list overflows the frame into an unreadable wall. */
-const PICKER_WINDOW = 9;
 
 /** One picker row: status, name, and the session context that tells lookalikes apart. */
 function candidateLine(c: ActingCandidate): { dot: { glyph: string; color: Color | undefined }; context: string } {

@@ -6,6 +6,7 @@
  */
 
 import { Box, ScrollBox, Text, useInput } from "ink-terminal";
+import { useRef } from "react";
 import { theme } from "../theme.ts";
 import {
   backspace,
@@ -31,21 +32,31 @@ export interface TextAreaProps {
 }
 
 export function TextArea({ state, onChange, onDone, onCancel, onEditor, active, height = 8 }: TextAreaProps) {
+  // ink dispatches a whole stdin chunk in ONE React batch; reading the `state`
+  // prop sees the pre-batch closure and drops keys (review #7). The ref updates
+  // synchronously per key, so each item builds on the previous item's result.
+  const live = useRef(state);
+  live.current = state;
+  const apply = (next: EditState): void => {
+    live.current = next;
+    onChange(next);
+  };
   useInput(
     (input, key) => {
+      const s = live.current;
       if (key.escape) return onCancel();
       if (key.ctrl && input === "d") return onDone();
       if (key.ctrl && input === "e") return onEditor?.();
-      if (key.return) return onChange(insert(state, "\n"));
-      if (key.leftArrow) return onChange(moveHorizontal(state, -1));
-      if (key.rightArrow) return onChange(moveHorizontal(state, 1));
-      if (key.upArrow) return onChange(moveVertical(state, -1));
-      if (key.downArrow) return onChange(moveVertical(state, 1));
-      if (key.home || (key.ctrl && input === "a")) return onChange(lineHome(state));
-      if (key.end) return onChange(lineEnd(state));
-      if (key.backspace) return onChange(backspace(state));
-      if (key.delete) return onChange(forwardDelete(state));
-      if (input && !key.ctrl && !key.meta && !key.tab) return onChange(insert(state, input));
+      if (key.return) return apply(insert(s, "\n"));
+      if (key.leftArrow) return apply(moveHorizontal(s, -1));
+      if (key.rightArrow) return apply(moveHorizontal(s, 1));
+      if (key.upArrow) return apply(moveVertical(s, -1));
+      if (key.downArrow) return apply(moveVertical(s, 1));
+      if (key.home || (key.ctrl && input === "a")) return apply(lineHome(s));
+      if (key.end) return apply(lineEnd(s));
+      if (key.backspace) return apply(backspace(s));
+      if (key.delete) return apply(forwardDelete(s));
+      if (input && !key.ctrl && !key.meta && !key.tab) return apply(insert(s, input));
     },
     { isActive: active },
   );

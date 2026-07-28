@@ -42,6 +42,9 @@ export interface Message {
   contextPtr: ContextPtr | null;
   ttlS: number | null;
   ts: number; // epoch seconds, set at append
+  // Set by the broker when it blanked the body for a non-party reader — a
+  // display hint a peer cannot forge by writing marker-lookalike text.
+  bodyHidden?: boolean;
 }
 
 /** Delivery + consent of one message to one recipient. */
