@@ -63,7 +63,7 @@ function pump(socket: Writable): void {
 }
 
 export function startBroker(opts: {
-  router: Router;
+  router: Pick<Router, "handle">;
   socketPath: string;
   // Called for every refused request — the broker-side record that a drop happened.
   // Without it a refusal exists only in the caller's terminal, which is how a
@@ -154,6 +154,33 @@ const nowS = (): number => Math.floor(Date.now() / 1000);
  * still written, so the recipient got the OLDER message's content under the new id.
  */
 export const newMessageId = (): string => `msg-${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
+
+/**
+ * A dead sweep timer must not silently kill housekeeping: any request past the
+ * staleness window runs one sweep inline before routing. `sweep` must stamp its
+ * own last-run time, or every request would re-heal.
+ */
+export function selfHealingSweeps(
+  router: Pick<Router, "handle">,
+  deps: {
+    now: () => number;
+    staleAfterS: number;
+    lastSweepAt: () => number;
+    sweep: () => void;
+    onHeal?: (deadS: number) => void;
+  },
+): Pick<Router, "handle"> {
+  return {
+    handle: (req) => {
+      const silentS = deps.now() - deps.lastSweepAt();
+      if (silentS > deps.staleAfterS) {
+        deps.onHeal?.(silentS);
+        deps.sweep();
+      }
+      return router.handle(req);
+    },
+  };
+}
 
 export function sweepOnce(deps: {
   backend: StorageBackend;
@@ -260,7 +287,12 @@ export function main(): void {
   // 'delivered' and not retried — at-most-once after claim, inherent to the
   // fire-and-forget injection model, not fixable without an agent-side ack.)
   const inflight = backend.replayInflight();
-  const sweeper = setInterval(() => {
+  // The timer is not trusted to stay alive: one died silently after ~sleep while
+  // the socket kept serving, so parks/nudges/prunes/purges stopped for days
+  // (2026-07-28 incident). Requests self-heal a visibly-stopped sweeper inline.
+  let lastSweepAt = nowS();
+  const runSweep = (): void => {
+    lastSweepAt = nowS();
     sweepOnce({
       backend,
       registry,
@@ -268,9 +300,16 @@ export function main(): void {
       mkId,
       onError: (what, e) => brokerLog(config.logPath, `sweep: ${what} failed: ${e}`),
     });
-  }, config.sweepIntervalS * 1000);
+  };
+  const sweeper = setInterval(runSweep, config.sweepIntervalS * 1000);
   const broker = startBroker({
-    router,
+    router: selfHealingSweeps(router, {
+      now: nowS,
+      staleAfterS: Math.max(3 * config.sweepIntervalS, 30),
+      lastSweepAt: () => lastSweepAt,
+      sweep: runSweep,
+      onHeal: (deadS) => brokerLog(config.logPath, `sweep: timer silent ${deadS}s — self-healed inline`),
+    }),
     socketPath: config.socketPath,
     onRefusal: (req, code) => {
       const a = (req.args ?? {}) as Record<string, unknown>;

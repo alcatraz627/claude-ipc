@@ -1,10 +1,7 @@
 #!/usr/bin/env bun
 /**
- * The human's command-line client for claude-ipc.
- *
- * Lets you send, inspect, and approve messages and check the broker — all
- * independent of any Claude session. `run()` is the testable core (it takes the
- * args + an optional socket path); the file's tail wires it to the real process.
+ * CLI client for claude-ipc; `run()` is the testable core, the file's tail
+ * wires it to the real process.
  */
 
 import { readFileSync } from "node:fs";
