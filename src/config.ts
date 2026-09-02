@@ -43,6 +43,10 @@ export const config = {
   requestTimeoutMs: 5000, // a single broker round-trip; exceeded → caller stops waiting
   sweepIntervalS: 5,
   retentionS: Number(process.env.CLAUDE_IPC_RETENTION_S) || 7 * 24 * 3600, // purge settled msgs older than this
+  // Tombstone a still-undelivered message after this long: mark its pending
+  // deliveries consumed so it leaves the inbox and the next purge removes it. A
+  // pure message-age fact, never a claim about the recipient (docs/notes/no-liveness-claims.md).
+  tombstoneS: Number(process.env.CLAUDE_IPC_TOMBSTONE_S) || 2 * 24 * 3600,
   registryRetentionS: Number(process.env.CLAUDE_IPC_REGISTRY_RETENTION_S) || 24 * 3600, // drop peers offline longer than this
 
   // Strict identity: a send's `from` must be a registered alias, closing the

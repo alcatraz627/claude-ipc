@@ -548,6 +548,23 @@ export class SqliteBackend implements StorageBackend {
     return ids.length;
   }
 
+  tombstoneStale(olderThanTs: number): number {
+    // A message still in an inbox after this long has outlived its recipient's
+    // attention. Retire it: mark the pending deliveries consumed so it leaves the
+    // pending set and the next purge deletes the settled row. Nothing here reads
+    // the recipient's state — only how long the message has waited.
+    const aliases = this.db
+      .query(
+        `SELECT DISTINCT to_alias FROM deliveries WHERE state IN ('queued','delivered','surfaced') AND ts < ?`,
+      )
+      .all(olderThanTs) as { to_alias: string }[];
+    const r = this.db
+      .query(`UPDATE deliveries SET state='consumed' WHERE state IN ('queued','delivered','surfaced') AND ts < ?`)
+      .run(olderThanTs);
+    for (const a of aliases) this.bumpSeq(a.to_alias); // leaving the pending set is an event
+    return r.changes;
+  }
+
   close(): void {
     this.db.close();
   }

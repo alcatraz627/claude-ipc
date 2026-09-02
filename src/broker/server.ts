@@ -188,16 +188,18 @@ export function sweepOnce(deps: {
   now: () => number;
   mkId: () => string;
   retentionS?: number;
+  tombstoneS?: number;
   finalGraceS?: number;
   registryRetentionS?: number;
   onError?: (what: string, err: string) => void;
 }): void {
   const { backend, registry, now, mkId } = deps;
   const retention = deps.retentionS ?? config.retentionS;
+  const tombstone = deps.tombstoneS ?? config.tombstoneS;
   const grace = deps.finalGraceS ?? config.reply.finalGraceS;
   const regRetention = deps.registryRetentionS ?? config.registryRetentionS;
   const jobs: [string, () => void][] = [
-    ["ttl-park/purge", () => tickSweeper(backend, now, mkId, retention)],
+    ["ttl-park/purge", () => tickSweeper(backend, now, mkId, retention, tombstone)],
     ["reply-deadlines", () => sweepReplyDeadlines(backend, now, mkId, grace)],
     ["prune-peers", () => registry.pruneOffline(now() - regRetention)],
     [

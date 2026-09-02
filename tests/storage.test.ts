@@ -101,6 +101,24 @@ function backendSuite(name: string, make: () => StorageBackend): void {
       expect(db.get("recent")).not.toBeNull();
     });
 
+    test("tombstoneStale retires messages left undelivered past the window", () => {
+      db.append(m("stale", { ts: 10 })); // old + still queued to a gone inbox
+      db.enqueue("stale", "ghost");
+      db.append(m("fresh", { ts: 100 })); // queued but within the window
+      db.enqueue("fresh", "ghost");
+
+      // cutoff ts=50: only "stale" is old enough
+      expect(db.tombstoneStale(50)).toBe(1);
+      // the stale one left the inbox (no longer pending); the fresh one stayed
+      expect(db.pending("ghost").map((x) => x.id).sort()).toEqual(["fresh"]);
+      // and having settled, a purge at the same cutoff now deletes it
+      expect(db.purge(50)).toBe(1);
+      expect(db.get("stale")).toBeNull();
+      expect(db.get("fresh")).not.toBeNull();
+      // asserts nothing about the recipient: an already-consumed row is untouched
+      expect(db.tombstoneStale(50)).toBe(0);
+    });
+
     test("a request stays acceptable after being consumed (consume != consent)", () => {
       db.append(m("req1", { kind: "request", ts: 1 }));
       db.enqueue("req1", "bob");

@@ -261,6 +261,22 @@ export class MemoryBackend implements StorageBackend {
     return purgeable.length;
   }
 
+  tombstoneStale(olderThanTs: number): number {
+    // Message-age only; says nothing about the recipient. Retire a message still
+    // pending past the window so it leaves the inbox and the next purge deletes it.
+    let n = 0;
+    const bumped = new Set<string>();
+    for (const d of this.deliveries.values()) {
+      if (isPending(d.state) && d.ts < olderThanTs) {
+        d.state = "consumed";
+        bumped.add(d.toAlias);
+        n++;
+      }
+    }
+    for (const a of bumped) this.bumpSeq(a);
+    return n;
+  }
+
   close(): void {
     // nothing to release
   }

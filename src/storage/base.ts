@@ -84,6 +84,10 @@ export interface StorageBackend {
    * still-awaited message is kept regardless of age.
    */
   purge(olderThanTs: number): number;
+  /** Mark still-pending deliveries enqueued before `olderThanTs` as consumed, so
+   *  the message leaves the inbox and a later purge deletes it. Message-age only;
+   *  asserts nothing about the recipient. Returns the delivery count tombstoned. */
+  tombstoneStale(olderThanTs: number): number;
 
   close(): void;
 }

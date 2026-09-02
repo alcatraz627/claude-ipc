@@ -77,7 +77,11 @@ export function tickSweeper(
   now: () => number,
   newId: () => string,
   retentionS?: number,
+  tombstoneS?: number,
 ): number {
+  // Retire messages that have sat undelivered past the tombstone window BEFORE the
+  // purge, so a settled-and-aged row is deleted in the same tick. Message-age only.
+  if (tombstoneS !== undefined) backend.tombstoneStale(now() - tombstoneS);
   if (retentionS !== undefined) backend.purge(now() - retentionS);
   const expired = backend.awaitingPastTtl(now());
   for (const a of expired) {
