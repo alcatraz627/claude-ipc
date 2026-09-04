@@ -173,8 +173,8 @@ export class Registry {
       status: this.statusOf(e),
       token: null, // never expose tokens in the public roster
       sessionAliases: [...(bySid.get(e.sessionId) ?? [e.alias])].sort(),
-      // Liveness is heartbeat recency, never a process check — hand the reader the
-      // age so "live" is a legible inference, not a claim about a running process.
+      // Liveness is heartbeat recency, floored by a process check so a long turn
+      // cannot read as death. The age travels with it so the reader can judge.
       sinceSeenS: Math.max(0, this.now() - e.lastSeen),
     }));
   }
@@ -223,10 +223,35 @@ export class Registry {
   // "offline" on every warm-start. That decoupling is what makes the sticky check safe:
   // "you told us you're going" is honoured at once, while "we just haven't heard from
   // you yet" is left to decay by age like any live peer.
+  /**
+   * Is the process behind this entry still running? Signal 0 tests existence
+   * without delivering anything; EPERM is existence under another user.
+   *
+   * Pid reuse is the known weakness, so an alive pid only ever holds a peer at
+   * `idle` and never promotes one to `live`.
+   */
+  private processAlive(pid: number | null | undefined): boolean {
+    if (!pid || pid <= 0) return false;
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (err) {
+      return (err as NodeJS.ErrnoException).code === "EPERM";
+    }
+  }
+
   private statusOf(e: RegistryEntry): RegistryEntry["status"] {
     if (e.status === "offline") return "offline";
     const age = this.now() - e.lastSeen;
-    if (age > this.liveness.offlineS) return "offline";
+    // A silent heartbeat means QUIET, not death, while the process is still up:
+    // sessions heartbeat on tool calls, so one long turn outlives offlineS and a
+    // working agent used to read "offline" (fleet sweep, 2026-09-04, 5 of 6 wrong).
+    if (age > this.liveness.offlineS) {
+      return this.processAlive(e.pid) ? "idle" : "offline";
+    }
+    // A fresh heartbeat is trusted on its own. Demoting it on a dead pid was
+    // tried and reverted: it broke warm-start, where a reloaded registry holds a
+    // real session whose recorded pid this broker cannot vouch for.
     if (age > this.liveness.idleS) return "idle";
     return "live";
   }

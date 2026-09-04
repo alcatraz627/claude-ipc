@@ -12,7 +12,11 @@ import { Registry } from "../src/broker/registry.ts";
 import { MemoryBackend } from "../src/storage/memoryBackend.ts";
 
 const LIVENESS = { idleS: 300, offlineS: 1800 };
-const peer = (sessionId: string) => ({ sessionId, cwd: "/w", pid: 1 }) as never;
+// pid 1 is launchd, which is always alive, so it read as a running session once
+// liveness started consulting the process. These fixtures want a peer whose
+// process is GONE, which is what an aged-out peer actually looks like.
+const DEAD_PID = 0x7ffffffe;
+const peer = (sessionId: string) => ({ sessionId, cwd: "/w", pid: DEAD_PID }) as never;
 
 /** A registry that has been through a restart: same store, fresh instance. */
 function restart(backend: MemoryBackend, now: () => number): Registry {

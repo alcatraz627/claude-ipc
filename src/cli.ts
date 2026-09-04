@@ -11,6 +11,7 @@ import { config } from "./config.ts";
 import { markOrphanShown, orphanAlreadyShown, TRUST_RAIL } from "./hooks/shared.ts";
 import { humanAge } from "./models.ts";
 import { monitorSnapshot } from "./monitor.ts";
+import { resolveSessionPid } from "./sessionPid.ts";
 
 /**
  * State the trust boundary when an agent reads its mail from the shell.
@@ -394,7 +395,7 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
         const res = (await client.register(alias, {
           sessionId: sid,
           cwd: process.cwd(),
-          pid: service ? undefined : process.ppid,
+          pid: service ? undefined : resolveSessionPid(),
           tty: flags.tty ? String(flags.tty) : undefined,
           service,
         })) as { replaced?: boolean };

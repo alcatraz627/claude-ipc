@@ -793,8 +793,16 @@ export class Router {
   private notActable(msgId: string, alias: string): Response | null {
     const msg = this.backend.get(msgId);
     if (!msg) return fail("no_message", `no message with id ${msgId}`);
-    const direct = this.backend.deliveriesFor(msgId).some((d) => d.toAlias === alias);
+    const deliveries = this.backend.deliveriesFor(msgId);
     const e = this.registry.get(alias);
+    // A session registers several aliases, and mail is delivered to exactly one.
+    // Matching on that single name refused a session acting on its OWN mail under
+    // a sibling name: on 2026-09-04 two agents were sent mail at one alias, replied
+    // as themselves under another, and both got not_yours. Ownership is the
+    // SESSION, never the name it happened to be addressed by.
+    const direct = deliveries.some(
+      (d) => d.toAlias === alias || (e?.sessionId && this.registry.get(d.toAlias)?.sessionId === e.sessionId),
+    );
     const viaProject = isProjectAddress(msg.toAlias) && Boolean(e?.cwd) && withinProject(e!.cwd, projectPath(msg.toAlias));
     if (!direct && !viaProject) {
       return fail("not_yours", `${msgId} was not delivered to you — you can only act on your own mail`);
