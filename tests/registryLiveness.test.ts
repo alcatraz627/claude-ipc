@@ -35,6 +35,17 @@ describe("registry liveness", () => {
     expect(statusOf(later, "busy")).toBe("idle");
   });
 
+  test("an ancient row is offline even when its pid is alive", () => {
+    // A pid outlives its owner by reuse, so the process floor is bounded. One
+    // roster pid came back as an Apple system process within a day; past the
+    // grace window an alive pid is likelier to be a stranger than the session.
+    const veryOld = 1000 + 48 * 3600;
+    const reg = setup(veryOld);
+    reg.register("ancient", { sessionId: "s7", cwd: "/tmp", pid: ALIVE });
+    (reg as unknown as { entries: Map<string, { lastSeen: number }> }).entries.get("ancient")!.lastSeen = 1000;
+    expect(statusOf(reg, "ancient")).toBe("offline");
+  });
+
   test("a genuinely dead session with the same stale heartbeat is offline", () => {
     const reg = setup(1000 + LIVENESS.offlineS + 60);
     reg.register("gone", { sessionId: "s2", cwd: "/tmp", pid: DEAD });

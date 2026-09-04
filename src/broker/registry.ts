@@ -230,6 +230,9 @@ export class Registry {
    * Pid reuse is the known weakness, so an alive pid only ever holds a peer at
    * `idle` and never promotes one to `live`.
    */
+  /** How long past offlineS a live pid still counts as its own session (6h). */
+  private static readonly PROCESS_FLOOR_MAX_S = 6 * 3600;
+
   private processAlive(pid: number | null | undefined): boolean {
     if (!pid || pid <= 0) return false;
     try {
@@ -246,8 +249,13 @@ export class Registry {
     // A silent heartbeat means QUIET, not death, while the process is still up:
     // sessions heartbeat on tool calls, so one long turn outlives offlineS and a
     // working agent used to read "offline" (fleet sweep, 2026-09-04, 5 of 6 wrong).
+    // Bounded, because a pid outlives its owner by reuse. The defect being fixed
+    // is a session working one long turn, which is hours at most; past the window
+    // an alive pid is likelier to be a stranger that inherited the number. One
+    // did within a day: tmp-dbff6cdf's pid came back as an Apple system process.
     if (age > this.liveness.offlineS) {
-      return this.processAlive(e.pid) ? "idle" : "offline";
+      const withinGrace = age <= Registry.PROCESS_FLOOR_MAX_S;
+      return withinGrace && this.processAlive(e.pid) ? "idle" : "offline";
     }
     // A fresh heartbeat is trusted on its own. Demoting it on a dead pid was
     // tried and reverted: it broke warm-start, where a reloaded registry holds a
