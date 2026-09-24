@@ -482,14 +482,17 @@ export class Router {
 
   private check(req: Request): Response {
     const a = req.args as { alias?: string; consume?: boolean; project?: string };
+    const self = this.aliasOfToken(req);
+    const managedHost = Boolean(self && this.registry.get(self)?.caps.includes("ipc-host"));
     if (a.project) {
       // Anyone may peek a project mailbox (visibility is deliberately open —
       // no new silos); only a member session may consume.
-      if (a.consume) {
+      if (a.consume === true) {
+        if (managedHost) return fail("managed_consume", "managed hosts use lease + ack; consuming checks are disabled");
         const denied = this.requireProjectMember(req, a.project);
         if (denied) return denied;
       }
-      const consuming = a.consume ?? false;
+      const consuming = a.consume === true;
       const messages = this.projectMailboxes(a.project, !consuming).flatMap((addr) =>
         consuming ? this.backend.pending(addr) : this.backend.recoverable(addr),
       );
@@ -500,7 +503,10 @@ export class Router {
     if (!a.alias) return fail("bad_args", "check needs alias");
     const denied = this.requireOwner(req, a.alias); // only the owner reads its inbox
     if (denied) return denied;
-    const consume = a.consume ?? false;
+    if (a.consume === true && managedHost) {
+      return fail("managed_consume", "managed hosts use lease + ack; consuming checks are disabled");
+    }
+    const consume = a.consume === true;
     const boxes = this.sessionBoxes(a.alias);
     const messages = this.dedupeById(boxes.flatMap((addr) =>
       consume ? this.backend.pending(addr, { consume: true }) : this.backend.recoverable(addr),

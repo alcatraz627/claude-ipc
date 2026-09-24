@@ -90,6 +90,19 @@ describe("project mailboxes", () => {
     await expect(outsider.deliverProject("/work/repo", "hook", "elsewhere")).rejects.toThrow(/unauthorized/);
   });
 
+  test("managed host capability disables consuming checks at the broker boundary", async () => {
+    await owner.register("managed-member", {
+      sessionId: "managed", cwd: "/work/repo", caps: ["codex", "ipc-host"],
+    });
+    await owner.send({ from: "fe-sess", to: "managed-member", kind: "inform", body: "direct" });
+    await owner.send({ from: "fe-sess", to: "proj:/work/repo", kind: "inform", body: "project" });
+
+    await expect(owner.check("managed-member", true)).rejects.toThrow(/managed_consume/);
+    await expect(owner.checkProject("/work/repo", true, "managed-member")).rejects.toThrow(/managed_consume/);
+    expect((await owner.check("managed-member", false)).messages).toHaveLength(1);
+    expect((await owner.checkProject("/work/repo", false, "managed-member")).messages).toHaveLength(1);
+  });
+
   test("replying to a project ask consumes it for the whole project", async () => {
     const ask = await owner.send({ from: "root-sess", to: "proj:/work/repo", kind: "query", body: "who owns X?" });
     expect((await owner.countProject("/work/repo")).count).toBe(1);

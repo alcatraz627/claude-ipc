@@ -51,14 +51,14 @@ export function createTools(client: Client, me: SelfIdentity) {
     // A manual check is a peek. Delivery hosts use lease + ack; neither surface
     // may silently consume a message before it is persisted into the thread.
     ipc_check: async (a: { consume?: boolean } = {}): Promise<unknown> => {
-      if (me.managedHost && a.consume === true) {
+      if (me.managedHost && Boolean(a.consume)) {
         throw new Error("managed hosts cannot consume through ipc_check; durable delivery uses lease + ack");
       }
       return client.check(me.alias, a.consume ?? !me.managedHost);
     },
 
     ipc_check_project: async (a: { project?: string; consume?: boolean } = {}): Promise<unknown> => {
-      if (me.managedHost && a.consume === true) {
+      if (me.managedHost && Boolean(a.consume)) {
         throw new Error("managed hosts cannot consume through ipc_check_project; durable delivery uses lease + ack");
       }
       return client.checkProject(a.project ?? me.cwd, a.consume ?? false, me.alias);

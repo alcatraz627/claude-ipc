@@ -120,10 +120,13 @@ describe("ipc_* tools", () => {
     expect(((await codex.ipc_check()) as { messages: unknown[] }).messages).toHaveLength(1);
     expect(((await codex.ipc_check()) as { messages: unknown[] }).messages).toHaveLength(1);
     await expect(codex.ipc_check({ consume: true })).rejects.toThrow(/lease \+ ack/);
+    await expect(codex.ipc_check({ consume: 1 } as never)).rejects.toThrow(/lease \+ ack/);
+    await expect(codex.ipc_check({ consume: "true" } as never)).rejects.toThrow(/lease \+ ack/);
     expect(((await codex.ipc_check()) as { messages: unknown[] }).messages).toHaveLength(1);
 
     await alice.ipc_send({ to: "proj:/c", kind: "request", body: "managed project" });
     await expect(codex.ipc_check_project({ project: "/c", consume: true })).rejects.toThrow(/lease \+ ack/);
+    await expect(codex.ipc_check_project({ project: "/c", consume: 1 } as never)).rejects.toThrow(/lease \+ ack/);
     expect(((await codex.ipc_check_project({ project: "/c" })) as { messages: unknown[] }).messages).toHaveLength(1);
   });
 
