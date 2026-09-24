@@ -3,6 +3,10 @@ import { makeMessage, type Message } from "../src/models.ts";
 import type { StorageBackend } from "../src/storage/base.ts";
 import { MemoryBackend } from "../src/storage/memoryBackend.ts";
 import { SqliteBackend } from "../src/storage/sqliteBackend.ts";
+import { Database } from "bun:sqlite";
+import { rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 let seq = 0;
 /** Build a Message with sensible defaults; pass `over` to set what a test cares about. */
@@ -26,6 +30,41 @@ function backendSuite(name: string, make: () => StorageBackend): void {
       db.append(m("m1", { body: "second" }));
       expect(db.get("m1")?.body).toBe("first");
       expect(db.get("nope")).toBeNull();
+    });
+
+    test("operation ids resolve the original immutable message", () => {
+      db.append(m("op-1", { operationId: "send-abc", body: "once" }));
+      expect(db.getByOperationId("send-abc")?.id).toBe("op-1");
+      expect(db.getByOperationId("unknown")).toBeNull();
+    });
+
+    test("route snapshots preserve empty and populated recipient sets", () => {
+      db.saveRoute("empty", []);
+      db.saveRoute("fanout", ["bob", "carol"]);
+      db.saveRoute("fanout", ["late"]);
+      expect(db.routeFor("missing")).toBeNull();
+      expect(db.routeFor("empty")).toEqual([]);
+      expect(db.routeFor("fanout")).toEqual(["bob", "carol"]);
+    });
+
+    test("offline send intents retain complete arguments and delete by operation id", () => {
+      db.queueOutbound({
+        operationId: "offline-1",
+        fromAlias: "alice",
+        args: { from: "alice", to: "*", kind: "query", body: "status?", replyByS: 90, ttlS: 300 },
+        createdAt: 12,
+      });
+      db.queueOutbound({
+        operationId: "offline-1",
+        fromAlias: "alice",
+        args: { body: "replacement must not win" },
+        createdAt: 13,
+      });
+      expect(db.pendingOutbound("alice")).toEqual([
+        expect.objectContaining({ operationId: "offline-1", args: expect.objectContaining({ to: "*", replyByS: 90 }) }),
+      ]);
+      db.deleteOutbound("offline-1");
+      expect(db.pendingOutbound("alice")).toEqual([]);
     });
 
     test("delivery is per-recipient and independent (broadcast fan-out)", () => {
@@ -82,8 +121,49 @@ function backendSuite(name: string, make: () => StorageBackend): void {
       expect(db.deliveriesFor("k1")[0]?.via).toBe("hook");
     });
 
+    test("delivery leases retry after expiry and settle only on matching ack", () => {
+      db.append(m("lease-1", { ts: 1 }));
+      db.enqueue("lease-1", "bob");
+      const future = Date.now() / 1000 + 60;
+      const now = Date.now() / 1000;
+      expect(db.leaseForDelivery("bob", "channel", "lease-a", now, future).map((x) => x.id)).toEqual(["lease-1"]);
+      expect(db.leaseForDelivery("bob", "channel", "lease-b", now, future)).toEqual([]);
+      expect(db.ackDelivery("bob", "wrong", ["lease-1"])).toBe(0);
+      expect(db.pending("bob").map((x) => x.id)).toEqual(["lease-1"]);
+      expect(db.ackDelivery("bob", "lease-a", ["lease-1"])).toBe(1);
+      expect(db.pending("bob")).toEqual([]);
+      expect(db.deliveriesFor("lease-1")[0]?.state).toBe("persisted");
+      expect(db.markSurfaced("lease-1", "bob")).toBe(true);
+      expect(db.pending("bob").map((x) => x.id)).toEqual(["lease-1"]);
+      expect(db.leaseForDelivery("bob", "channel", "lease-c", now, future)).toEqual([]);
+
+      db.append(m("lease-2", { ts: 2 }));
+      db.enqueue("lease-2", "bob");
+      expect(db.leaseForDelivery("bob", "channel", "expired", now, 0).map((x) => x.id)).toEqual(["lease-2"]);
+      expect(db.leaseForDelivery("bob", "channel", "retry", now, future).map((x) => x.id)).toEqual(["lease-2"]);
+    });
+
+    test("snoozing a leased delivery invalidates that lease", () => {
+      db.append(m("lease-snoozed", { kind: "query", ts: 1 }));
+      db.enqueue("lease-snoozed", "bob");
+      expect(db.leaseForDelivery("bob", "channel", "lease-a", 100, 200).map((x) => x.id)).toEqual(["lease-snoozed"]);
+      expect(db.markSurfaced("lease-snoozed", "bob")).toBe(true);
+      expect(db.ackDelivery("bob", "lease-a", ["lease-snoozed"])).toBe(0);
+      expect(db.deliveriesFor("lease-snoozed")[0]?.state).toBe("surfaced");
+    });
+
+    test("an ack cannot overwrite a delivery settled while its lease was open", () => {
+      db.append(m("lease-settled", { ts: 1 }));
+      db.enqueue("lease-settled", "bob");
+      db.leaseForDelivery("bob", "channel", "lease-a", 100, 200);
+      db.markConsumed("lease-settled", "bob");
+      expect(db.ackDelivery("bob", "lease-a", ["lease-settled"])).toBe(0);
+      expect(db.deliveriesFor("lease-settled")[0]?.state).toBe("consumed");
+    });
+
     test("purge removes old settled messages but keeps pending and awaited ones", () => {
       db.append(m("old1", { ts: 10 })); // old + consumed → purgeable
+      db.saveRoute("old1", ["bob"]);
       db.enqueue("old1", "bob");
       db.markConsumed("old1", "bob");
       db.append(m("old2", { ts: 10 })); // old + still queued → kept (actionable)
@@ -96,6 +176,7 @@ function backendSuite(name: string, make: () => StorageBackend): void {
 
       expect(db.purge(50)).toBe(1); // cutoff ts=50 → only old1 qualifies
       expect(db.get("old1")).toBeNull();
+      expect(db.routeFor("old1")).toBeNull();
       expect(db.get("old2")).not.toBeNull();
       expect(db.get("old3")).not.toBeNull();
       expect(db.get("recent")).not.toBeNull();
@@ -245,3 +326,38 @@ function backendSuite(name: string, make: () => StorageBackend): void {
 
 backendSuite("MemoryBackend", () => new MemoryBackend());
 backendSuite("SqliteBackend", () => new SqliteBackend(":memory:"));
+
+test("SqliteBackend migrates a pre-Codex-host database in place", () => {
+  const path = join(tmpdir(), `cipc-legacy-${process.pid}-${Math.random().toString(36).slice(2)}.sqlite`);
+  const legacy = new Database(path);
+  legacy.exec(`
+    CREATE TABLE messages (
+      id TEXT PRIMARY KEY, kind TEXT, from_alias TEXT, to_alias TEXT, body TEXT,
+      conversation_id TEXT, corr_id TEXT, status TEXT, error_code TEXT,
+      terminal INTEGER, op TEXT, context_ptr TEXT, ttl_s INTEGER, ts REAL);
+    CREATE TABLE deliveries (
+      msg_id TEXT, to_alias TEXT, via TEXT, state TEXT, ts REAL,
+      PRIMARY KEY (msg_id, to_alias));
+    INSERT INTO messages VALUES
+      ('legacy-row','inform','alice','bob','before migration',NULL,NULL,NULL,NULL,1,NULL,NULL,NULL,1);
+    INSERT INTO deliveries VALUES ('legacy-row','bob',NULL,'queued',1);
+  `);
+  legacy.close();
+  const migrated = new SqliteBackend(path);
+  migrated.append(m("migrated", { operationId: "migration-op" }));
+  migrated.enqueue("migrated", "bob");
+  expect(migrated.getByOperationId("migration-op")?.id).toBe("migrated");
+  expect(migrated.get("legacy-row")?.body).toBe("before migration");
+  expect(migrated.leaseForDelivery("bob", "channel", "lease", 1, 30).map((message) => message.id)).toEqual([
+    "legacy-row",
+    "migrated",
+  ]);
+  migrated.close();
+  for (const suffix of ["", "-wal", "-shm"]) {
+    try {
+      rmSync(path + suffix);
+    } catch {
+      // absent
+    }
+  }
+});

@@ -9,9 +9,10 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { config } from "./config.ts";
-import { makeMessage } from "./models.ts";
 import { encodeFrame, FrameDecoder, PROTOCOL_VERSION, type Op, type Request, type Response } from "./protocol.ts";
 import { SqliteBackend } from "./storage/sqliteBackend.ts";
+import { makeMessage, type Message } from "./models.ts";
+import { isProjectAddress, normalizeProjectPath, projectAddress, projectPath, sameLineage, withinProject } from "./projectAddress.ts";
 
 /**
  * The capability token for an alias is kept in an owner-only file. Holding the
@@ -141,6 +142,7 @@ export interface SendArgs {
   ttlS?: number;
   replyByS?: number | null; // how long before the ask gets chased; null = never, undefined = broker default
   contextPtr?: { sessionId: string; transcriptPath: string; cwd: string };
+  operationId?: string;
 }
 
 export class Client {
@@ -163,7 +165,7 @@ export class Client {
     try {
       res = await request(this.socketPath, { v: PROTOCOL_VERSION, op, args, token });
     } catch (e) {
-      if (this.fallback) return this.degraded(op, args);
+      if (this.fallback) return this.degraded(op, args, actingAlias);
       throw e;
     }
     if (!res.ok) throw new BrokerError(res.error.code, res.error.message, res.error.data);
@@ -173,18 +175,18 @@ export class Client {
   /**
    * Broker unreachable: keep working with reduced function. Sends persist (the
    * broker routes/reconciles them on return); checks read the durable log. Lost
-   * while down: proactive push, no_peer classification, and timeout synthesis.
+   * while down: proactive push and timeout synthesis.
    *
    * In strict mode the fallback still refuses to act as an alias this client
    * holds no token for — so a forged `from` can't be persisted while the broker
    * is down. This is not a hard boundary (a process bypassing this client can
    * write the DB directly); the broker is the real authority when it's up.
    */
-  private degraded(op: Op, args: Record<string, any>): unknown {
+  private degraded(op: Op, args: Record<string, any>, actingAlias?: string): unknown {
     if (config.strict) {
-      const actingAlias = op === "send" ? args.from : args.alias;
-      if (actingAlias && !readToken(this.tokensDir, actingAlias)) {
-        throw new Error(`unauthorized: no token for "${actingAlias}" (broker down, strict mode)`);
+      const identity = op === "send" ? args.from : actingAlias;
+      if (identity && !readToken(this.tokensDir, identity)) {
+        throw new Error(`unauthorized: no token for "${identity}" (broker down, strict mode)`);
       }
     }
     const db = new SqliteBackend(this.fallback!.dbPath);
@@ -196,27 +198,149 @@ export class Client {
         if (!String(args.body ?? "").trim()) {
           throw new Error(`empty_send: a message needs a body — nothing was sent (broker down, degraded mode)`);
         }
-        const id = `msg-${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`; // 64 bits — see server.mkId
-        db.append(
-          makeMessage({
-            id,
-            kind: args.kind,
-            fromAlias: args.from,
-            toAlias: args.to,
-            ts: Math.floor(Date.now() / 1000),
-            body: args.body ?? "",
-            conversationId: args.conversationId ?? null,
-            ttlS: args.ttlS ?? null,
-          }),
-        );
-        if (args.to !== "*") db.enqueue(id, args.to);
-        return { msgId: id, recipients: args.to === "*" ? [] : [args.to], daemonDown: true };
+        if (args.from === "ipc") {
+          throw new Error(`bad_args: "ipc" is reserved — you can't send as the broker (broker down, degraded mode)`);
+        }
+        if (isProjectAddress(args.to)) args.to = projectAddress(projectPath(args.to));
+        const registry = new Map(db.loadRegistry().map((entry) => [entry.alias, entry]));
+        const existing = db.getByOperationId(String(args.operationId));
+        if (existing) {
+          const requestedReplyBy =
+            existing.toAlias !== "*" && (existing.kind === "query" || existing.kind === "request")
+              ? (args.replyByS === undefined ? (existing.replyByS ?? null) : args.replyByS)
+              : null;
+          const samePayload =
+            existing.fromAlias === args.from &&
+            existing.toAlias === args.to &&
+            existing.kind === args.kind &&
+            existing.body === (args.body ?? "") &&
+            existing.ttlS === (args.ttlS ?? null) &&
+            (existing.replyByS ?? null) === requestedReplyBy &&
+            (args.conversationId === undefined || existing.conversationId === args.conversationId) &&
+            JSON.stringify(existing.contextPtr) === JSON.stringify(args.contextPtr ?? null);
+          if (!samePayload) throw new Error("operation_conflict: operationId was already used for a different send payload");
+          const senderSid = registry.get(existing.fromAlias)?.sessionId;
+          const routed = db.routeFor(existing.id);
+          const targets = routed !== null
+            ? routed
+            : existing.toAlias === "*"
+              ? [...registry.values()]
+                .filter((entry) => entry.status !== "offline" && entry.alias !== existing.fromAlias && entry.sessionId !== senderSid)
+                .map((entry) => entry.alias)
+              : [existing.toAlias];
+          for (const target of targets) db.enqueue(existing.id, target);
+          if (isProjectAddress(existing.toAlias) && senderSid) {
+            for (const entry of registry.values()) {
+              if (entry.sessionId === senderSid) db.passProject(existing.id, entry.alias);
+            }
+          }
+          if (!db.getAwaiting(existing.id) && existing.toAlias !== "*" && (existing.kind === "query" || existing.kind === "request")) {
+            const ttl = existing.ttlS ?? config.defaultTtlS;
+            const replyBy = args.replyByS === undefined ? config.reply.byS : args.replyByS;
+            db.openAwaiting(existing.id, ttl === null ? null : existing.ts + ttl, replyBy, existing.ts);
+          }
+          return {
+            msgId: existing.id,
+            operationId: args.operationId,
+            recipients: targets,
+            queued: true,
+            daemonDown: true,
+            idempotentReplay: true,
+          };
+        }
+        if (!args.kind || !["inform", "query", "request"].includes(args.kind)) {
+          throw new Error(`bad_args: kind must be inform|query|request, got ${String(args.kind)} (broker down, degraded mode)`);
+        }
+        if (config.strict && !registry.has(args.from)) {
+          throw new Error(`not_registered: ${args.from} must register before sending (broker down, degraded mode)`);
+        }
+        if (!isProjectAddress(args.to) && args.to !== "*" && !registry.has(args.to)) {
+          throw new Error(`no_peer: no peer named "${args.to}" is registered — nothing was sent (broker down, degraded mode)`);
+        }
+        const senderSid = registry.get(args.from)?.sessionId;
+        if (senderSid && args.to !== "*" && !isProjectAddress(args.to) && registry.get(args.to)?.sessionId === senderSid) {
+          throw new Error(`self_send: "${args.to}" belongs to this session — nothing was sent (broker down, degraded mode)`);
+        }
+        const allowed = config.allowlist[args.to];
+        if (args.to !== "*" && allowed && !allowed.includes(args.from)) {
+          throw new Error(`not_allowed: ${args.from} may not target ${args.to} — nothing was sent (broker down, degraded mode)`);
+        }
+        const messageId =
+          args.messageId ??
+          `msg-${new Bun.CryptoHasher("sha256").update(String(args.operationId)).digest("hex").slice(0, 16)}`;
+        const now = Math.floor(Date.now() / 1000);
+        const opensThread = args.to !== "*" && (args.kind === "query" || args.kind === "request");
+        const conversationId = args.conversationId ?? (opensThread ? `conv-${messageId}` : null);
+        args.conversationId = conversationId;
+        db.queueOutbound({
+          operationId: args.operationId,
+          fromAlias: args.from,
+          args: { ...args, messageId },
+          createdAt: now,
+        });
+        const targets = args.to === "*"
+          ? [...registry.values()]
+            .filter((entry) => entry.status !== "offline" && entry.sessionId !== senderSid)
+            .map((entry) => entry.alias)
+          : [args.to];
+        const message = makeMessage({
+              id: messageId,
+              operationId: args.operationId,
+              kind: args.kind,
+              fromAlias: args.from,
+              toAlias: args.to,
+              body: args.body,
+              conversationId,
+              contextPtr: args.contextPtr ?? null,
+              ttlS: args.ttlS ?? null,
+              replyByS:
+                opensThread ? (args.replyByS === undefined ? config.reply.byS : args.replyByS) : null,
+              ts: now,
+            });
+        db.appendRouted(message, targets);
+        for (const target of targets) db.enqueue(messageId, target);
+        if (args.to !== "*") {
+          if (isProjectAddress(args.to) && senderSid) {
+            for (const entry of registry.values()) {
+              if (entry.sessionId === senderSid) db.passProject(messageId, entry.alias);
+            }
+          }
+          if (args.kind === "query" || args.kind === "request") {
+            const ttl = args.ttlS ?? config.defaultTtlS;
+            const replyBy = args.replyByS === undefined ? config.reply.byS : args.replyByS;
+            db.openAwaiting(messageId, ttl === null ? null : now + ttl, replyBy, now);
+          }
+        }
+        return {
+          msgId: messageId,
+          operationId: args.operationId,
+          recipients: targets,
+          queued: true,
+          daemonDown: true,
+        };
       }
       if (op === "check") {
-        return { messages: db.pending(args.alias, { consume: args.consume ?? false }), daemonDown: true };
+        const address = args.alias;
+        const consume = args.consume ?? false;
+        if (args.project) {
+          const project = isProjectAddress(args.project) ? projectPath(args.project) : normalizeProjectPath(args.project);
+          if (consume) this.requireDegradedProjectMember(db, projectAddress(project), actingAlias);
+          const messages = this.degradedProjectMessages(db, project, actingAlias, consume);
+          if (consume) for (const message of messages) db.markConsumed(message.id, message.toAlias);
+          return { messages, daemonDown: true };
+        }
+        return { messages: consume ? db.pending(address, { consume: true }) : db.recoverable(address), daemonDown: true };
       }
       if (op === "deliver") {
-        return { messages: db.claimForDelivery(args.alias, args.via ?? "hook"), daemonDown: true };
+        const address = args.alias;
+        if (args.project) {
+          const project = isProjectAddress(args.project) ? projectPath(args.project) : normalizeProjectPath(args.project);
+          this.requireDegradedProjectMember(db, projectAddress(project), actingAlias);
+          const messages = this.degradedProjectMessages(db, project, actingAlias, true);
+          for (const message of messages) db.markDelivered(message.id, message.toAlias, args.via ?? "hook");
+          return { messages, daemonDown: true };
+        }
+        return { messages: db.claimForDelivery(address, args.via ?? "hook"), daemonDown: true };
       }
       throw new Error(`broker down; "${op}" is unavailable in degraded mode`);
     } finally {
@@ -224,11 +348,44 @@ export class Client {
     }
   }
 
+  private requireDegradedProjectMember(db: SqliteBackend, address: string, actingAlias?: string): void {
+    const member = actingAlias ? db.loadRegistry().find((entry) => entry.alias === actingAlias) : undefined;
+    if (!member?.cwd || !withinProject(member.cwd, projectPath(address))) {
+      throw new Error("unauthorized: project mailbox consumption requires a member session (broker down, degraded mode)");
+    }
+  }
+
+  private degradedProjectMessages(db: SqliteBackend, project: string, actingAlias?: string, consuming = false): Message[] {
+    const addresses = db.projectAddresses().filter((address) =>
+      consuming ? withinProject(project, projectPath(address)) : sameLineage(projectPath(address), project),
+    );
+    const source = addresses.flatMap((address) => consuming ? db.pending(address) : db.recoverable(address));
+    if (!actingAlias) return source;
+    const registry = new Map(db.loadRegistry().map((entry) => [entry.alias, entry]));
+    const selfSid = registry.get(actingAlias)?.sessionId;
+    return source.filter((message) => {
+      const causalSender =
+        message.fromAlias === "ipc" && message.corrId ? db.originOf(message.corrId)?.fromAlias : message.fromAlias;
+      if (selfSid && causalSender && registry.get(causalSender)?.sessionId === selfSid) return false;
+      if (db.projectStanding(message.id, actingAlias) === "passed") return false;
+      const owner = db.projectClaim(message.id);
+      return owner === null || owner === actingAlias || registry.get(owner)?.status === "offline";
+    });
+  }
+
   async register(alias: string, info: RegisterInfo): Promise<any> {
     // Present any token we already hold (proves a reconnect) and persist the one
     // the broker returns, so later ops from this and sibling processes authorize.
     const res = await this.call("register", { alias, ...info }, alias);
     if (res && typeof res === "object" && typeof res.token === "string") writeToken(this.tokensDir, alias, res.token);
+    try {
+      const reconciled = await this.reconcile(alias);
+      if (reconciled.remaining > 0) {
+        console.error(`[claude-ipc] ${reconciled.remaining} offline send intent(s) still need attention`);
+      }
+    } catch {
+      // Registration succeeded. A later authenticated operation retries the outbox.
+    }
     return res;
   }
   heartbeat(alias: string): Promise<any> {
@@ -238,13 +395,41 @@ export class Client {
     return this.call("leave", { alias }, alias);
   }
   send(args: SendArgs): Promise<any> {
-    return this.call("send", { ...args }, args.from);
+    const operationId = args.operationId ?? crypto.randomUUID();
+    const suppliedMessageId = (args as SendArgs & { messageId?: string }).messageId;
+    const messageId = suppliedMessageId ?? (this.fallback
+      ? `msg-${new Bun.CryptoHasher("sha256").update(operationId).digest("hex").slice(0, 16)}`
+      : undefined);
+    return this.call(
+      "send",
+      {
+        ...args,
+        operationId,
+        messageId,
+      },
+      args.from,
+    );
+  }
+  reconcile(alias: string): Promise<any> {
+    return this.call("reconcile", { alias }, alias);
   }
   check(alias: string, consume = false): Promise<any> {
     return this.call("check", { alias, consume }, alias);
   }
   deliver(alias: string, via: "hook" | "resume" | "channel"): Promise<any> {
     return this.call("deliver", { alias, via }, alias);
+  }
+  lease(alias: string, leaseId: string, leaseS = 30): Promise<any> {
+    return this.call("lease", { alias, leaseId, leaseS, via: "channel" }, alias);
+  }
+  ackDelivery(alias: string, leaseId: string, msgIds: string[]): Promise<any> {
+    return this.call("ack_delivery", { alias, leaseId, msgIds }, alias);
+  }
+  leaseProject(dir: string, asAlias: string, leaseId: string, leaseS = 30): Promise<any> {
+    return this.call("lease", { project: dir, leaseId, leaseS, via: "channel" }, asAlias);
+  }
+  ackProject(dir: string, asAlias: string, leaseId: string, msgIds: string[]): Promise<any> {
+    return this.call("ack_delivery", { project: dir, leaseId, msgIds }, asAlias);
   }
   // Project-mailbox reads: `asAlias` is the caller's own session alias — its
   // token is what proves project membership for consuming/claiming.

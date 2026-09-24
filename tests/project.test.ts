@@ -6,6 +6,7 @@ import { MemoryBackend } from "../src/storage/memoryBackend.ts";
 import { Registry } from "../src/broker/registry.ts";
 import { Router } from "../src/broker/router.ts";
 import { startBroker, type BrokerHandle } from "../src/broker/server.ts";
+import { sweepReplyDeadlines } from "../src/broker/sweeper.ts";
 import { Client } from "../src/client.ts";
 
 const tmpSock = (): string => `/tmp/cipc-${process.pid}-${Math.random().toString(36).slice(2, 10)}.sock`;
@@ -37,8 +38,38 @@ describe("project mailboxes", () => {
     const sent = await owner.send({ from: "root-sess", to: "proj:/work/repo", kind: "inform", body: "for the repo" });
     expect(sent.msgId).toBeDefined();
     expect(sent.recipients).toEqual(["proj:/work/repo"]);
-    const got = await owner.deliverProject("/work/repo", "hook", "root-sess");
+    const got = await owner.deliverProject("/work/repo", "hook", "fe-sess");
     expect(got.messages.map((m: { body: string }) => m.body)).toEqual(["for the repo"]);
+  });
+
+  test("project mail excludes every alias of its sending session", async () => {
+    await owner.register("root-sibling", { sessionId: "s1", cwd: "/work/repo" });
+    const sent = await owner.send({ from: "root-sess", to: "proj:/work/repo", kind: "query", body: "who owns this?" });
+    expect((await owner.checkProject("/work/repo", false, "root-sess")).messages).toEqual([]);
+    expect((await owner.checkProject("/work/repo", false, "root-sibling")).messages).toEqual([]);
+    expect((await owner.checkProject("/work/repo", false, "fe-sess")).messages.map((m: { id: string }) => m.id)).toEqual([sent.msgId]);
+
+    await owner.register("root-late", { sessionId: "s1", cwd: "/work/repo" });
+    expect((await owner.checkProject("/work/repo", false, "root-late")).messages).toEqual([]);
+  });
+
+  test("project chase and cancellation notices stay hidden from the sending session", async () => {
+    const nudged = await owner.send({
+      from: "root-sess", to: "proj:/work/repo", kind: "query", body: "status?", replyByS: 50,
+    });
+    sweepReplyDeadlines(backend, () => 1050, () => "msg-project-nudge", 200);
+    expect((await owner.checkProject("/work/repo", false, "root-sess")).messages).toEqual([]);
+    expect((await owner.checkProject("/work/repo", false, "fe-sess")).messages.map((m: { corrId: string }) => m.corrId))
+      .toContain(nudged.msgId);
+
+    const cancelled = await owner.send({
+      from: "root-sess", to: "proj:/work/repo", kind: "request", body: "run it",
+    });
+    await owner.deliverProject("/work/repo", "hook", "fe-sess");
+    await owner.cancel(cancelled.msgId, "root-sess");
+    expect((await owner.checkProject("/work/repo", false, "root-sess")).messages).toEqual([]);
+    expect((await owner.checkProject("/work/repo", false, "fe-sess")).messages.map((m: { corrId: string }) => m.corrId))
+      .toContain(cancelled.msgId);
   });
 
   test("lineage both ways: a subdirectory session drains repo mail; repo root sees subdir mail", async () => {
@@ -48,7 +79,7 @@ describe("project mailboxes", () => {
 
     await owner.send({ from: "fe-sess", to: "proj:/work/repo/frontend", kind: "inform", body: "fe-addressed" });
     const rootView = await owner.checkProject("/work/repo", false, "root-sess");
-    expect(rootView.messages.map((m: { body: string }) => m.body).sort()).toEqual(["fe-addressed", "root-addressed"]);
+    expect(rootView.messages.map((m: { body: string }) => m.body)).toEqual(["fe-addressed"]);
   });
 
   test("anyone may peek; only members may consume", async () => {

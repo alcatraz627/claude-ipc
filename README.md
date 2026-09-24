@@ -16,6 +16,7 @@ bun install
 bun test                                   # the suite
 bun run build                              # compile CLI + hooks → dist/
 bash scripts/install-launchd.sh            # run the broker as an always-on agent
+bun run codex-host -- --alias cx-builder   # start a Codex TUI with active delivery
 claude-ipc register backend                # claim a mailbox (or it auto-registers via hooks)
 claude-ipc send --from me --to backend --kind query "what's the API shape?"
 claude-ipc tail                            # watch the flow (offline peers collapse to a count)
@@ -52,6 +53,7 @@ replaying a queue on resume → an on-demand `ipc_check` tool. See the docs.
 4. [`docs/04-technical-implementation.md`](docs/04-technical-implementation.md) — build-level detail
 5. [`docs/05-roadmap.md`](docs/05-roadmap.md) — phases, goals, testing criteria, cadence
 6. [`docs/06-security-and-ops.md`](docs/06-security-and-ops.md) — identity/token model, threat model, retention, deploy
+7. [`docs/07-codex-host.md`](docs/07-codex-host.md) — managed Codex TUI, delivery ownership, retry and migration
 
 ## Design provenance
 

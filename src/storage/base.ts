@@ -4,28 +4,44 @@
  * mutable state lives in the delivery and awaiting records.
  */
 
-import type { Awaiting, Delivery, Message, RegistryEntry } from "../models.ts";
+import type { Awaiting, Delivery, Message, OutboundIntent, RegistryEntry } from "../models.ts";
 
 export interface StorageBackend {
   // messages — immutable facts
   append(m: Message): void; // idempotent on id
+  appendRouted(m: Message, targets: string[]): void;
   get(id: string): Message | null;
+  getByOperationId(operationId: string): Message | null;
+  queueOutbound(intent: OutboundIntent): void;
+  pendingOutbound(fromAlias: string): OutboundIntent[];
+  pendingOutboundAll(): OutboundIntent[];
+  deleteOutbound(operationId: string): void;
 
   // per-recipient delivery + consent
   enqueue(msgId: string, alias: string): void;
+  saveRoute(msgId: string, targets: string[]): void;
+  routeFor(msgId: string): string[] | null;
   pending(alias: string, opts?: { consume?: boolean }): Message[];
+  /** Pending mail plus host-persisted asks that still await a reply. */
+  recoverable(alias: string): Message[];
   markDelivered(msgId: string, alias: string, via: Delivery["via"]): void;
   markConsumed(msgId: string, alias: string): void;
-  /** Defer without losing: seen-and-deferred, still pending. No-op unless queued/delivered. */
-  markSurfaced(msgId: string, alias: string): void;
+  /** Defer without losing: seen-and-deferred, still pending. Returns whether state changed. */
+  markSurfaced(msgId: string, alias: string): boolean;
   /** Atomically take this alias's freshly-queued messages, marking them delivered. */
   claimForDelivery(alias: string, via: Delivery["via"]): Message[];
+  /** Lease queued or expired work. It remains pending until acked after host persistence. */
+  leaseForDelivery(alias: string, via: Delivery["via"], leaseId: string, now: number, leaseUntil: number): Message[];
+  /** Settle only rows held by this lease. Returns the number acknowledged. */
+  ackDelivery(alias: string, leaseId: string, msgIds: string[]): number;
   setConsent(msgId: string, alias: string, accepted: boolean): void;
   deliveriesFor(msgId: string): Delivery[];
   /** Every `proj:` address that still has pending mail — the live project-mailbox set. */
   projectAddresses(): string[];
   /** Every address (session or project) that still has pending mail. */
   pendingAddresses(): string[];
+  /** Addresses with mail a successor must still be able to triage. */
+  recoverableAddresses(): string[];
 
   /**
    * Newest inbox-event seq across these addresses; 0 = nothing ever happened.
@@ -56,6 +72,8 @@ export interface StorageBackend {
   passProject(msgId: string, alias: string): void;
   /** Has this member already claimed or passed on this ask? */
   projectStanding(msgId: string, alias: string): "claimed" | "passed" | null;
+  markProjectSurfaced(msgId: string, alias: string): void;
+  projectSurfaced(msgId: string, alias: string): boolean;
   /** Record that a later message supersedes an earlier one (D2 — mail order is not
    *  truth order). Advisory: it changes triage display, never delivery. */
   markSuperseded(supersededId: string, bySupersedingId: string): void;

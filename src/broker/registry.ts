@@ -96,6 +96,37 @@ export class Registry {
     return this.entries.get(alias)?.token ?? null;
   }
 
+  /**
+   * Recreate the minimum authenticated sender identity needed to replay a
+   * durable outage intent. The intent already crossed the same-user SQLite
+   * trust boundary; this never exposes the synthetic token to a client.
+   */
+  restoreOutboxOwner(alias: string, sessionId: string, cwd: string, preservedToken?: string): string {
+    const existing = this.entries.get(alias);
+    if (existing?.token) return existing.token;
+    const token = preservedToken ?? `tok-${crypto.randomUUID()}`;
+    this.entries.set(alias, {
+      alias,
+      sessionId,
+      cwd,
+      caps: [],
+      pid: null,
+      tty: null,
+      lastSeen: 0,
+      status: "offline",
+      token,
+    });
+    this.snapshot();
+    return token;
+  }
+
+  dropRestoredOutboxOwner(alias: string, token: string): void {
+    const entry = this.entries.get(alias);
+    if (!entry || entry.token !== token || entry.status !== "offline") return;
+    this.entries.delete(alias);
+    this.snapshot();
+  }
+
   get(alias: string): RegistryEntry | null {
     const e = this.entries.get(alias);
     // token is a secret — never hand it back through a read accessor.
@@ -197,7 +228,8 @@ export class Registry {
       // this, a service row would be immortal with no removal path at all.
       if (e.service && e.lastSeen !== 0) continue;
       if (this.statusOf(e) !== "offline" || e.lastSeen >= beforeTs) continue;
-      if (this.backend.pending(alias).length > 0) continue; // keep live mailboxes
+      if (this.backend.recoverable(alias).length > 0) continue; // keep mailboxes with work a successor still owes
+      if (this.backend.pendingOutbound(alias).length > 0) continue; // sender identity is needed to replay outage mail
       this.entries.delete(alias);
       // The token authorizes nobody once the row is gone; delete the owner's
       // token file too so the tokens dir doesn't outgrow the registry.

@@ -50,6 +50,7 @@ async function bootOnce(client: Client, input: { session_id?: string }, self: st
 
 export async function main(): Promise<void> {
   const input = await readHookInput();
+  if (config.managedCodexHost) return;
   try {
     // Fall back to the durable SQLite log when the broker is down, so a pending
     // message still surfaces at the next turn instead of being silently skipped.

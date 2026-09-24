@@ -14,6 +14,7 @@ export interface SelfIdentity {
   sessionId: string;
   cwd: string;
   transcriptPath?: string; // path to this session's transcript, if the launcher exposed it
+  managedHost?: boolean;
 }
 
 export function createTools(client: Client, me: SelfIdentity) {
@@ -29,6 +30,8 @@ export function createTools(client: Client, me: SelfIdentity) {
       body: string;
       conversationId?: string;
       ttlS?: number;
+      replyByS?: number | null;
+      operationId?: string;
     }): Promise<unknown> => {
       if (!a.to) throw new Error("ipc_send requires an explicit `to` alias — targets are never inferred");
       return client.send({
@@ -38,15 +41,44 @@ export function createTools(client: Client, me: SelfIdentity) {
         body: a.body,
         conversationId: a.conversationId,
         ttlS: a.ttlS,
+        replyByS: a.replyByS,
+        operationId: a.operationId,
         // carry a pointer back to this session so the recipient can find context
         contextPtr: { sessionId: me.sessionId, transcriptPath: me.transcriptPath ?? "", cwd: me.cwd },
       });
     },
 
-    ipc_check: (a: { consume?: boolean } = {}): Promise<unknown> => client.check(me.alias, a.consume ?? true),
+    // A manual check is a peek. Delivery hosts use lease + ack; neither surface
+    // may silently consume a message before it is persisted into the thread.
+    ipc_check: async (a: { consume?: boolean } = {}): Promise<unknown> => {
+      if (me.managedHost && a.consume === true) {
+        throw new Error("managed hosts cannot consume through ipc_check; durable delivery uses lease + ack");
+      }
+      return client.check(me.alias, a.consume ?? !me.managedHost);
+    },
 
-    ipc_reply: (a: { corrId: string; body: string; terminal?: boolean; status?: "ok" | "error" }): Promise<unknown> =>
-      client.reply({ from: me.alias, corrId: a.corrId, body: a.body, terminal: a.terminal, status: a.status }),
+    ipc_check_project: async (a: { project?: string; consume?: boolean } = {}): Promise<unknown> => {
+      if (me.managedHost && a.consume === true) {
+        throw new Error("managed hosts cannot consume through ipc_check_project; durable delivery uses lease + ack");
+      }
+      return client.checkProject(a.project ?? me.cwd, a.consume ?? false, me.alias);
+    },
+
+    ipc_reply: (a: {
+      corrId: string;
+      body: string;
+      terminal?: boolean;
+      status?: "ok" | "error";
+      errorCode?: string;
+    }): Promise<unknown> =>
+      client.reply({
+        from: me.alias,
+        corrId: a.corrId,
+        body: a.body,
+        terminal: a.terminal,
+        status: a.status,
+        errorCode: a.errorCode,
+      }),
 
     // Incremental replies: acknowledge on receipt and stream progress WITHOUT
     // ending the exchange, then ipc_reply (terminal) with the final result. All
@@ -62,6 +94,8 @@ export function createTools(client: Client, me: SelfIdentity) {
     ipc_decline: (a: { msgId: string; reason?: string }): Promise<unknown> =>
       client.decline(me.alias, a.msgId, a.reason),
 
+    ipc_snooze: (a: { msgId: string }): Promise<unknown> => client.snooze(me.alias, a.msgId),
+
     ipc_cancel: (a: { corrId: string }): Promise<unknown> => client.cancel(a.corrId, me.alias),
 
     ipc_await: (a: { corrId: string; timeoutMs?: number; untilTerminal?: boolean }): Promise<unknown> =>
@@ -71,6 +105,20 @@ export function createTools(client: Client, me: SelfIdentity) {
       client.history(a, me.alias),
 
     ipc_status: (a: { msgId: string }): Promise<unknown> => client.status(a.msgId, me.alias),
+
+    ipc_supersede: (a: { old: string; by: string }): Promise<unknown> => client.supersede(a.old, a.by, me.alias),
+
+    ipc_orphans: (a: { project?: string; triage?: boolean } = {}): Promise<unknown> =>
+      client.orphans(a.project ?? me.cwd, a.triage ?? false),
+
+    ipc_projects: (): Promise<unknown> => client.projects(),
+
+    ipc_count: (a: { project?: string } = {}): Promise<unknown> =>
+      a.project ? client.countProject(a.project) : client.count(me.alias),
+
+    ipc_digest: (a: { project?: string } = {}): Promise<unknown> => client.digest(a.project ?? me.cwd),
+
+    ipc_asks: (): Promise<unknown> => client.asksAll(),
 
     // The compose flow: returns live peers for the HUMAN to pick from. The agent
     // must surface these in the host's input UI (pick_one + form) and let the user

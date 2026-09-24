@@ -9,6 +9,7 @@
   },
   "scripts": {
     "broker": "bun run src/broker/server.ts",
+    "codex-host": "bun run src/codex/main.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "lint": "tsc --noEmit",

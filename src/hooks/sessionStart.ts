@@ -37,6 +37,7 @@ export function isRegisterRejection(e: unknown): boolean {
 
 export async function main(): Promise<void> {
   const input = await readHookInput();
+  if (config.managedCodexHost) return;
   const cwd = input.cwd ?? process.cwd();
   if (isEphemeral(cwd)) return; // don't register transient sessions
   const alias = aliasFor(input);
