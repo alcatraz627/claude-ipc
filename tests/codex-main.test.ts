@@ -87,15 +87,20 @@ describe("managed Codex host ownership", () => {
     expect(notificationThreadCandidate("thread/goal/cleared", { threadId: "resumed" })).toEqual({
       id: "resumed",
       topLevelVerified: false,
+      historyKnownEmpty: false,
     });
     expect(notificationThreadCandidate("thread/goal/updated", { threadId: "resumed", goal: {} })).toEqual({
       id: "resumed",
       topLevelVerified: false,
+      historyKnownEmpty: false,
     });
     expect(notificationThreadCandidate("turn/started", { threadId: "resumed" })).toBeUndefined();
     expect(notificationThreadCandidate("thread/started", {
       thread: { id: "child", parentThreadId: "parent", source: { subAgent: {} } },
     })).toBeUndefined();
+    expect(notificationThreadCandidate("thread/started", {
+      thread: { id: "fresh", parentThreadId: null, source: "cli" },
+    })).toEqual({ id: "fresh", topLevelVerified: true, historyKnownEmpty: true });
   });
 
   test("starts App Server without replacing the user's shell environment policy", () => {
