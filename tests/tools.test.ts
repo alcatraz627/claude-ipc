@@ -116,6 +116,9 @@ describe("ipc_* tools", () => {
     const client = new Client(broker.socketPath);
     const codex = createTools(client, { alias: "codex", sessionId: "sC", cwd: "/c", managedHost: true });
     await codex.ipc_register({});
+    const codexPeer = ((await codex.ipc_list()) as { peers: { alias: string; caps: string[] }[] }).peers
+      .find((peer) => peer.alias === "codex");
+    expect(codexPeer?.caps).toContain("ipc-host");
     await alice.ipc_send({ to: "codex", kind: "inform", body: "managed default" });
     expect(((await codex.ipc_check()) as { messages: unknown[] }).messages).toHaveLength(1);
     expect(((await codex.ipc_check()) as { messages: unknown[] }).messages).toHaveLength(1);

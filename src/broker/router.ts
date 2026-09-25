@@ -483,7 +483,7 @@ export class Router {
   private check(req: Request): Response {
     const a = req.args as { alias?: string; consume?: boolean; project?: string };
     const self = this.aliasOfToken(req);
-    const managedHost = Boolean(self && this.registry.get(self)?.caps.includes("ipc-host"));
+    const managedHost = Boolean(self && this.registry.sessionHasCapability(self, "ipc-host"));
     if (a.project) {
       // Anyone may peek a project mailbox (visibility is deliberately open —
       // no new silos); only a member session may consume.

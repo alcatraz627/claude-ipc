@@ -19,8 +19,11 @@ export interface SelfIdentity {
 
 export function createTools(client: Client, me: SelfIdentity) {
   return {
-    ipc_register: (a: { alias?: string; caps?: string[] } = {}): Promise<unknown> =>
-      client.register(a.alias ?? me.alias, { sessionId: me.sessionId, cwd: me.cwd, caps: a.caps }),
+    ipc_register: (a: { alias?: string; caps?: string[] } = {}): Promise<unknown> => {
+      const caps = new Set(a.caps ?? []);
+      if (me.managedHost) caps.add("ipc-host");
+      return client.register(a.alias ?? me.alias, { sessionId: me.sessionId, cwd: me.cwd, caps: [...caps] });
+    },
 
     ipc_list: (): Promise<unknown> => client.list(),
 

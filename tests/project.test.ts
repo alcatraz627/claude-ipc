@@ -97,8 +97,14 @@ describe("project mailboxes", () => {
     await owner.send({ from: "fe-sess", to: "managed-member", kind: "inform", body: "direct" });
     await owner.send({ from: "fe-sess", to: "proj:/work/repo", kind: "inform", body: "project" });
 
+    await expect(owner.register("managed-member", { sessionId: "ordinary", cwd: "/work/repo" }))
+      .rejects.toThrow(/alias_taken/);
+    await owner.register("managed-member", { sessionId: "managed", cwd: "/work/repo" });
+    await owner.register("managed-sibling", { sessionId: "managed", cwd: "/work/repo" });
     await expect(owner.check("managed-member", true)).rejects.toThrow(/managed_consume/);
     await expect(owner.checkProject("/work/repo", true, "managed-member")).rejects.toThrow(/managed_consume/);
+    await expect(owner.check("managed-sibling", true)).rejects.toThrow(/managed_consume/);
+    await expect(owner.checkProject("/work/repo", true, "managed-sibling")).rejects.toThrow(/managed_consume/);
     expect((await owner.check("managed-member", false)).messages).toHaveLength(1);
     expect((await owner.checkProject("/work/repo", false, "managed-member")).messages).toHaveLength(1);
   });

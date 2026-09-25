@@ -60,6 +60,12 @@ export class Registry {
     if (prev?.token && presentedToken !== prev.token) {
       return { ok: false, replaced: false, token: null }; // owned alias, wrong/missing token
     }
+    // A managed alias names one App Server thread owner. Letting its token move
+    // to another session would either shed the durable-delivery guard or leave
+    // an ordinary successor unable to consume. Successors use a new alias.
+    if (prev?.caps.includes("ipc-host") && prev.sessionId !== info.sessionId) {
+      return { ok: false, replaced: false, token: null };
+    }
     // a service refresh keeps its synthetic svc: sid and never reads as a
     // takeover — re-registering a service is maintenance, not succession, and
     // coupling it to a human session's sid would drag its liveness along (LOW-2)
@@ -67,11 +73,15 @@ export class Registry {
     const replaced = !svcRefresh && prev !== undefined && prev.sessionId !== info.sessionId;
     const keep = prev?.token && presentedToken === prev.token;
     const token = keep ? prev.token : `tok-${crypto.randomUUID()}`;
+    const caps = new Set(info.caps ?? []);
+    // ipc-host is a security boundary, not presentation metadata. A host must
+    // not shed it by re-registering through its agent-facing register tool.
+    if (prev?.caps.includes("ipc-host")) caps.add("ipc-host");
     this.entries.set(alias, {
       alias,
       sessionId: svcRefresh ? prev!.sessionId : info.sessionId,
       cwd: info.cwd,
-      caps: info.caps ?? [],
+      caps: [...caps],
       pid: info.pid ?? null,
       tty: info.tty ?? prev?.tty ?? null,
       lastSeen: this.now(),
@@ -131,6 +141,16 @@ export class Registry {
     const e = this.entries.get(alias);
     // token is a secret — never hand it back through a read accessor.
     return e ? { ...e, caps: [...e.caps], status: this.statusOf(e), token: null } : null;
+  }
+
+  /** Whether any alias owned by this session carries a capability. */
+  sessionHasCapability(alias: string, capability: string): boolean {
+    const sessionId = this.entries.get(alias)?.sessionId;
+    if (!sessionId) return false;
+    for (const entry of this.entries.values()) {
+      if (entry.sessionId === sessionId && entry.caps.includes(capability)) return true;
+    }
+    return false;
   }
 
   heartbeat(alias: string): void {
