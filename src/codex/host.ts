@@ -21,6 +21,7 @@ export interface CodexHostOptions {
   persistenceTimeoutMs?: number;
   ensureRegistered?: () => Promise<void>;
   stillOwnsThread?: (threadId: string) => boolean;
+  historyKnownEmpty?: boolean;
 }
 
 /**
@@ -35,15 +36,17 @@ export class CodexIpcHost {
     private broker: DeliveryClient,
     private appServer: ThreadRpc,
     private options: CodexHostOptions,
-  ) {}
+  ) {
+    this.historyLoaded = options.historyKnownEmpty ?? false;
+  }
 
   async attach(): Promise<void> {
     await this.appServer.request("thread/resume", { threadId: this.options.threadId, excludeTurns: true });
   }
 
-  switchThread(threadId: string): void {
+  switchThread(threadId: string, historyKnownEmpty = false): void {
     this.options.threadId = threadId;
-    this.historyLoaded = false;
+    this.historyLoaded = historyKnownEmpty;
     this.persistedIds.clear();
   }
 
@@ -124,12 +127,24 @@ export class CodexIpcHost {
   }
 
   private async refreshPersistedMessageIds(timeoutMs?: number): Promise<{ turns: { id?: string; status?: string }[] }> {
-    const response = await this.appServer.request("thread/read", {
-      threadId: this.options.threadId,
-      includeTurns: true,
-    }, timeoutMs) as { thread?: { turns?: { id?: string; status?: string; items?: unknown[] }[] } };
-    const turns = response.thread?.turns ?? [];
-    for (const turn of response.thread?.turns ?? []) {
+    const turns: { id?: string; status?: string; items?: unknown[] }[] = [];
+    let cursor: string | undefined;
+    do {
+      const response = await this.appServer.request("thread/turns/list", {
+        threadId: this.options.threadId,
+        itemsView: "full",
+        limit: 100,
+        sortDirection: "asc",
+        ...(cursor ? { cursor } : {}),
+      }, timeoutMs) as {
+        data?: { id?: string; status?: string; items?: unknown[] }[];
+        nextCursor?: string | null;
+      };
+      turns.push(...(response.data ?? []));
+      cursor = response.nextCursor ?? undefined;
+    } while (cursor);
+
+    for (const turn of turns) {
       for (const raw of turn.items ?? []) {
         const item = raw as { type?: string; namespace?: string; name?: string; output?: unknown };
         if (item.type !== "functionCallOutput" || item.namespace !== "claude-ipc" || item.name !== "receive") continue;

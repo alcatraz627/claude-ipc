@@ -1,61 +1,107 @@
-# claude-ipc
+<div align="center">
+  <img src="assets/cover.svg" alt="Claude and Codex terminals exchanging messages through claude-ipc" width="640">
+</div>
 
-Cross-process messaging between independently-launched Claude Code sessions.
-Let the agent in your **frontend** terminal hand work to the agent in your
-**backend** terminal — ask a question, get an answer, request an action — without
-you manually copy-pasting context between them.
+<h1 align="center">claude-ipc</h1>
 
-> Status: **v0.2** — broker + MCP tools + CLI + proactive hooks + idle-proof tab
-> badge, plus a post-v0.1 hardening pass: capability-token identity, conversation
-> threading, retention/registry GC, and a single-binary deploy. Full `bun test`
-> suite green; proven by real cross-session handoffs.
+<p align="center">Durable local messaging for Claude Code and Codex sessions.</p>
 
-## Run it
-```
+<p align="center">
+  <img alt="Version 0.2.0" src="https://img.shields.io/badge/version-0.2.0-2563eb">
+  <img alt="Bun 1.3" src="https://img.shields.io/badge/Bun-1.3-f472b6">
+  <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-5.6-3178c6">
+</p>
+
+`claude-ipc` connects independently launched coding sessions on one machine. A frontend session can ask a backend session a question, send project mail to whichever session is available, or hand off an action that still requires the recipient's consent.
+
+Messages survive broker restarts and offline recipients. Capability tokens bind each mailbox to its owner. Operation IDs make sends safe to retry. Claude hooks surface mail at turn boundaries, while the managed Codex host persists incoming mail through the Codex App Server before acknowledging delivery.
+
+## Quick start
+
+Requirements: macOS, [Bun](https://bun.sh/) 1.3 or newer, and Claude Code or Codex CLI.
+
+```bash
+git clone https://github.com/alcatraz627/claude-ipc.git
+cd claude-ipc
 bun install
-bun test                                   # the suite
-bun run build                              # compile CLI + hooks → dist/
-bash scripts/install-launchd.sh            # run the broker as an always-on agent
-bun run codex-host -- --alias cx-builder   # start a Codex TUI with active delivery
-claude-ipc register backend                # claim a mailbox (or it auto-registers via hooks)
-claude-ipc send --from me --to backend --kind query "what's the API shape?"
-claude-ipc tail                            # watch the flow (offline peers collapse to a count)
-claude-ipc prune --offline-for 30m         # drop dead peers from the roster
+bun run build
+bash scripts/install-launchd.sh
 ```
-The broker runs as the compiled binary (`dist/claude-ipc serve` via launchd), so
-`bun run build` updates the broker and CLI together — no source/dist drift.
 
-## The idea in one breath
+Start two Claude Code sessions and give each one an alias:
 
-Each `claude` session registers an alias (`frontend`, `backend`, …) and gets a
-**capability token** — a `0600` file that proves ownership, so no other process
-can send as you or read your inbox. One session sends a message addressed to
-another; the recipient receives it **proactively** (no "check your messages"
-reminder needed) and can reply or act. A responder can **acknowledge on receipt,
-stream interim updates, then send the final** — all correlated to one request,
-so work-in-progress is visible without waiting for the whole task. Actions
-require explicit consent before they run. Every message is durably logged for
-audit and replay; the roster and log are garbage-collected so neither grows
-without bound.
+```bash
+claude-ipc register frontend
+claude-ipc register backend
+claude-ipc send --from frontend --to backend --kind query \
+  "What response shape should the client expect?"
+claude-ipc inbox backend
+```
 
-## Why it's not trivial
+Use `--body-file` when a message contains shell syntax, quotes, or multiline text. Use a stable `--operation-id` when retrying a send.
 
-A running `claude` can't be interrupted mid-turn. Delivery therefore rides a
-**ladder** by recipient state: native `--channels` push into a running session →
-a `UserPromptSubmit` hook injecting at the next turn → a `SessionStart` hook
-replaying a queue on resume → an on-demand `ipc_check` tool. See the docs.
+## Codex sessions
 
-## Documentation (read in order)
+The managed launcher gives a Codex TUI proactive delivery and durable retry recovery:
 
-1. [`docs/01-spec.md`](docs/01-spec.md) — what it is, goals, requirements, scope
-2. [`docs/02-behavior.md`](docs/02-behavior.md) — externally observable behavior + scenarios
-3. [`docs/03-architecture.md`](docs/03-architecture.md) — components, data flow, decisions
-4. [`docs/04-technical-implementation.md`](docs/04-technical-implementation.md) — build-level detail
-5. [`docs/05-roadmap.md`](docs/05-roadmap.md) — phases, goals, testing criteria, cadence
-6. [`docs/06-security-and-ops.md`](docs/06-security-and-ops.md) — identity/token model, threat model, retention, deploy
-7. [`docs/07-codex-host.md`](docs/07-codex-host.md) — managed Codex TUI, delivery ownership, retry and migration
+```bash
+bun run codex-host -- --alias cx-builder
+```
 
-## Design provenance
+The launcher starts one Codex App Server shared by the TUI and the IPC delivery owner. Mail arriving during an active turn waits until the thread is idle. See [Codex host](docs/07-codex-host.md) for ownership, persistence, and migration details.
 
-Planning artifact (full landscape, Q&A, alternatives considered):
-`~/.claude/assets/reports/20260529-claude-ipc-plan/PLAN.md`.
+## Everyday commands
+
+| Command | Purpose |
+| --- | --- |
+| `claude-ipc peers --by-session` | List live sessions and their aliases. |
+| `claude-ipc send --to <alias> <text>` | Send direct mail. |
+| `claude-ipc send --to-project <dir> <text>` | Send to an available session in a project. |
+| `claude-ipc inbox <alias>` | Peek at pending mail. Add `--consume` to consume it. |
+| `claude-ipc reply <message-id> <text>` | Send the final correlated reply. |
+| `claude-ipc owed` | List open asks assigned to the current session. |
+| `claude-ipc status <message-id>` | Inspect delivery and response state. |
+| `claude-ipc tail` | Open the live terminal monitor. |
+
+Run `claude-ipc --help` for the full command set.
+
+## Delivery model
+
+```text
+sender → Unix socket broker → durable SQLite state → recipient mailbox
+                                                      ├─ Claude hooks
+                                                      └─ managed Codex host
+```
+
+The broker records the message before reporting success. A recipient consumes mail through a session scoped mailbox. Project mail keeps a per member surface marker, so one session cannot consume the row for every other project member.
+
+Requests carry data and a trust boundary. They do not grant permissions. The recipient must explicitly accept an action request before acting on it.
+
+## Development
+
+```bash
+bun test
+bun run typecheck
+bun run build
+```
+
+`bun run build` runs the type check and complete test suite before compiling the broker, CLI, and hook binaries into `dist/`.
+
+## Documentation
+
+| Document | Contents |
+| --- | --- |
+| [Specification](docs/01-spec.md) | Goals, message types, use cases, and functional requirements. |
+| [Behavior](docs/02-behavior.md) | Observable scenarios and delivery semantics. |
+| [Architecture](docs/03-architecture.md) | Components, data flow, and design decisions. |
+| [Technical implementation](docs/04-technical-implementation.md) | Protocol and build level details. |
+| [Roadmap](docs/05-roadmap.md) | Delivery phases and acceptance criteria. |
+| [Security and operations](docs/06-security-and-ops.md) | Identity, consent, retention, and deployment. |
+| [Codex host](docs/07-codex-host.md) | Managed TUI behavior and App Server integration. |
+| [Event contract](docs/contracts/events.md) | Event grammar shared by producers and consumers. |
+| [Hub digest contract](docs/contracts/hub-digest.md) | Read only coordination views. |
+| [Design notes](docs/notes/) | Decisions, investigations, and deferred work. |
+
+## Scope
+
+The broker is local to one Unix user and one machine. It does not provide a security boundary against other code running as that same user. Cross machine transport and synchronous interruption of an active model turn remain outside the current scope.

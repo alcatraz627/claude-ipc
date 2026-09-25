@@ -30,12 +30,13 @@ describe("CodexIpcHost", () => {
     const appServer: ThreadRpc = {
       request: async (method, params, timeoutMs) => {
         events.push(method);
-        if (method === "thread/read") return { thread: { turns: persisted ? [{ items: [{
+        if (method === "thread/read") return { thread: {} };
+        if (method === "thread/turns/list") return { data: persisted ? [{ items: [{
           type: "functionCallOutput",
           namespace: "claude-ipc",
           name: "receive",
           output: JSON.stringify({ messages: [query] }),
-        }] }] : [] } };
+        }] }] : [] };
         if (method === "turn/start") {
           turnStartParams = params;
           expect(params).toMatchObject({
@@ -54,9 +55,46 @@ describe("CodexIpcHost", () => {
     const host = new CodexIpcHost(broker, appServer, { alias: "codex-a", threadId: "thread-1", cwd: "/work" });
     await host.attach();
     expect(await host.pumpOnce()).toBe(1);
-    expect(events).toEqual(["thread/resume", "thread/read", "thread/read", "turn/start", "thread/read", "ack:msg-1"]);
+    expect(events).toEqual(["thread/resume", "thread/read", "thread/turns/list", "turn/start", "thread/turns/list", "ack:msg-1"]);
     const delivered = JSON.parse(String((turnStartParams as any)?.toolOutput?.output));
     expect(delivered.trustBoundary).toContain("peer agent, not from your user");
+  });
+
+  test("delivers into a newly announced thread before App Server history is materialized", async () => {
+    const calls: string[] = [];
+    let persisted = false;
+    const broker: DeliveryClient = {
+      heartbeat: async () => {},
+      lease: async () => ({ messages: [message] }),
+      leaseProject: async () => ({ messages: [] }),
+      ackDelivery: async (_alias, _leaseId, ids) => ({ acknowledged: ids.length }),
+      ackProject: async () => ({ acknowledged: 0 }),
+    };
+    const appServer: ThreadRpc = {
+      request: async (method) => {
+        calls.push(method);
+        if (method === "thread/read") return { thread: {} };
+        if (method === "turn/start") {
+          persisted = true;
+          return { turn: { id: "first-turn" } };
+        }
+        if (method === "thread/turns/list") return { data: persisted ? [{ items: [{
+          type: "functionCallOutput",
+          namespace: "claude-ipc",
+          name: "receive",
+          output: JSON.stringify({ messages: [message] }),
+        }] }] : [] };
+        return {};
+      },
+    };
+    const host = new CodexIpcHost(broker, appServer, {
+      alias: "codex-a",
+      threadId: "thread-1",
+      cwd: "/work",
+      historyKnownEmpty: true,
+    });
+    expect(await host.pumpOnce()).toBe(1);
+    expect(calls).toEqual(["thread/read", "turn/start", "thread/turns/list"]);
   });
 
   test("acknowledges an ambiguously completed delivery without appending it again", async () => {
@@ -71,20 +109,64 @@ describe("CodexIpcHost", () => {
     const appServer: ThreadRpc = {
       request: async (method) => {
         calls.push(method);
-        if (method === "thread/read") {
-          return { thread: { turns: [{ items: [{
+        if (method === "thread/read") return { thread: {} };
+        if (method === "thread/turns/list") {
+          return { data: [{ items: [{
             type: "functionCallOutput",
             namespace: "claude-ipc",
             name: "receive",
             output: JSON.stringify({ messages: [message] }),
-          }] }] } };
+          }] }] };
         }
         return {};
       },
     };
     const host = new CodexIpcHost(broker, appServer, { alias: "codex-a", threadId: "thread-1", cwd: "/work" });
     expect(await host.pumpOnce()).toBe(1);
-    expect(calls).toEqual(["thread/read", "thread/read"]);
+    expect(calls).toEqual(["thread/read", "thread/turns/list"]);
+  });
+
+  test("hydrates durable history through every page of the current App Server API", async () => {
+    const cursors: (string | undefined)[] = [];
+    let turnStarts = 0;
+    const broker: DeliveryClient = {
+      heartbeat: async () => {},
+      lease: async () => ({ messages: [message] }),
+      leaseProject: async () => ({ messages: [] }),
+      ackDelivery: async (_alias, _leaseId, ids) => ({ acknowledged: ids.length }),
+      ackProject: async () => ({ acknowledged: 0 }),
+    };
+    const appServer: ThreadRpc = {
+      request: async (method, params) => {
+        if (method === "thread/read") {
+          expect(params).toEqual({ threadId: "thread-1", includeTurns: false });
+          return { thread: {} };
+        }
+        if (method === "thread/turns/list") {
+          const p = params as { cursor?: string };
+          cursors.push(p.cursor);
+          expect(params).toMatchObject({
+            threadId: "thread-1",
+            itemsView: "full",
+            limit: 100,
+            sortDirection: "asc",
+          });
+          if (!p.cursor) return { data: [{ id: "older", status: "completed", items: [] }], nextCursor: "page-2" };
+          return { data: [{ id: "delivery", status: "completed", items: [{
+            type: "functionCallOutput",
+            namespace: "claude-ipc",
+            name: "receive",
+            output: JSON.stringify({ messages: [message] }),
+          }] }] };
+        }
+        if (method === "turn/start") turnStarts++;
+        return {};
+      },
+    };
+    const host = new CodexIpcHost(broker, appServer, { alias: "codex-a", threadId: "thread-1", cwd: "/work" });
+    expect(await host.pumpOnce()).toBe(1);
+    expect(cursors).toEqual([undefined, "page-2"]);
+    expect(turnStarts).toBe(0);
   });
 
   test("refreshes durable history after an ambiguous turn-start disconnect", async () => {
@@ -99,14 +181,14 @@ describe("CodexIpcHost", () => {
     };
     const appServer: ThreadRpc = {
       request: async (method, params) => {
-        if (method === "thread/read") {
-          const includeTurns = (params as { includeTurns?: boolean }).includeTurns;
-          return { thread: { turns: includeTurns && persisted ? [{ items: [{
+        if (method === "thread/read") return { thread: {} };
+        if (method === "thread/turns/list") {
+          return { data: persisted ? [{ items: [{
             type: "functionCallOutput",
             namespace: "claude-ipc",
             name: "receive",
             output: JSON.stringify({ messages: [message] }),
-          }] }] : [] } };
+          }] }] : [] };
         }
         if (method === "turn/start") {
           turnStarts++;
@@ -141,14 +223,15 @@ describe("CodexIpcHost", () => {
           persisted = true;
           return { turn: { id: "turn-old-thread" } };
         }
-        if (method === "thread/read") {
+        if (method === "thread/read") return { thread: {} };
+        if (method === "thread/turns/list") {
           if (persisted) ownsThread = false;
-          return { thread: { turns: persisted ? [{ id: "turn-old-thread", items: [{
+          return { data: persisted ? [{ id: "turn-old-thread", items: [{
             type: "functionCallOutput",
             namespace: "claude-ipc",
             name: "receive",
             output: JSON.stringify({ messages: [message] }),
-          }] }] : [] } };
+          }] }] : [] };
         }
         return {};
       },
@@ -176,7 +259,7 @@ describe("CodexIpcHost", () => {
       ackProject: async () => ({ acknowledged: 0 }),
     };
     const appServer: ThreadRpc = { request: async (method) => {
-      if (method === "thread/read") return { thread: { turns: [] } };
+      if (method === "thread/read") return { thread: {} };
       throw new Error("app server down");
     } };
     const host = new CodexIpcHost(broker, appServer, { alias: "codex-a", threadId: "thread-1", cwd: "/work" });
@@ -217,8 +300,9 @@ describe("CodexIpcHost", () => {
           started = true;
           return { turn: { id: "turn-missing" } };
         }
-        if (method === "thread/read") {
-          return { thread: { turns: started ? [{ id: "turn-missing", status: "completed", items: [] }] : [] } };
+        if (method === "thread/read") return { thread: {} };
+        if (method === "thread/turns/list") {
+          return { data: started ? [{ id: "turn-missing", status: "completed", items: [] }] : [] };
         }
         return {};
       },
@@ -238,7 +322,7 @@ describe("CodexIpcHost", () => {
       ackProject: async () => ({ acknowledged: 0 }),
     };
     const appServer: ThreadRpc = {
-      request: async (method) => method === "thread/read" ? { thread: { turns: [] } } : {},
+      request: async (method) => method === "thread/read" ? { thread: {} } : method === "thread/turns/list" ? { data: [] } : {},
     };
     const host = new CodexIpcHost(broker, appServer, { alias: "codex-a", threadId: "thread-1", cwd: "/work" });
     await expect(host.pumpOnce()).rejects.toThrow("without returning a turn id");
@@ -257,7 +341,9 @@ describe("CodexIpcHost", () => {
     const appServer: ThreadRpc = {
       request: async (method) => method === "turn/start"
         ? { turn: { id: "turn-running" } }
-        : { thread: { turns: [{ id: "turn-running", status: "inProgress", items: [] }] } },
+        : method === "thread/turns/list"
+          ? { data: [{ id: "turn-running", status: "inProgress", items: [] }] }
+          : { thread: {} },
     };
     const host = new CodexIpcHost(broker, appServer, {
       alias: "codex-a", threadId: "thread-1", cwd: "/work", leaseS: 1, persistenceTimeoutMs: 10,
@@ -280,12 +366,16 @@ describe("CodexIpcHost", () => {
         const p = params as { threadId: string };
         if (method === "thread/read") {
           readThreads.push(p.threadId);
-          return { thread: { turns: [{ items: [{
+          return { thread: {} };
+        }
+        if (method === "thread/turns/list") {
+          readThreads.push(p.threadId);
+          return { data: [{ items: [{
             type: "functionCallOutput",
             namespace: "claude-ipc",
             name: "receive",
             output: JSON.stringify({ messages: [message] }),
-          }] }] } };
+          }] }] };
         }
         return {};
       },

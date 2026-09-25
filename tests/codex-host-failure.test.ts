@@ -70,19 +70,22 @@ const server = Bun.serve({
       }
       if (request.method === "thread/read") {
         const current = state();
-        if ((mode === "crash" && request.params.includeTurns && current.deliveries.length > 0) ||
-            (mode === "leased" && request.params.includeTurns)) return;
         respond({ thread: {
           id: request.params.threadId,
           parentThreadId: null,
           source: "cli",
           status: { type: "idle" },
-          turns: request.params.includeTurns ? current.deliveries.map((delivery) => ({
+        } });
+        return;
+      }
+      if (request.method === "thread/turns/list") {
+        const current = state();
+        if ((mode === "crash" && current.deliveries.length > 0) || mode === "leased") return;
+        respond({ data: current.deliveries.map((delivery) => ({
             id: delivery.turnId,
             status: "completed",
             items: [{ type: "functionCallOutput", namespace: delivery.namespace, name: delivery.name, output: delivery.output }],
-          })) : [],
-        } });
+          })) });
         return;
       }
       if (request.method === "turn/start") {

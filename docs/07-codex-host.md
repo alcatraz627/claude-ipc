@@ -41,7 +41,7 @@ launcher's environment variables into the nested process.
 ```text
 broker lease
   -> turn/start toolOutput
-  -> thread/read confirms every message ID in functionCallOutput
+  -> thread/turns/list confirms every message ID in functionCallOutput
   -> broker acknowledgement
 ```
 
@@ -141,8 +141,8 @@ The launcher requires a Codex CLI with these App Server methods and flags:
 
 The `toolOutput`, `turnTrigger`, and `clientUserMessageId` fields currently
 require App Server's experimental API capability. The host treats a matching
-`functionCallOutput` in `thread/read` as persistence. It does not treat that
-state as proof that the person read the message.
+`functionCallOutput` in paginated `thread/turns/list` history as persistence.
+It does not treat that state as proof that the person read the message.
 
 Delivery occurs between user turns. Mail arriving during a long turn waits in
 the broker. The normal one-second host poll determines the added delay after

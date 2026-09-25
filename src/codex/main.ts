@@ -82,16 +82,19 @@ export function isTopLevelThread(thread: {
 export function notificationThreadCandidate(method: string, params: unknown): {
   id: string;
   topLevelVerified: boolean;
+  historyKnownEmpty: boolean;
 } | undefined {
   if (method === "thread/started") {
     const thread = (params as {
       thread?: { id?: string; parentThreadId?: string | null; source?: unknown };
     } | undefined)?.thread;
-    return thread && isTopLevelThread(thread) ? { id: thread.id, topLevelVerified: true } : undefined;
+    return thread && isTopLevelThread(thread)
+      ? { id: thread.id, topLevelVerified: true, historyKnownEmpty: true }
+      : undefined;
   }
   if (method !== "thread/goal/updated" && method !== "thread/goal/cleared") return undefined;
   const id = (params as { threadId?: unknown } | undefined)?.threadId;
-  return typeof id === "string" ? { id, topLevelVerified: false } : undefined;
+  return typeof id === "string" ? { id, topLevelVerified: false, historyKnownEmpty: false } : undefined;
 }
 
 export function acquireOwner(
@@ -190,7 +193,7 @@ async function main(): Promise<void> {
   let tui: ChildProcess | undefined;
   let appServer: AppServerWebSocketRpc | undefined;
   let activeThreadId = requestedThread;
-  let pendingThread: { id: string; topLevelVerified: boolean } | undefined;
+  let pendingThread: { id: string; topLevelVerified: boolean; historyKnownEmpty: boolean } | undefined;
   let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
   let stopped = false;
   const stop = (): void => {
@@ -293,6 +296,7 @@ async function main(): Promise<void> {
     alias,
     threadId,
     cwd,
+    historyKnownEmpty: requestedThread === undefined,
     ensureRegistered: register,
     stillOwnsThread: (candidate) => candidate === activeThreadId && pendingThread === undefined,
   });
@@ -325,10 +329,11 @@ async function main(): Promise<void> {
         }
         const nextOwner = acquireOwner(pendingThread.id, alias, undefined, owner?.ownerId);
         const previousOwner = owner;
+        const historyKnownEmpty = pendingThread.historyKnownEmpty;
         owner = nextOwner;
         activeThreadId = pendingThread.id;
         pendingThread = undefined;
-        host.switchThread(activeThreadId);
+        host.switchThread(activeThreadId, historyKnownEmpty);
         previousOwner?.release();
       } catch (error) {
         console.error(`[claude-ipc codex host] cannot follow TUI thread: ${error instanceof Error ? error.message : String(error)}`);
