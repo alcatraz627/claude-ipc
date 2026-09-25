@@ -13,7 +13,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { Client } from "./client.ts";
-import { config } from "./config.ts";
+import { config, ipcIdentityEnv } from "./config.ts";
 import { createTools, type IpcTools, type SelfIdentity } from "./tools.ts";
 
 /** The transcript path the SessionStart hook captured for this alias, if any. */
@@ -52,15 +52,24 @@ export function buildMcpServer(tools: IpcTools): McpServer {
       body: z.string(),
       conversationId: z.string().optional(),
       ttlS: z.number().optional(),
+      replyByS: z.number().nullable().optional(),
+      operationId: z.string().optional(),
     },
     async (a) => asText(await tools.ipc_send(a)),
   );
 
   server.tool(
     "ipc_check",
-    "Pull this session's pending incoming messages.",
+    "Check this session's pending incoming messages. Managed Codex hosts peek by default; other hosts preserve the consuming default.",
     { consume: z.boolean().optional() },
     async (a) => asText(await tools.ipc_check(a)),
+  );
+
+  server.tool(
+    "ipc_check_project",
+    "Peek at pending messages for a project mailbox. Defaults to this session's cwd and never consumes unless explicitly requested.",
+    { project: z.string().optional(), consume: z.boolean().optional() },
+    async (a) => asText(await tools.ipc_check_project(a)),
   );
 
   server.tool(
@@ -71,6 +80,7 @@ export function buildMcpServer(tools: IpcTools): McpServer {
       body: z.string(),
       terminal: z.boolean().optional(),
       status: z.enum(["ok", "error"]).optional(),
+      errorCode: z.string().optional(),
     },
     async (a) => asText(await tools.ipc_reply(a)),
   );
@@ -111,6 +121,13 @@ export function buildMcpServer(tools: IpcTools): McpServer {
   );
 
   server.tool(
+    "ipc_snooze",
+    "Defer an incoming ask without losing it; it remains pending and its recipient nudge clock restarts.",
+    { msgId: z.string() },
+    async (a) => asText(await tools.ipc_snooze(a)),
+  );
+
+  server.tool(
     "ipc_await",
     "Wait up to timeoutMs (default 30s) for the FINAL reply to your query/request, then return (null on timeout). It's a bounded wait, not an open-ended block — a later reply still surfaces in your inbox at your next turn, so for long-running work don't block here. Interim acks/updates land in your inbox separately; untilTerminal=false returns on the first reply.",
     { corrId: z.string(), timeoutMs: z.number().optional(), untilTerminal: z.boolean().optional() },
@@ -132,6 +149,42 @@ export function buildMcpServer(tools: IpcTools): McpServer {
   );
 
   server.tool(
+    "ipc_supersede",
+    "Mark an earlier message you sent as superseded by a later message you sent. Delivery remains auditable.",
+    { old: z.string(), by: z.string() },
+    async (a) => asText(await tools.ipc_supersede(a)),
+  );
+
+  server.tool(
+    "ipc_orphans",
+    "Inspect mail waiting for offline sessions in this project. triage=true folds settled or superseded entries.",
+    { project: z.string().optional(), triage: z.boolean().optional() },
+    async (a) => asText(await tools.ipc_orphans(a)),
+  );
+
+  server.tool("ipc_projects", "List project mailboxes that still contain pending mail.", {}, async () =>
+    asText(await tools.ipc_projects()),
+  );
+
+  server.tool(
+    "ipc_count",
+    "Count pending mail for this session or for an explicit project mailbox.",
+    { project: z.string().optional() },
+    async (a) => asText(await tools.ipc_count(a)),
+  );
+
+  server.tool(
+    "ipc_digest",
+    "Read the non-consuming project coordination digest for this session's cwd or an explicit project.",
+    { project: z.string().optional() },
+    async (a) => asText(await tools.ipc_digest(a)),
+  );
+
+  server.tool("ipc_asks", "List every open ask across the fabric without consuming mail.", {}, async () =>
+    asText(await tools.ipc_asks()),
+  );
+
+  server.tool(
     "ipc_compose",
     "Start a hand-off: returns the live peers so YOU can let the USER pick the target and add notes (present them with pick_one + form, never choose the target yourself), then call ipc_send.",
     {},
@@ -143,13 +196,13 @@ export function buildMcpServer(tools: IpcTools): McpServer {
 
 export function resolveIdentity(): SelfIdentity {
   const cwd = process.cwd();
-  const sessionId = process.env.CLAUDE_IPC_SESSION ?? crypto.randomUUID();
-  const alias = process.env.CLAUDE_IPC_ALIAS ?? sessionId; // addressable by id; friendly name optional
+  const sessionId = ipcIdentityEnv("CLAUDE_IPC_SESSION") ?? crypto.randomUUID();
+  const alias = ipcIdentityEnv("CLAUDE_IPC_ALIAS") ?? sessionId; // addressable by id; friendly name optional
   // Transcript path: explicit env wins; else the value the SessionStart hook
   // captured for this alias (works when hook + MCP share an alias, i.e.
   // CLAUDE_IPC_ALIAS is set — see docs/06-security-and-ops.md).
   const transcriptPath = process.env.CLAUDE_IPC_TRANSCRIPT ?? readMeta(alias) ?? "";
-  return { alias, sessionId, cwd, transcriptPath };
+  return { alias, sessionId, cwd, transcriptPath, managedHost: config.managedCodexHost };
 }
 
 export async function main(): Promise<void> {
@@ -160,10 +213,12 @@ export async function main(): Promise<void> {
   // Best-effort: register makes this session addressable, but the broker may be
   // down. Don't let that abort startup — the degraded fallback still serves
   // ipc_send/check/deliver off the durable log, and a later op re-registers.
-  try {
-    await tools.ipc_register({});
-  } catch {
-    // broker unreachable at startup — come up anyway, register when it returns
+  if (!me.managedHost) {
+    try {
+      await tools.ipc_register({});
+    } catch {
+      // Start without the broker and register when it returns.
+    }
   }
   await buildMcpServer(tools).connect(new StdioServerTransport());
 }

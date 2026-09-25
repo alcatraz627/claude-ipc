@@ -17,6 +17,7 @@ export type DeliveryState =
   | "queued"
   | "delivered"
   | "surfaced"
+  | "persisted"
   | "consumed"
   | "accepted"
   | "declined";
@@ -29,6 +30,8 @@ export interface ContextPtr {
 
 export interface Message {
   id: string;
+  /** Caller-stable idempotency key. Retries return this message instead of appending again. */
+  operationId: string | null;
   kind: Kind;
   fromAlias: string;
   toAlias: string; // a concrete alias, or "*" for broadcast
@@ -41,6 +44,8 @@ export interface Message {
   op: ControlOp | null;
   contextPtr: ContextPtr | null;
   ttlS: number | null;
+  /** Effective reply deadline captured with the immutable send for idempotent replay. */
+  replyByS?: number | null;
   ts: number; // epoch seconds, set at append
   // Set by the broker when it blanked the body for a non-party reader — a
   // display hint a peer cannot forge by writing marker-lookalike text.
@@ -80,6 +85,14 @@ export interface Awaiting {
   // replaces the old terminal "timeout"/"ghosted" ERROR — the silent-failure the
   // data showed (64% of asks). Those reasons are retained for back-compat reads.
   closedReason: "responded" | "timeout" | "cancelled" | "ghosted" | "parked" | null;
+}
+
+/** Complete send intent durably queued while the broker is unreachable. */
+export interface OutboundIntent {
+  operationId: string;
+  fromAlias: string;
+  args: Record<string, unknown>;
+  createdAt: number;
 }
 
 export interface RegistryEntry {
@@ -134,6 +147,7 @@ export function makeMessage(
 ): Message {
   return {
     body: "",
+    operationId: null,
     conversationId: null,
     corrId: null,
     status: null,
@@ -142,6 +156,7 @@ export function makeMessage(
     op: null,
     contextPtr: null,
     ttlS: null,
+    replyByS: null,
     ...fields,
   };
 }

@@ -124,14 +124,16 @@ broker correlates → sender's message RESPONDED.
 
 ## 4. Data model (logical)
 
-- **Message (immutable):** `id, conversation_id, corr_id, from_alias, to_alias|*,
+- **Message (immutable):** `id, operation_id, conversation_id, corr_id, from_alias, to_alias|*,
   kind, status, error_code, terminal, op, body, context_ptr{session_id,path,cwd},
   ttl, ts`. Never mutated after append.
-- **Delivery (per recipient):** `msg_id, to_alias, via, state, ts` — a broadcast
+- **Delivery (per recipient):** `msg_id, to_alias, via, state, lease_id, lease_until, ts` — a broadcast
   yields one row per recipient; this table *is* the queue (rows in `state=queued`).
 - **Awaiting (sender's open request):** `origin_id, expires_at, closed,
   closed_reason`.
 - **Registry entry:** `alias, session_id, cwd, caps[], pid, last_seen, status`.
+- **Outbound intent:** the complete arguments for a send accepted while the
+  broker is unavailable, keyed by `operation_id` until normal routing succeeds.
 The log is the source of truth for history; the registry is in-memory with a
 periodic snapshot for restart warm-up; the queue is derivable from the log but
 materialized for fast lookup.
@@ -198,6 +200,8 @@ structurally: a `request` is inert until `ipc_accept`. A reserved seam — a
 per-target allowlist consulted by the broker before routing/surfacing a
 `request` — allows a future "only X may task the broad-permission peer" rule
 without building an auth system now [§11 spec].
+Hook and managed App Server delivery both label peer text as untrusted input.
+Project routing excludes the sending session from its own shared mailbox ask.
 
 ## 11. Key decisions (ADR-style)
 

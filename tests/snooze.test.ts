@@ -48,14 +48,46 @@ describe("snooze (surfaced delivery state)", () => {
     expect((await owner.count("bob")).count).toBe(0);
   });
 
-  test("snooze never resurrects a consumed delivery", async () => {
+  test("snooze refuses a consumed delivery instead of reporting a false success", async () => {
     await owner.register("alice", { sessionId: "sA", cwd: "/a" });
     await owner.register("bob", { sessionId: "sB", cwd: "/b" });
     const sent = await owner.send({ from: "alice", to: "bob", kind: "inform", body: "fyi" });
     await owner.check("bob", true);
-    await owner.snooze("bob", sent.msgId);
+    await expect(owner.snooze("bob", sent.msgId)).rejects.toThrow(/invalid_state/);
     expect(backend.deliveriesFor(sent.msgId)[0]?.state).toBe("consumed");
     expect((await owner.count("bob")).count).toBe(0);
+  });
+
+  test("snooze returns host-persisted mail to the owed set without auto-leasing it again", async () => {
+    await owner.register("alice", { sessionId: "sA", cwd: "/a" });
+    await owner.register("bob", { sessionId: "sB", cwd: "/b" });
+    const sent = await owner.send({ from: "alice", to: "bob", kind: "query", body: "later?" });
+    backend.leaseForDelivery("bob", "channel", "host-lease", 1000, 1300);
+    expect(backend.ackDelivery("bob", "host-lease", [sent.msgId])).toBe(1);
+
+    expect((await owner.check("bob")).messages.map((x: { id: string }) => x.id)).toEqual([sent.msgId]);
+    expect((await owner.count("bob")).count).toBe(1);
+
+    expect((await owner.snooze("bob", sent.msgId)).surfaced).toBe(true);
+    expect(backend.pending("bob").map((x) => x.id)).toEqual([sent.msgId]);
+    expect(backend.leaseForDelivery("bob", "channel", "next-host", 1001, 1301)).toEqual([]);
+  });
+
+  test("host-persisted asks stay in obligation views until the reply settles them", async () => {
+    await owner.register("alice", { sessionId: "sA", cwd: "/a" });
+    await owner.register("bob", { sessionId: "sB", cwd: "/b" });
+    const sent = await owner.send({ from: "alice", to: "bob", kind: "query", body: "answer?" });
+    backend.leaseForDelivery("bob", "channel", "host-lease", 1000, 1300);
+    expect(backend.ackDelivery("bob", "host-lease", [sent.msgId])).toBe(1);
+
+    expect((await owner.count("bob")).count).toBe(1);
+    expect((await owner.check("bob")).messages.map((item: { id: string }) => item.id)).toEqual([sent.msgId]);
+    expect((await owner.digest("/b")).sessions.sB.owed.map((item: { corr_id: string }) => item.corr_id)).toEqual([sent.msgId]);
+
+    await owner.reply({ from: "bob", corrId: sent.msgId, body: "done", terminal: true });
+    expect((await owner.count("bob")).count).toBe(0);
+    expect((await owner.check("bob")).messages).toEqual([]);
+    expect((await owner.digest("/b")).sessions.sB.owed).toEqual([]);
   });
 
   test("only the recipient may snooze its own delivery", async () => {

@@ -7,7 +7,7 @@
 import { readFileSync } from "node:fs";
 import { readAliasForSession, writeAliasForSession } from "./aliasStore.ts";
 import { BrokerError, Client } from "./client.ts";
-import { config } from "./config.ts";
+import { config, ipcIdentityEnv } from "./config.ts";
 import { markOrphanShown, orphanAlreadyShown, TRUST_RAIL } from "./hooks/shared.ts";
 import { humanAge } from "./models.ts";
 import { monitorSnapshot } from "./monitor.ts";
@@ -29,7 +29,7 @@ export function railIfPeerMail(box: unknown): void {
  *  writes (keyed by CLAUDE_CODE_SESSION_ID). Undefined if never registered.
  *  Lets `send`/`reply` infer --from so a session never has to name itself. */
 function resolveSelfAlias(): string | undefined {
-  return process.env.CLAUDE_IPC_ALIAS || readAliasForSession(process.env.CLAUDE_CODE_SESSION_ID);
+  return ipcIdentityEnv("CLAUDE_IPC_ALIAS") || readAliasForSession(process.env.CLAUDE_CODE_SESSION_ID);
 }
 
 type FlagValue = string | boolean;
@@ -177,6 +177,7 @@ const USAGE = `claude-ipc — cross-session messaging
                               "user" is the human owner's sentinel: sessions can't wear it;
                               the owner claims it once with: register user --service)
   send   --to <b> | --to-project <dir|name> [--from <a>] [--kind inform|query|request] [--ttl N]
+         [--operation-id <stable-id>]
          [--reply-by 5m|90s|none] [--no-reply-expected] <body...> | --body-file <path>
                              (--body-file: read the body from a file, byte-exact — use it when the
                               body has backticks, quotes, or $() the shell would eat.)
@@ -226,7 +227,7 @@ const USAGE = `claude-ipc — cross-session messaging
 // A command absent from this map (help, serve) skips the check.
 export const COMMAND_FLAGS: Record<string, string[]> = {
   register: ["as", "tty", "service"],
-  send: ["to", "to-project", "from", "kind", "ttl", "reply-by", "no-reply-expected", "body", "body-file"],
+  send: ["to", "to-project", "from", "kind", "ttl", "reply-by", "no-reply-expected", "operation-id", "body", "body-file"],
   reply: ["from", "corr", "status", "partial", "body", "body-file"],
   inbox: ["alias", "consume", "project"],
   count: ["alias", "project", "cursor"],
@@ -540,6 +541,7 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
             body: sendBody,
             ttlS: ttlSeconds, // already number | undefined; "bad" returned above
             replyByS: replyBy,
+            operationId: flags["operation-id"] === undefined ? undefined : String(flags["operation-id"]),
           });
         } catch (e) {
           // The broker accepts a send to any known alias (even offline — the mail
@@ -974,6 +976,7 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
           delivered: "delivered — claimed by their wake, not yet shown",
           surfaced: "surfaced — placed in their context (NOT confirmed read)",
           consumed: "settled — read, accepted, declined, or cancelled",
+          persisted: "persisted in recipient thread — reading not confirmed",
           accepted: "accepted",
           declined: "declined",
         };

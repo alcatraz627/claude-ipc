@@ -46,6 +46,36 @@ export class Router {
     private finalGraceS = 600, // ...and how much longer before the sender is released to act
   ) {}
 
+  /** Replay outage intents when the broker returns, even if the sender session ended. */
+  reconcilePendingOutbox(): { attempted: number; remaining: number } {
+    const intents = this.backend.pendingOutboundAll();
+    for (const intent of intents) {
+      const context = intent.args.contextPtr as { sessionId?: unknown; cwd?: unknown } | undefined;
+      let preservedToken: string | undefined;
+      try {
+        preservedToken = readFileSync(join(config.tokensDir, encodeURIComponent(intent.fromAlias)), "utf8").trim() || undefined;
+      } catch {
+        // A genuinely pruned sender has no token file. The durable intent is
+        // still replayable inside the broker's same-user trust boundary.
+      }
+      const existingToken = this.registry.tokenOf(intent.fromAlias);
+      const token = existingToken ?? this.registry.restoreOutboxOwner(
+        intent.fromAlias,
+        typeof context?.sessionId === "string" ? context.sessionId : `outbox:${intent.fromAlias}`,
+        typeof context?.cwd === "string" ? context.cwd : "",
+        preservedToken,
+      );
+      this.reconcile({
+        v: PROTOCOL_VERSION,
+        op: "reconcile",
+        args: { alias: intent.fromAlias },
+        token,
+      });
+      if (!existingToken) this.registry.dropRestoredOutboxOwner(intent.fromAlias, token);
+    }
+    return { attempted: intents.length, remaining: this.backend.pendingOutboundAll().length };
+  }
+
   handle(req: Request): Response {
     // Reject a frame from an incompatible client loudly rather than mis-parsing
     // it silently — a stale compiled CLI talking to a newer broker (or vice
@@ -63,10 +93,16 @@ export class Router {
           return this.leave(req);
         case "send":
           return this.send(req);
+        case "reconcile":
+          return this.reconcile(req);
         case "check":
           return this.check(req);
         case "deliver":
           return this.deliver(req);
+        case "lease":
+          return this.lease(req);
+        case "ack_delivery":
+          return this.ackDelivery(req);
         case "reply":
           return this.reply(req);
         case "accept":
@@ -214,8 +250,14 @@ export class Router {
       ttlS?: number;
       replyByS?: number | null; // null = opted out; undefined = use the default
       contextPtr?: { sessionId: string; transcriptPath: string; cwd: string };
+      operationId?: string;
+      messageId?: string;
     };
     if (!a.from || !a.to) return fail("bad_args", "send needs from + to");
+    if (isProjectAddress(a.to)) a.to = projectAddress(projectPath(a.to));
+    if (a.messageId && !/^msg-[a-f0-9]{16}$/.test(a.messageId)) {
+      return fail("bad_args", "messageId must use the broker's msg- plus 16 lowercase hex format");
+    }
     // "ipc" has no token, so requireOwner can't protect it — but it IS the broker's
     // signature (nudges, park notices). Reject it as a sender unconditionally, not
     // behind the disableable strict flag, or a peer can forge a broker notice.
@@ -226,6 +268,52 @@ export class Router {
     // liveness before the content guards: a send refused for an empty body or bad
     // kind still came from a live agent, and requireOwner blocked anyone who isn't.
     this.registry.touchByAct(a.from);
+    if (a.operationId) {
+      const existing = this.backend.getByOperationId(a.operationId);
+      if (existing) {
+        const requestedReplyBy =
+          existing.toAlias !== "*" && (existing.kind === "query" || existing.kind === "request")
+            ? (a.replyByS === undefined ? (existing.replyByS ?? null) : a.replyByS)
+            : null;
+        if (existing.fromAlias !== a.from) return fail("operation_conflict", "operationId belongs to another sender");
+        const samePayload =
+          existing.toAlias === a.to &&
+          existing.kind === a.kind &&
+          existing.body === (a.body ?? "") &&
+          existing.ttlS === (a.ttlS ?? null) &&
+          (existing.replyByS ?? null) === requestedReplyBy &&
+          (a.conversationId === undefined || existing.conversationId === a.conversationId) &&
+          JSON.stringify(existing.contextPtr) === JSON.stringify(a.contextPtr ?? null);
+        if (!samePayload) return fail("operation_conflict", "operationId was already used for a different send payload");
+        const routed = this.backend.routeFor(existing.id);
+        const senderSid = this.registry.get(existing.fromAlias)?.sessionId ?? null;
+        const targets = routed !== null
+          ? routed
+          : existing.toAlias === "*"
+            ? this.registry.liveAliases(existing.fromAlias).filter((target) => !senderSid || this.registry.get(target)?.sessionId !== senderSid)
+            : [existing.toAlias];
+        for (const target of targets) this.backend.enqueue(existing.id, target);
+        if (isProjectAddress(existing.toAlias)) {
+          for (const alias of this.sessionBoxes(existing.fromAlias)) this.backend.passProject(existing.id, alias);
+        }
+        let awaiting = this.backend.getAwaiting(existing.id);
+        if (!awaiting && existing.toAlias !== "*" && (existing.kind === "query" || existing.kind === "request")) {
+          const ttl = existing.ttlS ?? this.defaultTtlS;
+          const replyBy = a.replyByS === undefined ? this.defaultReplyByS : a.replyByS;
+          this.backend.openAwaiting(existing.id, ttl === null ? null : existing.ts + ttl, replyBy, existing.ts);
+          awaiting = this.backend.getAwaiting(existing.id);
+        }
+        for (const target of targets) this.notify(target);
+        return ok({
+          msgId: existing.id,
+          recipients: targets,
+          conversationId: existing.conversationId,
+          replyByS: awaiting?.replyByS ?? null,
+          releaseAfterS: awaiting?.replyByS === null || awaiting?.replyByS === undefined ? null : awaiting.replyByS + this.finalGraceS,
+          idempotentReplay: true,
+        });
+      }
+    }
     // Strict identity: an unregistered `from` can't send — closes the window
     // where you forge a message from an alias before its owner registers.
     if (this.strict && !this.registry.has(a.from)) {
@@ -254,8 +342,7 @@ export class Router {
     // A project address needs no registered peer — the mailbox IS the address,
     // and it may be created before anyone works there. Canonicalize so
     // `proj:/x/` and `proj:/x` are one mailbox.
-    if (isProjectAddress(a.to)) a.to = projectAddress(projectPath(a.to));
-    else if (a.to !== "*" && !this.registry.has(a.to)) {
+    if (!isProjectAddress(a.to) && a.to !== "*" && !this.registry.has(a.to)) {
       return fail("no_peer", `no peer named "${a.to}" is registered — nothing was sent. See who's reachable: claude-ipc peers`, {
         livePeers: this.registry.liveAliases(),
       });
@@ -283,7 +370,9 @@ export class Router {
       return fail("not_allowed", `${a.from} may not target ${a.to} — nothing was sent`);
     }
 
-    const id = this.newId();
+    const id = a.messageId ?? this.newId();
+    const idOwner = this.backend.get(id);
+    if (idOwner) return fail("message_conflict", `message id ${id} already exists`);
     // A directed query/request opens a thread: stamp it with a conversationId
     // (derived from its own id) so the correlated reply — which inherits the
     // origin's conversationId — and any follow-ups share one thread key that
@@ -292,6 +381,7 @@ export class Router {
     const conversationId = a.conversationId ?? (opensThread ? `conv-${id}` : null);
     const msg = makeMessage({
       id,
+      operationId: a.operationId ?? null,
       kind: a.kind,
       fromAlias: a.from,
       toAlias: a.to,
@@ -299,16 +389,39 @@ export class Router {
       body: a.body ?? "",
       conversationId,
       ttlS: a.ttlS ?? null,
+      replyByS:
+        opensThread ? (a.replyByS === undefined ? this.defaultReplyByS : a.replyByS) : null,
       contextPtr: a.contextPtr ?? null,
     });
-    this.backend.append(msg);
-
-    // Broadcast excludes the WHOLE sending session, not just the from-alias —
-    // its sibling aliases are still the same agent talking to itself.
+    // Snapshot routing in the same storage transaction as the immutable message.
+    // A retry must never add peers that appeared after the original send, and a
+    // crash partway through fan-out must still know the complete target set.
     const targets =
       a.to === "*"
-        ? this.registry.liveAliases(a.from).filter((t) => !senderSid || this.registry.get(t)?.sessionId !== senderSid)
+        ? this.registry.liveAliases(a.from).filter((target) => !senderSid || this.registry.get(target)?.sessionId !== senderSid)
         : [a.to];
+    this.backend.appendRouted(msg, targets);
+    // Asking a project must not make the sending session answer itself. Keep the
+    // shared mailbox available to every other current or future project member,
+    // while every alias of the sending session is treated as having passed.
+    if (isProjectAddress(a.to)) {
+      for (const alias of this.sessionBoxes(a.from)) this.backend.passProject(msg.id, alias);
+    }
+    if (a.operationId) {
+      const committed = this.backend.getByOperationId(a.operationId);
+      const samePayload =
+        committed?.id === id &&
+        committed.fromAlias === a.from &&
+        committed.toAlias === a.to &&
+        committed.kind === a.kind &&
+        committed.body === (a.body ?? "") &&
+        committed.conversationId === conversationId &&
+        committed.ttlS === (a.ttlS ?? null) &&
+        (committed.replyByS ?? null) === (msg.replyByS ?? null) &&
+        JSON.stringify(committed.contextPtr) === JSON.stringify(a.contextPtr ?? null);
+      if (!samePayload) return fail("operation_conflict", "operationId was concurrently used for a different send payload");
+    }
+
     for (const t of targets) this.backend.enqueue(msg.id, t);
     // Project mail can't notify its own address — nudge the live sessions
     // working in that tree instead, so their channels/badges see it.
@@ -344,27 +457,60 @@ export class Router {
     });
   }
 
+  /** Route complete send intents persisted by a client during broker downtime. */
+  private reconcile(req: Request): Response {
+    const a = req.args as { alias?: string };
+    if (!a.alias) return fail("bad_args", "reconcile needs alias");
+    const denied = this.requireOwner(req, a.alias);
+    if (denied) return denied;
+    const outcomes: { operationId: string; ok: boolean; result?: unknown; error?: unknown; permanent?: boolean }[] = [];
+    for (const intent of this.backend.pendingOutbound(a.alias)) {
+      const response = this.send({ ...req, op: "send", args: intent.args });
+      if (response.ok) {
+        this.backend.deleteOutbound(intent.operationId);
+        outcomes.push({ operationId: intent.operationId, ok: true, result: response.result });
+      } else {
+        const permanent = ["bad_args", "empty_send", "not_allowed", "self_send", "operation_conflict", "message_conflict"].includes(
+          response.error.code,
+        );
+        if (permanent) this.backend.deleteOutbound(intent.operationId);
+        outcomes.push({ operationId: intent.operationId, ok: false, error: response.error, permanent });
+      }
+    }
+    return ok({ outcomes, remaining: this.backend.pendingOutbound(a.alias).length });
+  }
+
   private check(req: Request): Response {
     const a = req.args as { alias?: string; consume?: boolean; project?: string };
+    const self = this.aliasOfToken(req);
+    const managedHost = Boolean(self && this.registry.sessionHasCapability(self, "ipc-host"));
     if (a.project) {
       // Anyone may peek a project mailbox (visibility is deliberately open —
       // no new silos); only a member session may consume.
-      if (a.consume) {
+      if (a.consume === true) {
+        if (managedHost) return fail("managed_consume", "managed hosts use lease + ack; consuming checks are disabled");
         const denied = this.requireProjectMember(req, a.project);
         if (denied) return denied;
       }
-      const consuming = a.consume ?? false;
+      const consuming = a.consume === true;
       const messages = this.projectMailboxes(a.project, !consuming).flatMap((addr) =>
-        this.backend.pending(addr, { consume: consuming }),
+        consuming ? this.backend.pending(addr) : this.backend.recoverable(addr),
       );
-      return ok({ messages: this.annotateChases(this.stillOwedBy(messages, this.aliasOfToken(req))) });
+      const visible = this.stillOwedBy(messages, this.aliasOfToken(req));
+      if (consuming) for (const message of visible) this.backend.markConsumed(message.id, message.toAlias);
+      return ok({ messages: this.annotateChases(visible) });
     }
     if (!a.alias) return fail("bad_args", "check needs alias");
     const denied = this.requireOwner(req, a.alias); // only the owner reads its inbox
     if (denied) return denied;
-    const consume = a.consume ?? false;
+    if (a.consume === true && managedHost) {
+      return fail("managed_consume", "managed hosts use lease + ack; consuming checks are disabled");
+    }
+    const consume = a.consume === true;
     const boxes = this.sessionBoxes(a.alias);
-    const messages = this.dedupeById(boxes.flatMap((addr) => this.backend.pending(addr, { consume })));
+    const messages = this.dedupeById(boxes.flatMap((addr) =>
+      consume ? this.backend.pending(addr, { consume: true }) : this.backend.recoverable(addr),
+    ));
     // Only a read that CHANGED the mailbox is worth announcing. The inbox watcher peeks
     // every 10 seconds; notifying on a peek meant the broker repainted the session's tab
     // badge forever, fighting whatever the user had put there.
@@ -444,6 +590,73 @@ export class Router {
   }
 
   /**
+   * Reserve messages for a host without removing them from the actionable set.
+   * The host acknowledges only after App Server persisted the tool output. An
+   * expired lease can be reclaimed after a crash, so delivery is at least once.
+   */
+  private lease(req: Request): Response {
+    const a = req.args as { alias?: string; project?: string; via?: DeliveredVia; leaseId?: string; leaseS?: number };
+    if (!a.leaseId) return fail("bad_args", "lease needs leaseId");
+    const leaseUntil = this.now() + Math.max(1, a.leaseS ?? 30);
+    if (a.project) {
+      const denied = this.requireProjectMember(req, a.project);
+      if (denied) return denied;
+      const self = this.aliasOfToken(req)!;
+      const messages = this.stillOwedBy(
+        this.projectMailboxes(a.project).flatMap((addr) => this.backend.pending(addr)),
+        self,
+      ).filter((message) => !this.backend.projectSurfaced(message.id, self));
+      return ok({ leaseId: a.leaseId, leaseUntil, messages: this.annotateChases(messages) });
+    }
+    if (!a.alias) return fail("bad_args", "lease needs alias");
+    const denied = this.requireOwner(req, a.alias);
+    if (denied) return denied;
+    const boxes = this.sessionBoxes(a.alias);
+    const messages = this.dedupeById(
+      boxes.flatMap((addr) => this.backend.leaseForDelivery(addr, a.via ?? "channel", a.leaseId!, this.now(), leaseUntil)),
+    );
+    return ok({ leaseId: a.leaseId, leaseUntil, messages: this.annotateChases(messages) });
+  }
+
+  private ackDelivery(req: Request): Response {
+    const a = req.args as { alias?: string; project?: string; leaseId?: string; msgIds?: string[] };
+    if (!a.leaseId || !Array.isArray(a.msgIds)) return fail("bad_args", "ack_delivery needs leaseId + msgIds");
+    if (a.project) {
+      const denied = this.requireProjectMember(req, a.project);
+      if (denied) return denied;
+      const self = this.aliasOfToken(req)!;
+      const boxes = new Set(this.projectMailboxes(a.project));
+      let acknowledged = 0;
+      for (const msgId of a.msgIds) {
+        const message = this.backend.get(msgId);
+        if (!message) continue;
+        const alreadySettled = this.backend
+          .deliveriesFor(msgId)
+          .some((delivery) => delivery.toAlias === message.toAlias && !["queued", "delivered", "surfaced"].includes(delivery.state));
+        if (alreadySettled) {
+          acknowledged++;
+          continue;
+        }
+        if (!boxes.has(message.toAlias) || this.backend.projectSurfaced(msgId, self)) continue;
+        this.backend.markProjectSurfaced(msgId, self);
+        acknowledged++;
+      }
+      return ok({ acknowledged });
+    }
+    if (!a.alias) return fail("bad_args", "ack_delivery needs alias");
+    const denied = this.requireOwner(req, a.alias);
+    if (denied) return denied;
+    const boxes = this.sessionBoxes(a.alias);
+    const acknowledged = a.msgIds.filter((msgId) => {
+      if (boxes.reduce((n, addr) => n + this.backend.ackDelivery(addr, a.leaseId!, [msgId]), 0) > 0) return true;
+      return this.backend
+        .deliveriesFor(msgId)
+        .some((delivery) => boxes.includes(delivery.toAlias) && !["queued", "delivered", "surfaced"].includes(delivery.state));
+    }).length;
+    return ok({ acknowledged });
+  }
+
+  /**
    * Session mailboxes whose owner is gone but whose mail still waits — what a
    * successor agent should know about when it picks the work back up. Scoped
    * to a directory's lineage when `project` is given; a dead alias whose cwd
@@ -463,12 +676,12 @@ export class Router {
       folded?: number;
       open?: number;
     }[] = [];
-    for (const addr of this.backend.pendingAddresses()) {
+    for (const addr of this.backend.recoverableAddresses()) {
       if (isProjectAddress(addr)) continue; // project mail is not orphaned — it waits by design
       const e = entries.get(addr);
       if (e && e.status !== "offline") continue; // owner can still wake — not an orphan
       if (dir && (!e?.cwd || !withinProject(e.cwd, dir))) continue;
-      const msgs = this.backend.pending(addr);
+      const msgs = this.backend.recoverable(addr);
       const row: (typeof out)[number] = {
         alias: addr,
         cwd: e?.cwd ?? null,
@@ -567,7 +780,10 @@ export class Router {
    */
   private stillOwedBy(messages: Message[], self: string | null): Message[] {
     if (!self) return messages;
+    const selfSid = this.registry.get(self)?.sessionId ?? null;
     return messages.filter((m) => {
+      const causalSender = m.fromAlias === "ipc" && m.corrId ? this.backend.originOf(m.corrId)?.fromAlias : m.fromAlias;
+      if (selfSid && causalSender && this.registry.get(causalSender)?.sessionId === selfSid) return false;
       if (this.backend.projectStanding(m.id, self) === "passed") return false;
       const owner = this.backend.projectClaim(m.id);
       // A claim only hides the work while its owner is still around to do it. Derive
@@ -776,7 +992,9 @@ export class Router {
     this.registry.touchByAct(a.alias);
     const bad = this.notActable(a.msgId, a.alias);
     if (bad) return bad;
-    this.backend.markSurfaced(a.msgId, a.alias);
+    if (!this.backend.markSurfaced(a.msgId, a.alias)) {
+      return fail("invalid_state", `message ${a.msgId} is already settled and cannot be snoozed`);
+    }
     // Deliberately deferring an ask is a kind of answer: stop nudging them about it.
     // The SENDER's deadline is untouched — when to stop waiting is their call, and a
     // recipient must not be able to extend it by snoozing.
@@ -934,7 +1152,7 @@ export class Router {
     this.backend.closeAwaiting(a.corrId, "cancelled");
     if (origin && wasOpen) {
       for (const d of this.backend.deliveriesFor(a.corrId)) {
-        if (d.state !== "queued" && d.state !== "delivered" && d.state !== "surfaced") continue;
+        if (d.state !== "queued" && d.state !== "delivered" && d.state !== "surfaced" && d.state !== "persisted") continue;
         this.backend.markConsumed(a.corrId, d.toAlias);
         if (d.state === "queued") continue; // never seen — nothing to un-tell
         const note = makeMessage({
@@ -978,7 +1196,7 @@ export class Router {
     if (a.project) {
       // Ungated like a peek — a cheap number, and openness is the anti-silo stance.
       const boxes = this.projectMailboxes(a.project);
-      const n = boxes.reduce((s, addr) => s + this.backend.pending(addr).length, 0);
+      const n = this.dedupeById(boxes.flatMap((addr) => this.backend.recoverable(addr))).length;
       return ok({ count: n, seq: this.backend.lastEventSeq(boxes) });
     }
     if (!a.alias) return fail("bad_args", "count needs alias");
@@ -992,7 +1210,7 @@ export class Router {
     const denied = this.requireOwner(req, a.alias); // your own inbox size only
     if (denied) return denied;
     const boxes = this.sessionBoxes(a.alias);
-    const messages = this.dedupeById(boxes.flatMap((addr) => this.backend.pending(addr)));
+    const messages = this.dedupeById(boxes.flatMap((addr) => this.backend.recoverable(addr)));
     return ok({ count: messages.length, seq: this.backend.lastEventSeq(boxes) });
   }
 
@@ -1052,7 +1270,7 @@ export class Router {
     const sessions: Record<string, unknown> = {};
     for (const [sid, members] of bySid) {
       const aliases = [...new Set(members.flatMap((m) => m.sessionAliases ?? [m.alias]))].sort();
-      const pendingMsgs = this.dedupeById(aliases.flatMap((addr) => this.backend.pending(addr)));
+      const pendingMsgs = this.dedupeById(aliases.flatMap((addr) => this.backend.recoverable(addr)));
       const chase = pendingMsgs.filter((m) => m.fromAlias === "ipc").length;
       // Owed = an ask whose origin still sits pending in the session's boxes (the
       // same rule the `owed` verb applies); ask_state carries the ledger's word.

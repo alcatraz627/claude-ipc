@@ -94,6 +94,7 @@ export function applyPush(
 
 export async function main(): Promise<void> {
   const input = await readHookInput();
+  if (config.managedCodexHost) return;
   const alias = aliasFor(input);
   const client = new Client(config.socketPath);
 

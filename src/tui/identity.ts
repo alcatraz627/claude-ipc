@@ -9,7 +9,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { readAliasForSession } from "../aliasStore.ts";
-import { config } from "../config.ts";
+import { config, ipcIdentityEnv } from "../config.ts";
 import type { RegistryEntry } from "../models.ts";
 import { sanitizeInline } from "./model.ts";
 
@@ -33,7 +33,7 @@ export interface ActingCandidate {
 
 export function sessionIdentity(): Identity | null {
   // Mirrors cli.ts resolveSelfAlias (import would cycle): explicit override, then side-file.
-  const alias = process.env.CLAUDE_IPC_ALIAS || readAliasForSession(process.env.CLAUDE_CODE_SESSION_ID);
+  const alias = ipcIdentityEnv("CLAUDE_IPC_ALIAS") || readAliasForSession(process.env.CLAUDE_CODE_SESSION_ID);
   return alias ? { alias, mode: "session" } : null;
 }
 
@@ -70,4 +70,3 @@ export function actingCandidates(peers: RegistryEntry[], includeOffline = false)
         a.alias.localeCompare(b.alias),
     );
 }
-

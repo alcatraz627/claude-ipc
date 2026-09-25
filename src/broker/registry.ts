@@ -60,6 +60,12 @@ export class Registry {
     if (prev?.token && presentedToken !== prev.token) {
       return { ok: false, replaced: false, token: null }; // owned alias, wrong/missing token
     }
+    // A managed alias names one App Server thread owner. Letting its token move
+    // to another session would either shed the durable-delivery guard or leave
+    // an ordinary successor unable to consume. Successors use a new alias.
+    if (prev?.caps.includes("ipc-host") && prev.sessionId !== info.sessionId) {
+      return { ok: false, replaced: false, token: null };
+    }
     // a service refresh keeps its synthetic svc: sid and never reads as a
     // takeover — re-registering a service is maintenance, not succession, and
     // coupling it to a human session's sid would drag its liveness along (LOW-2)
@@ -67,11 +73,15 @@ export class Registry {
     const replaced = !svcRefresh && prev !== undefined && prev.sessionId !== info.sessionId;
     const keep = prev?.token && presentedToken === prev.token;
     const token = keep ? prev.token : `tok-${crypto.randomUUID()}`;
+    const caps = new Set(info.caps ?? []);
+    // ipc-host is a security boundary, not presentation metadata. A host must
+    // not shed it by re-registering through its agent-facing register tool.
+    if (prev?.caps.includes("ipc-host")) caps.add("ipc-host");
     this.entries.set(alias, {
       alias,
       sessionId: svcRefresh ? prev!.sessionId : info.sessionId,
       cwd: info.cwd,
-      caps: info.caps ?? [],
+      caps: [...caps],
       pid: info.pid ?? null,
       tty: info.tty ?? prev?.tty ?? null,
       lastSeen: this.now(),
@@ -96,10 +106,51 @@ export class Registry {
     return this.entries.get(alias)?.token ?? null;
   }
 
+  /**
+   * Recreate the minimum authenticated sender identity needed to replay a
+   * durable outage intent. The intent already crossed the same-user SQLite
+   * trust boundary; this never exposes the synthetic token to a client.
+   */
+  restoreOutboxOwner(alias: string, sessionId: string, cwd: string, preservedToken?: string): string {
+    const existing = this.entries.get(alias);
+    if (existing?.token) return existing.token;
+    const token = preservedToken ?? `tok-${crypto.randomUUID()}`;
+    this.entries.set(alias, {
+      alias,
+      sessionId,
+      cwd,
+      caps: [],
+      pid: null,
+      tty: null,
+      lastSeen: 0,
+      status: "offline",
+      token,
+    });
+    this.snapshot();
+    return token;
+  }
+
+  dropRestoredOutboxOwner(alias: string, token: string): void {
+    const entry = this.entries.get(alias);
+    if (!entry || entry.token !== token || entry.status !== "offline") return;
+    this.entries.delete(alias);
+    this.snapshot();
+  }
+
   get(alias: string): RegistryEntry | null {
     const e = this.entries.get(alias);
     // token is a secret — never hand it back through a read accessor.
     return e ? { ...e, caps: [...e.caps], status: this.statusOf(e), token: null } : null;
+  }
+
+  /** Whether any alias owned by this session carries a capability. */
+  sessionHasCapability(alias: string, capability: string): boolean {
+    const sessionId = this.entries.get(alias)?.sessionId;
+    if (!sessionId) return false;
+    for (const entry of this.entries.values()) {
+      if (entry.sessionId === sessionId && entry.caps.includes(capability)) return true;
+    }
+    return false;
   }
 
   heartbeat(alias: string): void {
@@ -197,7 +248,8 @@ export class Registry {
       // this, a service row would be immortal with no removal path at all.
       if (e.service && e.lastSeen !== 0) continue;
       if (this.statusOf(e) !== "offline" || e.lastSeen >= beforeTs) continue;
-      if (this.backend.pending(alias).length > 0) continue; // keep live mailboxes
+      if (this.backend.recoverable(alias).length > 0) continue; // keep mailboxes with work a successor still owes
+      if (this.backend.pendingOutbound(alias).length > 0) continue; // sender identity is needed to replay outage mail
       this.entries.delete(alias);
       // The token authorizes nobody once the row is gone; delete the owner's
       // token file too so the tokens dir doesn't outgrow the registry.

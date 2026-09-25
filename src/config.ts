@@ -2,6 +2,7 @@
 
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { execFileSync } from "node:child_process";
 
 // `||` on purpose: an empty CLAUDE_IPC_HOME means "default", matching the shell
 // scripts' ${VAR:-default} — `??` would accept "" and scatter relative paths.
@@ -25,6 +26,47 @@ function parseAllowlist(raw: string | undefined): Record<string, string[]> {
   }
 }
 
+function processField(pid: number, field: "ppid" | "comm" | "command"): string {
+  try {
+    return execFileSync("/bin/ps", ["-p", String(pid), "-o", `${field}=`], { encoding: "utf8" }).trim();
+  } catch {
+    return "";
+  }
+}
+
+export function managedIdentityInAncestry(
+  marker: number,
+  startPid = process.ppid,
+  readField: (pid: number, field: "ppid" | "comm" | "command") => string = processField,
+): boolean {
+  let pid = startPid;
+  for (let depth = 0; pid > 1 && depth < 16; depth++) {
+    if (pid === marker) return true;
+    const comm = readField(pid, "comm").split("/").pop() ?? "";
+    const command = readField(pid, "command").trim().split(/\s+/, 1)[0]?.split("/").pop() ?? "";
+    if (comm === "claude" || comm === "codex" || command === "claude" || command === "codex") return false;
+    pid = Number(readField(pid, "ppid"));
+  }
+  return false;
+}
+
+const managedMarker = Number(process.env.CLAUDE_IPC_MANAGED_HOST_PID);
+const managedCodexHost =
+  process.env.CLAUDE_IPC_MANAGED_MCP === "1" ||
+  (process.env.CLAUDE_IPC_MANAGED_HOST === "1" &&
+    Number.isSafeInteger(managedMarker) &&
+    managedIdentityInAncestry(managedMarker));
+
+/**
+ * Managed host identity is valid in the App Server's infrastructure children.
+ * A nested Claude or Codex process in the ancestry ends that authority chain.
+ * Ordinary sessions may still set the same variables explicitly.
+ */
+export function ipcIdentityEnv(name: "CLAUDE_IPC_ALIAS" | "CLAUDE_IPC_SESSION"): string | undefined {
+  if (process.env.CLAUDE_IPC_MANAGED_HOST === "1" && !managedCodexHost) return undefined;
+  return process.env[name];
+}
+
 export const config = {
   home,
   socketPath: process.env.CLAUDE_IPC_SOCKET ?? join(home, "run", "ipc.sock"),
@@ -34,6 +76,9 @@ export const config = {
   tokensDir: join(home, "tokens"), // per-alias capability files (0600), owner-only
   metaDir: join(home, "meta"), // per-alias side-channel the hook writes (e.g. transcript path)
   aliasDir: join(home, "alias-by-sid"), // session_id → friendly alias, so per-turn hooks poll the mailbox peers address
+  codex: {
+    alias: ipcIdentityEnv("CLAUDE_IPC_ALIAS"),
+  },
   blockedDir: join(home, "blocked"), // per-message markers: this ask already fired its one Stop-hook turn-end block
 
   // Default TTL for a directed query/request when the sender gives none. null
@@ -58,6 +103,7 @@ export const config = {
   // Transient/headless sessions opt out of joining the roster (set by a launcher
   // for sub-agents / `claude -p` runs that shouldn't appear as addressable peers).
   noRegister: process.env.CLAUDE_IPC_NO_REGISTER === "1",
+  managedCodexHost,
 
   // How long since a peer's last heartbeat before it reads idle, then offline.
   // Env-tunable so a test (or a fast-moving deployment) can shrink the windows;

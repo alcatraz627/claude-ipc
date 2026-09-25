@@ -6,7 +6,7 @@
  * proven by two backends long before the honker variant exists.
  */
 
-import type { Awaiting, Delivery, Message, RegistryEntry } from "../models.ts";
+import type { Awaiting, Delivery, Message, OutboundIntent, RegistryEntry } from "../models.ts";
 import { PENDING_STATES, type StorageBackend } from "./base.ts";
 
 const delKey = (msgId: string, alias: string): string => `${msgId}\0${alias}`;
@@ -22,6 +22,10 @@ export class MemoryBackend implements StorageBackend {
   // above anything the old life handed out, so a watcher's cursor never rewinds.
   private seqCounter: number;
   private addrSeq = new Map<string, number>();
+  private leases = new Map<string, { id: string; until: number }>();
+  private outbound = new Map<string, OutboundIntent>();
+  private projectSurfaces = new Set<string>();
+  private routes = new Map<string, string[]>();
 
   constructor(seqFloor = Math.floor(Date.now() / 1000)) {
     this.seqCounter = seqFloor;
@@ -39,9 +43,39 @@ export class MemoryBackend implements StorageBackend {
     if (!this.messages.has(m.id)) this.messages.set(m.id, { ...m });
   }
 
+  appendRouted(m: Message, targets: string[]): void {
+    if (this.messages.has(m.id)) return;
+    this.messages.set(m.id, { ...m });
+    this.routes.set(m.id, [...targets]);
+  }
+
   get(id: string): Message | null {
     const m = this.messages.get(id);
     return m ? { ...m } : null;
+  }
+
+  getByOperationId(operationId: string): Message | null {
+    const m = [...this.messages.values()].find((candidate) => candidate.operationId === operationId);
+    return m ? { ...m } : null;
+  }
+
+  queueOutbound(intent: OutboundIntent): void {
+    if (!this.outbound.has(intent.operationId)) this.outbound.set(intent.operationId, structuredClone(intent));
+  }
+
+  pendingOutbound(fromAlias: string): OutboundIntent[] {
+    return [...this.outbound.values()]
+      .filter((intent) => intent.fromAlias === fromAlias)
+      .sort((a, b) => a.createdAt - b.createdAt)
+      .map((intent) => structuredClone(intent));
+  }
+
+  pendingOutboundAll(): OutboundIntent[] {
+    return [...this.outbound.values()].sort((a, b) => a.createdAt - b.createdAt).map((intent) => structuredClone(intent));
+  }
+
+  deleteOutbound(operationId: string): void {
+    this.outbound.delete(operationId);
   }
 
   enqueue(msgId: string, alias: string): void {
@@ -50,6 +84,15 @@ export class MemoryBackend implements StorageBackend {
     const ts = this.messages.get(msgId)?.ts ?? 0;
     this.deliveries.set(k, { msgId, toAlias: alias, via: null, state: "queued", ts });
     this.bumpSeq(alias);
+  }
+
+  saveRoute(msgId: string, targets: string[]): void {
+    if (!this.routes.has(msgId)) this.routes.set(msgId, [...targets]);
+  }
+
+  routeFor(msgId: string): string[] | null {
+    const targets = this.routes.get(msgId);
+    return targets ? [...targets] : null;
   }
 
   pending(alias: string, opts?: { consume?: boolean }): Message[] {
@@ -68,6 +111,18 @@ export class MemoryBackend implements StorageBackend {
     return out.sort((a, b) => a.ts - b.ts);
   }
 
+  recoverable(alias: string): Message[] {
+    const out = new Map(this.pending(alias).map((message) => [message.id, message]));
+    for (const d of this.deliveries.values()) {
+      if (d.toAlias !== alias || d.state !== "persisted") continue;
+      const message = this.messages.get(d.msgId);
+      if (message && (message.kind === "query" || message.kind === "request") && this.isAwaitingOpen(message.id)) {
+        out.set(message.id, { ...message });
+      }
+    }
+    return [...out.values()].sort((a, b) => a.ts - b.ts);
+  }
+
   markDelivered(msgId: string, alias: string, via: Delivery["via"]): void {
     const d = this.deliveries.get(delKey(msgId, alias));
     if (d && d.state === "queued") {
@@ -83,9 +138,14 @@ export class MemoryBackend implements StorageBackend {
     d.state = "consumed";
   }
 
-  markSurfaced(msgId: string, alias: string): void {
+  markSurfaced(msgId: string, alias: string): boolean {
     const d = this.deliveries.get(delKey(msgId, alias));
-    if (d && (d.state === "queued" || d.state === "delivered")) d.state = "surfaced";
+    if (!d || !["queued", "delivered", "persisted"].includes(d.state)) return false;
+    const enteredPending = d.state === "persisted";
+    d.state = "surfaced";
+    this.leases.delete(delKey(msgId, alias));
+    if (enteredPending) this.bumpSeq(alias);
+    return true;
   }
 
   claimForDelivery(alias: string, via: Delivery["via"]): Message[] {
@@ -98,6 +158,36 @@ export class MemoryBackend implements StorageBackend {
       if (m) out.push({ ...m });
     }
     return out.sort((a, b) => a.ts - b.ts);
+  }
+
+  leaseForDelivery(alias: string, via: Delivery["via"], leaseId: string, now: number, leaseUntil: number): Message[] {
+    const out: Message[] = [];
+    for (const d of this.deliveries.values()) {
+      if (d.toAlias !== alias || (d.state !== "queued" && d.state !== "delivered")) continue;
+      const key = delKey(d.msgId, alias);
+      const lease = this.leases.get(key);
+      if (lease && lease.until > now) continue;
+      this.leases.set(key, { id: leaseId, until: leaseUntil });
+      d.via = via;
+      d.state = "delivered";
+      const m = this.messages.get(d.msgId);
+      if (m) out.push({ ...m });
+    }
+    return out.sort((a, b) => a.ts - b.ts);
+  }
+
+  ackDelivery(alias: string, leaseId: string, msgIds: string[]): number {
+    let acknowledged = 0;
+    for (const msgId of msgIds) {
+      const key = delKey(msgId, alias);
+      if (this.leases.get(key)?.id !== leaseId) continue;
+      this.leases.delete(key);
+      const delivery = this.deliveries.get(key);
+      if (!delivery || !["queued", "delivered"].includes(delivery.state)) continue;
+      delivery.state = "persisted";
+      acknowledged++;
+    }
+    return acknowledged;
   }
 
   setConsent(msgId: string, alias: string, accepted: boolean): void {
@@ -122,6 +212,17 @@ export class MemoryBackend implements StorageBackend {
   pendingAddresses(): string[] {
     const out = new Set<string>();
     for (const d of this.deliveries.values()) if (isPending(d.state)) out.add(d.toAlias);
+    return [...out];
+  }
+
+  recoverableAddresses(): string[] {
+    const out = new Set(this.pendingAddresses());
+    for (const d of this.deliveries.values()) {
+      const message = this.messages.get(d.msgId);
+      if (d.state === "persisted" && message && (message.kind === "query" || message.kind === "request") && this.isAwaitingOpen(message.id)) {
+        out.add(d.toAlias);
+      }
+    }
     return [...out];
   }
 
@@ -183,6 +284,14 @@ export class MemoryBackend implements StorageBackend {
   projectStanding(msgId: string, alias: string): "claimed" | "passed" | null {
     if (this.claims.get(msgId) === alias) return "claimed";
     return this.passes.has(`${msgId}\0${alias}`) ? "passed" : null;
+  }
+
+  markProjectSurfaced(msgId: string, alias: string): void {
+    this.projectSurfaces.add(delKey(msgId, alias));
+  }
+
+  projectSurfaced(msgId: string, alias: string): boolean {
+    return this.projectSurfaces.has(delKey(msgId, alias));
   }
 
   getAwaiting(originId: string): Awaiting | null {
@@ -256,6 +365,7 @@ export class MemoryBackend implements StorageBackend {
     for (const id of purgeable) {
       this.messages.delete(id);
       this.awaiting.delete(id);
+      this.routes.delete(id);
       for (const [k, d] of this.deliveries) if (d.msgId === id) this.deliveries.delete(k);
     }
     return purgeable.length;

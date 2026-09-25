@@ -82,6 +82,19 @@ describe("session-scope invariant — personal mailbox ops span all of a session
     expect(n).toBe(3); // for-primary + for-sibling + one broadcast, not two
   });
 
+  test("lease and ack settle a sibling-box broadcast as one host message", () => {
+    const sent = okOf(call("send", { from: "sender", to: "*", kind: "inform", body: "leased-broadcast" }, "sender"));
+    const leased = okOf(
+      call("lease", { alias: "lane-primary", leaseId: "lease-1", leaseS: 30, via: "channel" }, "lane-primary"),
+    );
+    expect(bodiesOf(leased).filter((body) => body === "leased-broadcast")).toHaveLength(1);
+    const ack = okOf(
+      call("ack_delivery", { alias: "lane-primary", leaseId: "lease-1", msgIds: [sent.msgId] }, "lane-primary"),
+    );
+    expect(ack.acknowledged).toBe(1);
+    expect(backend.deliveriesFor(sent.msgId as string).every((delivery) => delivery.state === "persisted")).toBe(true);
+  });
+
   // The digest keys by SESSION — sibling boxes collapse into one entry, mail spanning both.
   test("digest groups a two-alias session into ONE sid-keyed entry", () => {
     const r = okOf(call("digest", { project: "/w" }));

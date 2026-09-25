@@ -115,4 +115,17 @@ describe("CLI verbs: show / owed / feedback", () => {
     expect(await run(["feedback", "--from", sender], { socketPath: sock })).toBe(2);
     expect(errs.join("\n")).toContain("feedback needs a body");
   });
+
+  test("send exposes operation-id idempotency through the CLI", async () => {
+    const c = new Client(sock);
+    const sender = uniq("cv-op-sender");
+    const recipient = uniq("cv-op-recipient");
+    await c.register(sender, { sessionId: uniq("sid"), cwd: "/x" });
+    await c.register(recipient, { sessionId: uniq("sid"), cwd: "/y" });
+
+    const args = ["send", "--from", sender, "--to", recipient, "--operation-id", "cli-op-1", "once"];
+    expect(await run(args, { socketPath: sock })).toBe(0);
+    expect(await run(args, { socketPath: sock })).toBe(0);
+    expect(backend.history({}).filter((message) => message.body === "once")).toHaveLength(1);
+  });
 });

@@ -11,7 +11,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { deriveAlias, readAliasForSession, sanitizeAlias } from "../aliasStore.ts";
 import type { Client } from "../client.ts";
-import { config } from "../config.ts";
+import { config, ipcIdentityEnv } from "../config.ts";
 
 /**
  * The once-per-session claim on "this session has already been shown its
@@ -68,7 +68,8 @@ export async function readHookInput(): Promise<HookInput> {
  * human would type instead of a raw UUID (zero config, deterministic per hook).
  */
 export function aliasFor(input: HookInput): string {
-  if (process.env.CLAUDE_IPC_ALIAS) return process.env.CLAUDE_IPC_ALIAS;
+  const explicit = ipcIdentityEnv("CLAUDE_IPC_ALIAS");
+  if (explicit) return explicit;
   const fromTitle = sanitizeAlias(input.session_title);
   if (fromTitle) return fromTitle;
   const stored = readAliasForSession(input.session_id);

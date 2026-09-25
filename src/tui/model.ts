@@ -373,6 +373,7 @@ export function deliveryLines(deliveries: { toAlias: string; state: string }[]):
     delivered: "delivered — claimed by their wake, not yet shown",
     surfaced: "surfaced — placed in their context (NOT confirmed read)",
     consumed: "settled — read, accepted, declined, or cancelled",
+    persisted: "persisted in recipient thread — reading not confirmed",
     accepted: "accepted",
     declined: "declined",
   };

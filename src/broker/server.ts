@@ -282,6 +282,7 @@ export function main(): void {
     config.reply.byS,
     config.reply.finalGraceS,
   );
+  router.reconcilePendingOutbox();
   // Boot-time counts for the log only — the broker is DB-backed (every op reads
   // SQLite live), so there is no in-memory working set to rebuild: a queued
   // message simply stays queued and is claimed by the next hook. (Caveat: a

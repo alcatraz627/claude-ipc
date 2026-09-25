@@ -13,6 +13,7 @@ import type {
   ErrorCode,
   Kind,
   Message,
+  OutboundIntent,
   RegistryEntry,
   Status,
 } from "../models.ts";
@@ -20,16 +21,19 @@ import type { StorageBackend } from "./base.ts";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS messages (
-  id TEXT PRIMARY KEY, kind TEXT, from_alias TEXT, to_alias TEXT, body TEXT,
+  id TEXT PRIMARY KEY, operation_id TEXT, kind TEXT, from_alias TEXT, to_alias TEXT, body TEXT,
   conversation_id TEXT, corr_id TEXT, status TEXT, error_code TEXT,
-  terminal INTEGER, op TEXT, context_ptr TEXT, ttl_s INTEGER, ts REAL);
+  terminal INTEGER, op TEXT, context_ptr TEXT, ttl_s INTEGER, reply_by_s REAL, ts REAL);
 CREATE INDEX IF NOT EXISTS ix_msg_corr ON messages(corr_id);
 CREATE INDEX IF NOT EXISTS ix_msg_ts   ON messages(ts);
 
-CREATE TABLE IF NOT EXISTS deliveries (
-  msg_id TEXT, to_alias TEXT, via TEXT, state TEXT, ts REAL,
+      CREATE TABLE IF NOT EXISTS deliveries (
+  msg_id TEXT, to_alias TEXT, via TEXT, state TEXT, ts REAL, lease_id TEXT, lease_until REAL,
   PRIMARY KEY (msg_id, to_alias));
 CREATE INDEX IF NOT EXISTS ix_del_inbox ON deliveries(to_alias, state);
+
+CREATE TABLE IF NOT EXISTS message_routes (
+  msg_id TEXT PRIMARY KEY, targets_json TEXT NOT NULL);
 
 CREATE TABLE IF NOT EXISTS awaiting (
   origin_id TEXT PRIMARY KEY, expires_at REAL, closed INTEGER, closed_reason TEXT,
@@ -42,6 +46,8 @@ CREATE INDEX IF NOT EXISTS ix_await_open ON awaiting(closed, expires_at);
 CREATE TABLE IF NOT EXISTS project_claims (
   msg_id TEXT PRIMARY KEY, alias TEXT NOT NULL, ts REAL);
 CREATE TABLE IF NOT EXISTS project_passes (
+  msg_id TEXT, alias TEXT, PRIMARY KEY (msg_id, alias));
+CREATE TABLE IF NOT EXISTS project_surfaces (
   msg_id TEXT, alias TEXT, PRIMARY KEY (msg_id, alias));
 
 CREATE TABLE IF NOT EXISTS registry_snapshot (
@@ -57,10 +63,15 @@ CREATE TABLE IF NOT EXISTS address_seq (address TEXT PRIMARY KEY, seq INTEGER);
 -- inherited mail folds the countermanded arc. Advisory — display, not delivery.
 CREATE TABLE IF NOT EXISTS supersessions (
   msg_id TEXT PRIMARY KEY, by_msg_id TEXT NOT NULL, ts REAL);
+
+CREATE TABLE IF NOT EXISTS outbound_intents (
+  operation_id TEXT PRIMARY KEY, from_alias TEXT NOT NULL, args TEXT NOT NULL, created_at REAL NOT NULL);
+CREATE INDEX IF NOT EXISTS ix_outbound_sender ON outbound_intents(from_alias, created_at);
 `;
 
 interface MsgRow {
   id: string;
+  operation_id: string | null;
   kind: string;
   from_alias: string;
   to_alias: string;
@@ -73,6 +84,7 @@ interface MsgRow {
   op: string | null;
   context_ptr: string | null;
   ttl_s: number | null;
+  reply_by_s: number | null;
   ts: number;
 }
 
@@ -111,6 +123,7 @@ interface RegRow {
 function toMessage(r: MsgRow): Message {
   return {
     id: r.id,
+    operationId: r.operation_id,
     kind: r.kind as Kind,
     fromAlias: r.from_alias,
     toAlias: r.to_alias,
@@ -123,6 +136,7 @@ function toMessage(r: MsgRow): Message {
     op: r.op as Message["op"],
     contextPtr: r.context_ptr ? (JSON.parse(r.context_ptr) as ContextPtr) : null,
     ttlS: r.ttl_s,
+    replyByS: r.reply_by_s,
     ts: r.ts,
   };
 }
@@ -162,6 +176,27 @@ export class SqliteBackend implements StorageBackend {
     this.db.run("PRAGMA busy_timeout = 2000");
     this.db.run("PRAGMA foreign_keys = ON");
     this.db.exec(SCHEMA);
+    try {
+      this.db.run("ALTER TABLE messages ADD COLUMN operation_id TEXT");
+    } catch {
+      // column already present on an existing DB
+    }
+    try {
+      this.db.run("ALTER TABLE messages ADD COLUMN reply_by_s REAL");
+    } catch {
+      // column already present on an existing DB
+    }
+    this.db.run("CREATE UNIQUE INDEX IF NOT EXISTS ix_msg_operation ON messages(operation_id) WHERE operation_id IS NOT NULL");
+    try {
+      this.db.run("ALTER TABLE deliveries ADD COLUMN lease_id TEXT");
+    } catch {
+      // column already present on an existing DB
+    }
+    try {
+      this.db.run("ALTER TABLE deliveries ADD COLUMN lease_until REAL");
+    } catch {
+      // column already present on an existing DB
+    }
     try {
       this.db.run("ALTER TABLE registry_snapshot ADD COLUMN tty TEXT");
     } catch {
@@ -217,12 +252,13 @@ export class SqliteBackend implements StorageBackend {
     this.db
       .query(
         `INSERT OR IGNORE INTO messages
-         (id, kind, from_alias, to_alias, body, conversation_id, corr_id, status,
-          error_code, terminal, op, context_ptr, ttl_s, ts)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+         (id, operation_id, kind, from_alias, to_alias, body, conversation_id, corr_id, status,
+          error_code, terminal, op, context_ptr, ttl_s, reply_by_s, ts)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       )
       .run(
         m.id,
+        m.operationId,
         m.kind,
         m.fromAlias,
         m.toAlias,
@@ -235,13 +271,61 @@ export class SqliteBackend implements StorageBackend {
         m.op,
         m.contextPtr ? JSON.stringify(m.contextPtr) : null,
         m.ttlS,
+        m.replyByS ?? null,
         m.ts,
       );
+  }
+
+  appendRouted(m: Message, targets: string[]): void {
+    const tx = this.db.transaction(() => {
+      this.append(m);
+      this.saveRoute(m.id, targets);
+    });
+    tx();
   }
 
   get(id: string): Message | null {
     const r = this.db.query("SELECT * FROM messages WHERE id = ?").get(id) as MsgRow | null;
     return r ? toMessage(r) : null;
+  }
+
+  getByOperationId(operationId: string): Message | null {
+    const r = this.db.query("SELECT * FROM messages WHERE operation_id = ?").get(operationId) as MsgRow | null;
+    return r ? toMessage(r) : null;
+  }
+
+  queueOutbound(intent: OutboundIntent): void {
+    this.db
+      .query(`INSERT OR IGNORE INTO outbound_intents (operation_id, from_alias, args, created_at) VALUES (?,?,?,?)`)
+      .run(intent.operationId, intent.fromAlias, JSON.stringify(intent.args), intent.createdAt);
+  }
+
+  pendingOutbound(fromAlias: string): OutboundIntent[] {
+    const rows = this.db
+      .query(`SELECT operation_id, from_alias, args, created_at FROM outbound_intents WHERE from_alias=? ORDER BY created_at`)
+      .all(fromAlias) as { operation_id: string; from_alias: string; args: string; created_at: number }[];
+    return rows.map((row) => ({
+      operationId: row.operation_id,
+      fromAlias: row.from_alias,
+      args: JSON.parse(row.args) as Record<string, unknown>,
+      createdAt: row.created_at,
+    }));
+  }
+
+  pendingOutboundAll(): OutboundIntent[] {
+    const rows = this.db
+      .query(`SELECT operation_id, from_alias, args, created_at FROM outbound_intents ORDER BY created_at`)
+      .all() as { operation_id: string; from_alias: string; args: string; created_at: number }[];
+    return rows.map((row) => ({
+      operationId: row.operation_id,
+      fromAlias: row.from_alias,
+      args: JSON.parse(row.args) as Record<string, unknown>,
+      createdAt: row.created_at,
+    }));
+  }
+
+  deleteOutbound(operationId: string): void {
+    this.db.query(`DELETE FROM outbound_intents WHERE operation_id=?`).run(operationId);
   }
 
   enqueue(msgId: string, alias: string): void {
@@ -250,6 +334,15 @@ export class SqliteBackend implements StorageBackend {
       .query(`INSERT OR IGNORE INTO deliveries (msg_id, to_alias, via, state, ts) VALUES (?,?,NULL,'queued',?)`)
       .run(msgId, alias, ts);
     if (r.changes > 0) this.bumpSeq(alias); // an idempotent re-enqueue is not an event
+  }
+
+  saveRoute(msgId: string, targets: string[]): void {
+    this.db.query("INSERT OR IGNORE INTO message_routes(msg_id,targets_json) VALUES (?,?)").run(msgId, JSON.stringify(targets));
+  }
+
+  routeFor(msgId: string): string[] | null {
+    const row = this.db.query("SELECT targets_json FROM message_routes WHERE msg_id=?").get(msgId) as { targets_json: string } | null;
+    return row ? JSON.parse(row.targets_json) as string[] : null;
   }
 
   pending(alias: string, opts?: { consume?: boolean }): Message[] {
@@ -266,6 +359,19 @@ export class SqliteBackend implements StorageBackend {
         .run(alias);
       if (r.changes > 0) this.bumpSeq(alias);
     }
+    return rows.map(toMessage);
+  }
+
+  recoverable(alias: string): Message[] {
+    const rows = this.db.query(
+      `SELECT DISTINCT m.* FROM deliveries d
+       JOIN messages m ON m.id=d.msg_id
+       LEFT JOIN awaiting a ON a.origin_id=m.id
+       WHERE d.to_alias=? AND (
+         d.state IN ('queued','delivered','surfaced') OR
+         (d.state='persisted' AND m.kind IN ('query','request') AND a.closed=0)
+       ) ORDER BY m.ts`,
+    ).all(alias) as MsgRow[];
     return rows.map(toMessage);
   }
 
@@ -286,12 +392,16 @@ export class SqliteBackend implements StorageBackend {
     else this.db.query(`UPDATE deliveries SET state='consumed' WHERE msg_id=? AND to_alias=?`).run(msgId, alias);
   }
 
-  markSurfaced(msgId: string, alias: string): void {
-    // Only a still-live delivery can be deferred — never resurrect a consumed,
-    // accepted, or declined one back into the pending set.
-    this.db
-      .query(`UPDATE deliveries SET state='surfaced' WHERE msg_id=? AND to_alias=? AND state IN ('queued','delivered')`)
-      .run(msgId, alias);
+  markSurfaced(msgId: string, alias: string): boolean {
+    // Host-persisted asks remain owed after snooze. Settled consent and consumed
+    // rows stay settled.
+    const prior = this.db
+      .query(`SELECT state FROM deliveries WHERE msg_id=? AND to_alias=?`)
+      .get(msgId, alias) as { state: Delivery["state"] } | null;
+    if (!prior || !["queued", "delivered", "persisted"].includes(prior.state)) return false;
+    this.db.query(`UPDATE deliveries SET state='surfaced', lease_id=NULL, lease_until=NULL WHERE msg_id=? AND to_alias=?`).run(msgId, alias);
+    if (prior.state === "persisted") this.bumpSeq(alias);
+    return true;
   }
 
   claimForDelivery(alias: string, via: Delivery["via"]): Message[] {
@@ -316,6 +426,45 @@ export class SqliteBackend implements StorageBackend {
     }
     rows.sort((a, b) => a.ts - b.ts);
     return rows.map(toMessage);
+  }
+
+  leaseForDelivery(alias: string, via: Delivery["via"], leaseId: string, now: number, leaseUntil: number): Message[] {
+    const claimed = this.db
+      .query(
+        `UPDATE deliveries SET state='delivered', via=?, lease_id=?, lease_until=?
+         WHERE to_alias=? AND state IN ('queued','delivered')
+           AND (lease_id IS NULL OR lease_until <= ?)
+         RETURNING msg_id`,
+      )
+      .all(via, leaseId, leaseUntil, alias, now) as { msg_id: string }[];
+    if (claimed.length === 0) return [];
+    const ids = claimed.map((r) => r.msg_id);
+    const rows: MsgRow[] = [];
+    for (let i = 0; i < ids.length; i += 500) {
+      const batch = ids.slice(i, i + 500);
+      const placeholders = batch.map(() => "?").join(",");
+      rows.push(...(this.db.query(`SELECT * FROM messages WHERE id IN (${placeholders})`).all(...batch) as MsgRow[]));
+    }
+    return rows.sort((a, b) => a.ts - b.ts).map(toMessage);
+  }
+
+  ackDelivery(alias: string, leaseId: string, msgIds: string[]): number {
+    if (msgIds.length === 0) return 0;
+    let acknowledged = 0;
+    for (let i = 0; i < msgIds.length; i += 500) {
+      const batch = msgIds.slice(i, i + 500);
+      const placeholders = batch.map(() => "?").join(",");
+      const r = this.db
+        .query(
+          `UPDATE deliveries SET state='persisted', lease_id=NULL, lease_until=NULL
+           WHERE to_alias=? AND lease_id=? AND msg_id IN (${placeholders})
+             AND state IN ('queued','delivered')`,
+        )
+        .run(alias, leaseId, ...batch);
+      acknowledged += r.changes;
+    }
+    if (acknowledged > 0) this.bumpSeq(alias);
+    return acknowledged;
   }
 
   setConsent(msgId: string, alias: string, accepted: boolean): void {
@@ -347,6 +496,17 @@ export class SqliteBackend implements StorageBackend {
       .query(`SELECT DISTINCT to_alias FROM deliveries WHERE state IN ('queued','delivered','surfaced')`)
       .all() as { to_alias: string }[];
     return rows.map((r) => r.to_alias);
+  }
+
+  recoverableAddresses(): string[] {
+    const rows = this.db.query(
+      `SELECT DISTINCT d.to_alias FROM deliveries d
+       JOIN messages m ON m.id=d.msg_id
+       LEFT JOIN awaiting a ON a.origin_id=m.id
+       WHERE d.state IN ('queued','delivered','surfaced') OR
+         (d.state='persisted' AND m.kind IN ('query','request') AND a.closed=0)`,
+    ).all() as { to_alias: string }[];
+    return rows.map((row) => row.to_alias);
   }
 
   openAwaiting(originId: string, expiresAt: number | null, replyByS: number | null = null, nudgeFrom = 0): void {
@@ -404,6 +564,14 @@ export class SqliteBackend implements StorageBackend {
     if (this.projectClaim(msgId) === alias) return "claimed";
     const p = this.db.query(`SELECT 1 FROM project_passes WHERE msg_id=? AND alias=?`).get(msgId, alias);
     return p ? "passed" : null;
+  }
+
+  markProjectSurfaced(msgId: string, alias: string): void {
+    this.db.query(`INSERT OR IGNORE INTO project_surfaces (msg_id, alias) VALUES (?,?)`).run(msgId, alias);
+  }
+
+  projectSurfaced(msgId: string, alias: string): boolean {
+    return Boolean(this.db.query(`SELECT 1 FROM project_surfaces WHERE msg_id=? AND alias=?`).get(msgId, alias));
   }
 
   markSuperseded(supersededId: string, bySupersedingId: string): void {
@@ -537,10 +705,12 @@ export class SqliteBackend implements StorageBackend {
     const tx = this.db.transaction((rows: { id: string }[]) => {
       const delDel = this.db.query(`DELETE FROM deliveries WHERE msg_id = ?`);
       const delAwait = this.db.query(`DELETE FROM awaiting WHERE origin_id = ?`);
+      const delRoute = this.db.query(`DELETE FROM message_routes WHERE msg_id = ?`);
       const delMsg = this.db.query(`DELETE FROM messages WHERE id = ?`);
       for (const r of rows) {
         delDel.run(r.id);
         delAwait.run(r.id);
+        delRoute.run(r.id);
         delMsg.run(r.id);
       }
     });
