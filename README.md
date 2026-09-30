@@ -1,8 +1,8 @@
-<div align="center">
-  <img src="assets/cover.svg" alt="Claude and Codex terminals exchanging messages through claude-ipc" width="640">
-</div>
+<p align="center">
+  <img src=".github/readme/banner.svg" alt="claude-ipc banner: Cutaway office, two floors" width="100%">
+</p>
 
-<h1 align="center">claude-ipc</h1>
+<h1 align="center"><img src=".github/readme/favicon.svg" alt="" width="32" height="32"> claude-ipc</h1>
 
 <p align="center">Durable local messaging for Claude Code and Codex sessions.</p>
 
@@ -15,6 +15,13 @@
 `claude-ipc` connects independently launched coding sessions on one machine. A frontend session can ask a backend session a question, send project mail to whichever session is available, or hand off an action that still requires the recipient's consent.
 
 Messages survive broker restarts and offline recipients. Capability tokens bind each mailbox to its owner. Operation IDs make sends safe to retry. Claude hooks surface mail at turn boundaries, while the managed Codex host persists incoming mail through the Codex App Server before acknowledging delivery.
+
+<details>
+<summary>Riddle answer</summary>
+
+The operation ID: claude-ipc send takes a stable --operation-id so a retried send is not delivered twice.
+
+</details>
 
 ## Quick start
 
