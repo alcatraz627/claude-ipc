@@ -269,6 +269,13 @@ export class SqliteBackend implements StorageBackend {
     return rows.map(toMessage);
   }
 
+  deliveryStates(alias: string): Map<string, Delivery["state"]> {
+    const rows = this.db
+      .query(`SELECT msg_id, state FROM deliveries WHERE to_alias = ? AND state IN ('queued','delivered','surfaced')`)
+      .all(alias) as { msg_id: string; state: Delivery["state"] }[];
+    return new Map(rows.map((r) => [r.msg_id, r.state]));
+  }
+
   markDelivered(msgId: string, alias: string, via: Delivery["via"]): void {
     this.db
       .query(`UPDATE deliveries SET state='delivered', via=? WHERE msg_id=? AND to_alias=? AND state='queued'`)

@@ -14,6 +14,8 @@ export interface StorageBackend {
   // per-recipient delivery + consent
   enqueue(msgId: string, alias: string): void;
   pending(alias: string, opts?: { consume?: boolean }): Message[];
+  /** Delivery state of every still-pending message in this box, by message id (read-only). */
+  deliveryStates(alias: string): Map<string, Delivery["state"]>;
   markDelivered(msgId: string, alias: string, via: Delivery["via"]): void;
   markConsumed(msgId: string, alias: string): void;
   /** Defer without losing: seen-and-deferred, still pending. No-op unless queued/delivered. */

@@ -155,6 +155,14 @@ describe("flag wiring — every allowlisted flag observably does something", () 
     expect(captured("count")[0]).toMatchObject({ project: "/m" });
   });
 
+  test("count: --unseen reaches the broker for alias and project", async () => {
+    await cli(["count", "me", "--unseen"]);
+    expect(captured("count")[0]).toMatchObject({ alias: "me", unseen: true });
+    seen = [];
+    await cli(["count", "--project", "/m", "--unseen"]);
+    expect(captured("count")[0]).toMatchObject({ project: "/m", unseen: true });
+  });
+
   test("digest --project reaches the broker; asks --all sends the op", async () => {
     await cli(["digest", "--project", "/m", "--json"]);
     expect(captured("digest")[0]).toMatchObject({ project: "/m" });

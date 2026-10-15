@@ -254,8 +254,8 @@ export class Client {
   deliverProject(dir: string, via: "hook" | "resume" | "channel", asAlias: string): Promise<any> {
     return this.call("deliver", { project: dir, via }, asAlias);
   }
-  countProject(dir: string): Promise<any> {
-    return this.call("count", { project: dir });
+  countProject(dir: string, unseen = false): Promise<any> {
+    return this.call("count", { project: dir, ...(unseen ? { unseen: true } : {}) });
   }
   projects(): Promise<any> {
     return this.call("projects", {});
@@ -279,8 +279,8 @@ export class Client {
   status(msgId: string, asAlias?: string, operator = false): Promise<any> {
     return this.call("status", { msgId, operator }, asAlias);
   }
-  count(alias: string): Promise<any> {
-    return this.call("count", { alias }, alias);
+  count(alias: string, unseen = false): Promise<any> {
+    return this.call("count", { alias, ...(unseen ? { unseen: true } : {}) }, alias);
   }
   // hub-digest contract verbs (docs/contracts/hub-digest.md) — pure peeks, ungated
   digest(dir: string): Promise<any> {

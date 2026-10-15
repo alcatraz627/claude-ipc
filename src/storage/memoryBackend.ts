@@ -68,6 +68,14 @@ export class MemoryBackend implements StorageBackend {
     return out.sort((a, b) => a.ts - b.ts);
   }
 
+  deliveryStates(alias: string): Map<string, Delivery["state"]> {
+    const out = new Map<string, Delivery["state"]>();
+    for (const d of this.deliveries.values()) {
+      if (d.toAlias === alias && isPending(d.state)) out.set(d.msgId, d.state);
+    }
+    return out;
+  }
+
   markDelivered(msgId: string, alias: string, via: Delivery["via"]): void {
     const d = this.deliveries.get(delKey(msgId, alias));
     if (d && d.state === "queued") {

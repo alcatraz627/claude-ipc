@@ -147,7 +147,7 @@ function parseDuration(s: string): number | null {
 
 // Presence-only flags: never consume the following token as a value, so they can
 // sit anywhere on the line (e.g. `reply <id> --from x --partial <body...>`).
-const BOOLEAN_FLAGS = new Set(["partial", "consume", "no-reply-expected", "operator", "all", "service", "cursor"]);
+const BOOLEAN_FLAGS = new Set(["partial", "consume", "no-reply-expected", "operator", "all", "service", "cursor", "unseen"]);
 
 function parse(argv: string[]): { cmd: string; positional: string[]; flags: Record<string, FlagValue> } {
   const cmd = argv[0] ?? "help";
@@ -195,12 +195,15 @@ const USAGE = `claude-ipc — cross-session messaging
   orphans [--project [dir]] [--triage]  (dead sessions' waiting mail; --triage folds superseded/stale arcs)
   supersede <old-id> --by <new-id> [--from <a>]  (your later message replaces an earlier one — successors fold it)
   who    <query> [--json]    (resolve a half-remembered name → ranked, successor-aware matches)
-  count  <alias> [--cursor]  (pending count — cheap, for tab-title segments. Session-scoped;
+  count  <alias> [--cursor] [--unseen]  (pending count — cheap, for tab-title segments. Session-scoped;
                               can DECREASE (TTL sweep, sibling consume); FAILS on an
                               unregistered alias rather than reading as an empty box.
                               --cursor appends seq=<n>: a monotonic inbox-event cursor that
                               moves on ANY inbox change and survives broker restarts, so a
-                              net-zero window — one message in, one consumed — is visible)
+                              net-zero window — one message in, one consumed — is visible.
+                              --unseen counts only queued + delivered mail, leaving out
+                              "surfaced" (already shown to the agent). inbox --json rows
+                              carry deliveryState: queued | delivered | surfaced)
   digest [--project <dir>] [--json]  (hub-digest §5.1: one project's fabric state, session-keyed;
                               read-only peek — consumes nothing, notifies nobody)
   asks   --all [--json]      (hub-digest §5.2: every open ask machine-wide + orphan roster; read-only)
@@ -230,7 +233,7 @@ export const COMMAND_FLAGS: Record<string, string[]> = {
   send: ["to", "to-project", "from", "kind", "ttl", "reply-by", "no-reply-expected", "body", "body-file"],
   reply: ["from", "corr", "status", "partial", "body", "body-file"],
   inbox: ["alias", "consume", "project"],
-  count: ["alias", "project", "cursor"],
+  count: ["alias", "project", "cursor", "unseen"],
   digest: ["project", "json"],
   asks: ["all", "json"],
   orphans: ["project", "triage"],
@@ -805,10 +808,17 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
       }
       case "count": {
         const withCursor = flags.cursor === true;
+        const unseen = flags.unseen === true;
         // "N seq=M", or the bare count without --cursor. A broker that predates the
         // cursor returns no seq — fail rather than print a fabricated seq=0 a
         // watcher would trust forever (none-not-fabricate).
-        const render = (r: { count: number; seq?: number }): number => {
+        const render = (r: { count: number; seq?: number; unseen?: boolean }): number => {
+          // Same none-not-fabricate stance: an older broker ignores the arg and would
+          // hand back the TOTAL, which a caller would trust as the unseen count.
+          if (unseen && r.unseen !== true) {
+            console.error("this broker predates --unseen (its count ignored the flag) — redeploy the broker, or count without --unseen");
+            return 1;
+          }
           if (!withCursor) {
             out(String(r.count));
             return 0;
@@ -823,14 +833,14 @@ export async function run(argv: string[], opts: { socketPath?: string } = {}): P
         if (flags.project) {
           const dir = await resolveProjectDir(flags.project, client);
           if (typeof dir !== "string") return 2;
-          return render((await client.countProject(dir)) as { count: number; seq?: number });
+          return render((await client.countProject(dir, unseen)) as { count: number; seq?: number; unseen?: boolean });
         }
         const alias = positional[0] ?? String(flags.alias ?? "");
         if (!alias) {
-          console.error("count <alias> [--cursor] (or count --project [dir])");
+          console.error("count <alias> [--cursor] [--unseen] (or count --project [dir])");
           return 2;
         }
-        return render((await client.count(alias)) as { count: number; seq?: number });
+        return render((await client.count(alias, unseen)) as { count: number; seq?: number; unseen?: boolean });
       }
       case "projects": {
         out(await client.projects());

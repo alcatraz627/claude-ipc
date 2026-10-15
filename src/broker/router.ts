@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { sanitizeAlias } from "../aliasStore.ts";
 import { ttyForPid } from "../badge.ts";
 import { config } from "../config.ts";
-import { makeMessage, type DeliveredVia, type ErrorCode, type Kind, type Message, type Status } from "../models.ts";
+import { makeMessage, type DeliveredVia, type DeliveryState, type ErrorCode, type Kind, type Message, type Status } from "../models.ts";
 import {
   isProjectAddress,
   normalizeProjectPath,
@@ -354,22 +354,47 @@ export class Router {
         if (denied) return denied;
       }
       const consuming = a.consume ?? false;
-      const messages = this.projectMailboxes(a.project, !consuming).flatMap((addr) =>
-        this.backend.pending(addr, { consume: consuming }),
-      );
-      return ok({ messages: this.annotateChases(this.stillOwedBy(messages, this.aliasOfToken(req))) });
+      const projBoxes = this.projectMailboxes(a.project, !consuming);
+      const states = this.stateMap(projBoxes); // read before a consume flips them
+      const messages = projBoxes.flatMap((addr) => this.backend.pending(addr, { consume: consuming }));
+      return ok({
+        messages: this.tagStates(this.annotateChases(this.stillOwedBy(messages, this.aliasOfToken(req))), states),
+      });
     }
     if (!a.alias) return fail("bad_args", "check needs alias");
     const denied = this.requireOwner(req, a.alias); // only the owner reads its inbox
     if (denied) return denied;
     const consume = a.consume ?? false;
     const boxes = this.sessionBoxes(a.alias);
+    const states = this.stateMap(boxes); // read before a consume flips them
     const messages = this.dedupeById(boxes.flatMap((addr) => this.backend.pending(addr, { consume })));
     // Only a read that CHANGED the mailbox is worth announcing. The inbox watcher peeks
     // every 10 seconds; notifying on a peek meant the broker repainted the session's tab
     // badge forever, fighting whatever the user had put there.
     if (consume) for (const addr of boxes) this.notify(addr);
-    return ok({ messages: this.annotateChases(messages) });
+    return ok({ messages: this.tagStates(this.annotateChases(messages), states) });
+  }
+
+  /** Delivery state per pending message id across boxes. A broadcast sits in several
+   *  boxes; the LEAST-seen state wins, so "unseen" never under-reports. */
+  private stateMap(boxes: string[]): Map<string, DeliveryState> {
+    const rank: Record<string, number> = { queued: 0, delivered: 1, surfaced: 2 };
+    const out = new Map<string, DeliveryState>();
+    for (const addr of boxes) {
+      for (const [id, st] of this.backend.deliveryStates(addr)) {
+        const have = out.get(id);
+        if (!have || (rank[st] ?? 9) < (rank[have] ?? 9)) out.set(id, st);
+      }
+    }
+    return out;
+  }
+
+  /** Stamp each inbox row with its delivery state. Additive: old clients ignore it. */
+  private tagStates<T extends Message>(messages: T[], states: Map<string, DeliveryState>): (T & { deliveryState?: DeliveryState })[] {
+    return messages.map((m) => {
+      const st = states.get(m.id);
+      return st ? { ...m, deliveryState: st } : m;
+    });
   }
 
   /**
@@ -982,10 +1007,18 @@ export class Router {
    * pending-set change, so a watcher can see a net-zero window the count hides.
    */
   private count(req: Request): Response {
-    const a = req.args as { alias?: string; project?: string };
+    const a = req.args as { alias?: string; project?: string; unseen?: boolean };
+    // --unseen: only queued + delivered. The `unseen: true` echo lets a client tell
+    // a broker that honoured the arg from an older one that returned the total.
+    const unseenOnly = (st: DeliveryState | undefined): boolean => st === "queued" || st === "delivered";
     if (a.project) {
       // Ungated like a peek — a cheap number, and openness is the anti-silo stance.
       const boxes = this.projectMailboxes(a.project);
+      if (a.unseen) {
+        const states = this.stateMap(boxes);
+        const n = [...states.values()].filter(unseenOnly).length;
+        return ok({ count: n, seq: this.backend.lastEventSeq(boxes), unseen: true });
+      }
       const n = boxes.reduce((s, addr) => s + this.backend.pending(addr).length, 0);
       return ok({ count: n, seq: this.backend.lastEventSeq(boxes) });
     }
@@ -1000,6 +1033,10 @@ export class Router {
     const denied = this.requireOwner(req, a.alias); // your own inbox size only
     if (denied) return denied;
     const boxes = this.sessionBoxes(a.alias);
+    if (a.unseen) {
+      const n = [...this.stateMap(boxes).values()].filter(unseenOnly).length;
+      return ok({ count: n, seq: this.backend.lastEventSeq(boxes), unseen: true });
+    }
     const messages = this.dedupeById(boxes.flatMap((addr) => this.backend.pending(addr)));
     return ok({ count: messages.length, seq: this.backend.lastEventSeq(boxes) });
   }
