@@ -4,7 +4,7 @@ import { Router } from "../src/broker/router.ts";
 import { startBroker, type BrokerHandle } from "../src/broker/server.ts";
 import { Client } from "../src/client.ts";
 import { formatRoster } from "../src/hooks/shared.ts";
-import { decidePush } from "../src/hooks/stop.ts";
+import { decidePush, markReplyWindows } from "../src/hooks/stop.ts";
 import { MemoryBackend } from "../src/storage/memoryBackend.ts";
 
 const tmpSock = (): string => `/tmp/cipc-${process.pid}-${Math.random().toString(36).slice(2, 10)}.sock`;
@@ -15,6 +15,37 @@ const ask = (id: string, kind: string, from = "backend", body = "run deploy") =>
 // an inform never blocks.
 describe("P2 · Stop-hook turn-end push (V7)", () => {
   const never = (): boolean => false;
+
+  test("the digest's reply window reaches the mail, end to end through the decision", () => {
+    const digest = { sessions: { s1: { owed: [{ corr_id: "w1", reply_by_s: null }, { corr_id: "r1", reply_by_s: 300 }] } } };
+    const wake = ask("w1", "request");
+    const real = ask("r1", "request");
+    markReplyWindows([wake, real], digest);
+    const d = decidePush([wake, real], "me", never);
+    expect(d.kind).toBe("block");
+    if (d.kind === "block") expect(d.mark).toEqual(["r1"]);
+  });
+
+  test("a broadcast ask stays owed, since the digest has no ledger row for it", () => {
+    const shout = { ...ask("b1", "request"), toAlias: "*" };
+    markReplyWindows([shout], { sessions: { s1: { owed: [{ corr_id: "b1", reply_by_s: null }] } } });
+    expect(decidePush([shout], "me", never).kind).toBe("block");
+  });
+
+  test("an unreadable digest leaves every ask owed", () => {
+    const a = ask("m1", "request");
+    markReplyWindows([a], null);
+    expect(decidePush([a], "me", never).kind).toBe("block");
+  });
+
+  test("a request sent with no reply expected never holds the turn", () => {
+    const wakeOnly = { ...ask("w1", "request"), replyByS: null };
+    expect(decidePush([wakeOnly], "me", never).kind).toBe("none");
+    const waiting = { ...ask("r1", "request"), replyByS: 300 };
+    const d = decidePush([wakeOnly, waiting], "me", never);
+    expect(d.kind).toBe("block");
+    if (d.kind === "block") expect(d.mark).toEqual(["r1"]);
+  });
 
   test("V7 · a fresh request blocks once, naming sender + message + how to reply", () => {
     const d = decidePush([ask("m1", "request")], "frontend", never);

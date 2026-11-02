@@ -20,6 +20,27 @@ interface Ask {
   kind: string;
   fromAlias: string;
   body: string;
+  toAlias?: string;
+  replyByS?: number | null;
+}
+
+interface OwedRow {
+  corr_id: string;
+  reply_by_s: number | null;
+}
+
+/**
+ * Copy each ask's reply window from the broker's digest onto the pending mail. A broadcast
+ * never gets a ledger row, so the digest's null means "no record" there, not "nobody waits",
+ * and it stays owed.
+ */
+export function markReplyWindows(pending: Ask[], digest: unknown): void {
+  const sessions = (digest as { sessions?: Record<string, { owed?: OwedRow[] }> })?.sessions ?? {};
+  const owed = Object.values(sessions).flatMap((s) => s?.owed ?? []);
+  const waitFor = new Map(owed.map((o) => [o.corr_id, o.reply_by_s]));
+  for (const m of pending) {
+    if (m.toAlias !== "*" && waitFor.has(m.id)) m.replyByS = waitFor.get(m.id);
+  }
 }
 
 /** What the turn-end push should do with this session's pending mail. */
@@ -61,12 +82,13 @@ function blockReason(fresh: Ask[], self: string): string {
  * Decide the turn-end push from this session's pending mail — the pure core.
  *
  * Only a request/query is worth turning a session around for; an inform never
- * blocks. A waiting ask blocks the turn exactly once (`wasBlocked` reports which
- * ids already fired), then degrades to a quiet reminder so we never fight the
- * platform's consecutive-block cap.
+ * blocks. Nor does a request sent with --no-reply-expected: it wakes the session
+ * to do something, and nobody is waiting on an answer. A waiting ask blocks the
+ * turn exactly once (`wasBlocked` reports which ids already fired), then degrades
+ * to a quiet reminder so we never fight the platform's consecutive-block cap.
  */
 export function decidePush(pending: Ask[], self: string, wasBlocked: (id: string) => boolean): PushDecision {
-  const asks = pending.filter((m) => m.kind === "request" || m.kind === "query");
+  const asks = pending.filter((m) => (m.kind === "request" || m.kind === "query") && m.replyByS !== null);
   if (asks.length === 0) return { kind: "none" };
   const fresh = asks.filter((m) => !wasBlocked(m.id));
   if (fresh.length > 0) return { kind: "block", reason: blockReason(fresh, self), mark: fresh.map((m) => m.id) };
@@ -115,6 +137,15 @@ export async function main(): Promise<void> {
       pending.push(...(((await client.checkProject(cwd, false, alias)).messages ?? []) as Ask[]));
     } catch {
       // project peek is best-effort; session mail already covered above
+    }
+    // Whether anyone waits on an ask lives on the broker's ledger, not on the message.
+    // Should this look-up fail, every ask stays owed, as it would with no flag at all.
+    if (pending.some((m) => m.kind === "request" || m.kind === "query")) {
+      try {
+        markReplyWindows(pending, await client.digest(input.cwd ?? process.cwd()));
+      } catch {
+        // owed by default, see above
+      }
     }
     const out = applyPush(decidePush(pending, alias, alreadyBlocked), markBlocked);
     if (out.kind === "block") process.stdout.write(JSON.stringify({ decision: "block", reason: out.reason }));
